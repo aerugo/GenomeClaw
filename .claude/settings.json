@@ -31,7 +31,8 @@
       "Read(//private/tmp/genomeclaw-research/nemoclaw/nemoclaw/**)",
       "Read(//tmp/genomeclaw-research/nemoclaw/nemoclaw/src/**)",
       "Read(//private/tmp/genomeclaw-research/nemoclaw/nemoclaw/src/**)",
-      "Read(//tmp/genomeclaw-research/nemoclaw/**)"
+      "Read(//tmp/genomeclaw-research/nemoclaw/**)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
