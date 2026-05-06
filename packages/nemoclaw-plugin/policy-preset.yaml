@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 GenomeClaw contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# OpenShell network policy preset for the GenomeClaw NemoClaw plugin.
+#
+# Modeled on:
+#   nemoclaw-blueprint/policies/presets/local-inference.yaml (NVIDIA/NemoClaw)
+#
+# Why each piece is here:
+#
+# - The plugin runs inside an OpenShell sandbox under Landlock + seccomp + netns.
+#   By default OpenShell denies all network egress except to whitelisted endpoints.
+#   This preset whitelists a *single* hostname and port: the host-side
+#   genomeclaw-service exposed via the NemoClaw gateway alias `host.openshell.internal`.
+#
+# - `allowed_ips:` is mandatory. OpenShell's SSRF guard rejects requests to
+#   private host-gateway IPs (RFC 1918) with `ssrf_denied: blocked: internal address`
+#   *unless* the policy explicitly allowlists the resolved address ranges. The
+#   three ranges here cover the canonical Docker bridge networks; the bridge
+#   address on this stack typically resolves to 172.17.0.1 but we allowlist
+#   the full RFC 1918 set to be tolerant of network reconfiguration.
+#
+# - The route surface is intentionally **read-only and narrow**. Only specific
+#   GET paths are allowed; this is stricter than NemoClaw's local-inference
+#   preset (which allows GET+POST `/**`) because the GenomeClaw host service
+#   is by design read-only and the plugin should never POST to it.
+#
+# - The binary list restricts which executables in the sandbox may *originate*
+#   the connection. OpenClaw and the Node runtime are the legitimate callers;
+#   nothing else (curl, python, custom scripts the agent might write) gets
+#   through this preset. Other binaries that need network access are governed
+#   by separate presets (e.g., the `pypi` preset for pip).
+#
+# Invariants enforced here:
+#   - INV-P001: only the configured agent endpoint and this host service are
+#     reachable; nothing else.
+#   - INV-P002: only read endpoints are allowed; bulk-mode endpoints (when
+#     introduced) MUST be added as a separate, opt-in preset, not folded into
+#     this one.
+#   - INV-D002: there is no path here for a raw genomic file to leave the
+#     host (no file-server-style endpoint exists; `/v1/raw/...` is forbidden).
+
+preset:
+  name: genomeclaw
+  description: "GenomeClaw host-side data service access (minimal-sufficient, read-only)"
+
+network_policies:
+  genomeclaw:
+    name: genomeclaw
+    endpoints:
+      - host: host.openshell.internal
+        port: 8643
+        protocol: rest
+        enforcement: enforce
+        allowed_ips:
+          # OpenShell's SSRF guard rejects private host-gateway IPs unless
+          # the policy explicitly allowlists the resolved address ranges.
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+        rules:
+          # Liveness + active run-id + schema version
+          - allow: { method: GET, path: "/v1/health" }
+          # Findings (summary class by default)
+          - allow: { method: GET, path: "/v1/findings" }
+          - allow: { method: GET, path: "/v1/findings/*" }
+          # Variants
+          - allow: { method: GET, path: "/v1/variants" }
+          - allow: { method: GET, path: "/v1/variants/*" }
+          # Evidence records (referenced by findings)
+          - allow: { method: GET, path: "/v1/evidence/*" }
+          # Provenance envelopes (run-id metadata)
+          - allow: { method: GET, path: "/v1/provenance/*" }
+          # Capability manifest (what this host service exposes)
+          - allow: { method: GET, path: "/v1/capabilities" }
+    binaries:
+      # OpenClaw runtime — legitimate caller for plugin-driven egress.
+      - { path: /usr/local/bin/openclaw }
+      # Node runtime — primary, when openclaw shells out to a worker.
+      - { path: /usr/local/bin/node }
+      # Node runtime — alternative apt-installed location (matches local-inference preset).
+      - { path: /usr/bin/node }

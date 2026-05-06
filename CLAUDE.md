@@ -51,7 +51,9 @@ Default assumption: the user's genome and derived phenotype hints are sensitive 
 
 **Rules**:
 - Prefer local processing and local storage
-- Minimize external API use, especially with raw genomic or phenotype-linked data
+- Genomic source files (FASTQ, BAM/CRAM, VCF/gVCF) never leave the device, regardless of agent or integration configuration
+- The NemoClaw agent (which typically runs on a cloud frontier model such as Claude Opus or Gemini) is a *named, user-configured* egress destination — tool outputs flowing to the agent must be **minimal-sufficient** (see `INV-P002` in `docs/reference/INVARIANTS.md`)
+- Minimize *other* external API use; non-agent remote integrations are off by default and require per-operation opt-in
 - Keep secrets, tokens, and credentials separate from genomic datasets
 - Redact or summarize sensitive fields before any optional external model/tool use
 

@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.nvidia.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/agents/hermes/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/agents/hermes/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/agents/openclaw/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/agents/openclaw/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/agents/hermes/plugin/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/agents/hermes/plugin/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/nemoclaw-blueprint/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/nemoclaw-blueprint/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/nemoclaw-blueprint/policies/presets/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/nemoclaw-blueprint/policies/presets/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/nemoclaw-blueprint/policies/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/nemoclaw-blueprint/policies/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/schemas/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/schemas/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/docs/reference/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/docs/reference/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/docs/deployment/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/docs/deployment/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/docs/resources/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/docs/resources/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/docs/inference/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/docs/inference/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/nemoclaw/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/nemoclaw/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/nemoclaw/src/**)",
+      "Read(//private/tmp/genomeclaw-research/nemoclaw/nemoclaw/src/**)",
+      "Read(//tmp/genomeclaw-research/nemoclaw/**)"
+    ]
+  }
+}

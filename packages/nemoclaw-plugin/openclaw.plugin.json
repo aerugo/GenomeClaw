@@ -1,0 +1,42 @@
+{
+  "$schema": "https://github.com/NVIDIA/NemoClaw/schemas/openclaw-plugin.schema.json",
+  "id": "genomeclaw",
+  "name": "GenomeClaw",
+  "version": "0.0.1",
+  "description": "Personal genomics tools for OpenClaw — query findings, variants, evidence, and reports against a host-side derived store. All raw artifacts stay host-side (INV-D002); the plugin only reaches the host service via the configured network policy preset.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "hostService": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Connection settings for the host-side genomeclaw-service.",
+        "properties": {
+          "baseUrl": {
+            "type": "string",
+            "description": "Base URL of the genomeclaw-service. Must use the `host.openshell.internal` alias and a port whitelisted by the genomeclaw OpenShell policy preset.",
+            "default": "http://host.openshell.internal:8643"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Per-request timeout in milliseconds.",
+            "default": 5000
+          }
+        }
+      },
+      "outputClass": {
+        "type": "string",
+        "enum": ["summary", "bulk"],
+        "description": "Default output class for tool returns. 'summary' enforces INV-P002 minimal-sufficient outputs; 'bulk' must be explicitly opted into per-tool and is reserved for future use.",
+        "default": "summary"
+      },
+      "logVerbosity": {
+        "type": "string",
+        "enum": ["error", "warn", "info", "debug"],
+        "description": "Plugin log level. Default 'info'. Set to 'debug' only for local troubleshooting; debug logs may include scoped variant identifiers.",
+        "default": "info"
+      }
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@genomeclaw/nemoclaw-plugin",
+  "version": "0.0.1",
+  "description": "GenomeClaw plugin for NemoClaw / OpenClaw — agent-callable genomics tools.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist/",
+    "openclaw.plugin.json",
+    "policy-preset.yaml",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
