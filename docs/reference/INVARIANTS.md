@@ -200,7 +200,7 @@ Numbers are assigned in order of introduction within a category and never reused
 - Default report copy and prompt templates are reviewed for **over-claim *and* over-deferral** before merge — punting every lifestyle question to a clinician is its own failure mode.
 
 **Where it applies**:
-- Report assembly endpoints in `packages/toolkit/src/genomeclaw_toolkit/service/` and the report skeleton returned by the plugin's `genomeclaw_report` tool.
+- Agent-rendered prose for report-shaped responses (assembled by the agent from `/v1/findings` + `/v1/health` plus its training; there is no host-service `/v1/report` endpoint in v0). Snapshot tests on the agent's rendered output against fixture conversations are the verification surface.
 - Plugin tool descriptions (the `description` strings registered via `registerCommand` in `packages/nemoclaw-plugin/src/`) — these flow into the agent's tool catalog and shape its framing.
 - The finding schema in `packages/toolkit/src/genomeclaw_toolkit/schemas/` where `category`, `clinical_escalation`, and `evidence_quality` are structural fields.
 - Agent prompt templates rendered by the user's NemoClaw stack (out-of-repo but in-scope for review).

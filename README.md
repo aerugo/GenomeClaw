@@ -54,32 +54,13 @@ The canonical invariants behind these goals live in [docs/reference/INVARIANTS.m
 
 ## Architecture at a Glance
 
-```text
-┌──────────────────────────────────────────────────────────────┐
-│  Agent / Report Layer                                        │
-│  - NemoClaw agents driving GenomeClaw CLI                    │
-│  - structured findings, evidence-linked summaries, reports   │
-└───────────────────────┬──────────────────────────────────────┘
-                        │
-┌───────────────────────▼──────────────────────────────────────┐
-│  Query & Evidence Layer                                      │
-│  - DuckDB / GenomicSQLite                                    │
-│  - annotation joins, evidence cache                          │
-│  - optional local embeddings later                           │
-└───────────────────────┬──────────────────────────────────────┘
-                        │
-┌───────────────────────▼──────────────────────────────────────┐
-│  Pipeline Layer                                              │
-│  - import → normalize → filter → annotate → materialize      │
-│  - reproducible, deterministic, provenance-tagged            │
-└───────────────────────┬──────────────────────────────────────┘
-                        │
-┌───────────────────────▼──────────────────────────────────────┐
-│  Source-of-Truth Layer                                       │
-│  - FASTQ / BAM / CRAM / VCF / gVCF                           │
-│  - reference genomes, indexes, downloaded annotations        │
-│  - read-only by convention                                   │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    A["<b>Agent / Report Layer</b><br/>NemoClaw agents driving GenomeClaw CLI<br/>structured findings, evidence-linked summaries, reports"]
+    B["<b>Query &amp; Evidence Layer</b><br/>DuckDB / GenomicSQLite<br/>annotation joins, evidence cache<br/>optional local embeddings later"]
+    C["<b>Pipeline Layer</b><br/>import → normalize → filter → annotate → materialize<br/>reproducible, deterministic, provenance-tagged"]
+    D[("<b>Source-of-Truth Layer</b><br/>FASTQ / BAM / CRAM / VCF / gVCF<br/>reference genomes, indexes, downloaded annotations<br/>read-only by convention")]
+    A --> B --> C --> D
 ```
 
 Long-form description in [docs/reference/grand-plan.md](docs/reference/grand-plan.md).

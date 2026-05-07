@@ -66,16 +66,20 @@ None. The MVP exercises existing invariants; no new ones are proposed.
 
 The two-domain architecture in [architecture.md](../../reference/architecture.md) is the design. The MVP doesn't reinvent it — it implements it.
 
-```text
-[user, Telegram] → [OpenClaw + GenomeClaw plugin in sandbox]
-                              ↓ HTTP
-                   [genomeclaw-service on host:8643]
-                              ↓ DuckDB read
-                   [/mnt/genomeclaw/derived/CURRENT/]
-                              ↑ written by
-                   [genomeclaw-prep ingest|normalize|annotate|materialize]
-                              ↑ reads (RO)
-                   [/mnt/genomeclaw/raw/, /mnt/genomeclaw/reference/]
+```mermaid
+flowchart TB
+    User["user, Telegram"]
+    Sandbox["OpenClaw + GenomeClaw plugin in sandbox"]
+    Service["genomeclaw-service on host:8643"]
+    Store[("/mnt/genomeclaw/derived/CURRENT/")]
+    Prep["genomeclaw-prep<br/>ingest | normalize | annotate | materialize"]
+    Raw[("/mnt/genomeclaw/raw/<br/>/mnt/genomeclaw/reference/")]
+
+    User --> Sandbox
+    Sandbox -->|HTTP| Service
+    Service -->|DuckDB read| Store
+    Prep -->|writes| Store
+    Raw -->|reads RO| Prep
 ```
 
 ### Key Design Decisions
@@ -184,45 +188,57 @@ None of `INV-Dxxx` / `INV-Exxx` / `INV-Pxxx` / `INV-Cxxx` yet — this phase is 
 - [ ] Annotation versions appear in the run's `manifest.json`.
 - [ ] Annotation tables include provenance columns.
 
-## Phase 5: Host service + plugin wiring + sandbox image
+## Phase 5: Host service + plugin migration to `registerTool` + sandbox image
 
-**Goal**: A live network round-trip from a NemoClaw sandbox to the host service. The privacy posture is enforced for the first time.
+**Goal**: A live network round-trip from a NemoClaw sandbox to the host service, with the plugin's tool surface migrated to OpenClaw's published agent-tool API (`registerTool`). The privacy posture is enforced for the first time.
 
 ### Deliverables
 1. `genomeclaw-service` FastAPI app: `/v1/health`, `/v1/variants`, `/v1/variants/{key}`, `/v1/provenance/{run-id}`.
-2. Wired plugin (`packages/nemoclaw-plugin/src/index.ts`) calling the live service.
-3. Sandbox image built from `packages/nemoclaw-plugin/sandbox/Dockerfile`; onboarded via `nemoclaw onboard --from`.
-4. `INV-D002` smoke test on the built image (no bioinformatics binaries present).
+2. **Plugin migration from `registerCommand` to `registerTool`** (per spec Q2 — Decision Taken):
+   - Rewrite handlers in [packages/nemoclaw-plugin/src/index.ts](../../../packages/nemoclaw-plugin/src/index.ts) to call `api.registerTool(...)` for each of the four tools: `genomeclaw_status`, `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`. (Per spec Q3 — Decision Taken: `genomeclaw_report` is dropped; the existing block in `src/index.ts` is removed during the rewrite.)
+   - Define TypeBox parameter schemas per tool (per spec Q4 — Decision Taken: filter-by-collection tools use **typed arrays**; single-record lookups stay scalar). Concretely:
+     - `genomeclaw_status` — `Type.Object({})`.
+     - `genomeclaw_findings` — `Type.Object({ category: Type.Optional(Type.Union([Type.Literal('clinical-actionable'), Type.Literal('clinical-non-actionable'), Type.Literal('lifestyle'), Type.Literal('mixed')])), genes: Type.Optional(Type.Array(Type.String(), { minItems: 1 })), drugs: Type.Optional(Type.Array(Type.String(), { minItems: 1 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })) })`.
+     - `genomeclaw_variant` — `Type.Object({ key: Type.String({ minLength: 1 }) })` (single canonical key like an rsid or chr-pos-ref-alt).
+     - `genomeclaw_evidence` — `Type.Object({ ref: Type.String({ minLength: 1 }) })`.
+   - Replace the v0 text-encoding helpers (`encodeResult`, `encodeError`, the `GENOMECLAW_JSON:` / `GENOMECLAW_ERROR:` markers, `parseArgs`) with `jsonResult(payload)` / `failedTextResult(text, details)` from `openclaw/plugin-sdk`.
+   - Add `@sinclair/typebox` to `packages/nemoclaw-plugin/package.json` dependencies.
+3. Wired plugin calling the live host service via the new `registerTool` handlers.
+4. Sandbox image built from `packages/nemoclaw-plugin/sandbox/Dockerfile`; onboarded via `nemoclaw onboard --from`.
+5. `INV-D002` smoke test on the built image (no bioinformatics binaries present).
+6. **Live tool-result verification**: in the project owner's sandbox, exercise each registered tool through the agent and confirm the LLM (a) sees JSON-shaped tool results in the `content[].text` block, (b) addresses returned fields by name in follow-up tool calls, (c) does not require any prefix-marker parsing.
 
 ### Invariants Enforced Here
 - **INV-D002** — sandbox image inspection.
-- **INV-P001** — privacy-default integration test asserts the plugin reaches only the host service and inference.local.
-- **INV-P002** — policy preset enforced; live-test asserts SSRF guard rejects un-allowlisted hosts/ports; minimal-sufficient JSON shape verified.
+- **INV-P001** — privacy-default integration test asserts the plugin reaches only the host service and `inference.local`.
+- **INV-P002** — policy preset enforced; live-test asserts SSRF guard rejects un-allowlisted hosts/ports; minimal-sufficient JSON shape verified at the host service AND at the plugin's `jsonResult(...)` payload.
 
 ### Success Criteria
-- [ ] `genomeclaw_status` round-trip works from inside the sandbox.
+- [ ] Plugin uses `registerTool` exclusively for the four tools (no remaining `registerCommand` calls for agent-callable surfaces).
+- [ ] Tool parameters are validated by TypeBox schemas; invalid params are rejected by the SDK before reaching the handler.
+- [ ] Tool results are produced via `jsonResult(payload)`; the structured object is preserved in `result.details`.
+- [ ] `genomeclaw_status` round-trip works from inside the sandbox; the LLM correctly references at least one returned field by name in a follow-up message.
 - [ ] Sandbox image has no `samtools` / `bcftools` / `bgzip` on PATH.
 - [ ] Live policy probe: sandbox reaches only the configured host:port.
 
-## Phase 6: Findings + evidence + report
+## Phase 6: Findings + evidence
 
-**Goal**: The lifestyle and clinical tracks both work. The agent can answer Story 2, Story 4, and Story 9 questions correctly.
+**Goal**: The lifestyle and clinical tracks both work. The agent can answer Story 2, Story 4, and Story 9 questions correctly. (Per spec Q3: no `/v1/report` endpoint; the agent assembles reports from primitives + its own framing.)
 
 ### Deliverables
 1. Finding schema (`category`, `clinical_escalation`, `evidence_quality`).
 2. Evidence record schema (variant-keyed and non-variant-keyed kinds).
 3. Initial finding set: ACMG SF + PharmCAT actionable + *CYP1A2* (caffeine).
-4. `/v1/findings`, `/v1/findings/{id}`, `/v1/evidence/{ref}`, `/v1/report?scope=...`.
-5. Report scopes: `physician-handoff`, `pgx-overview`, `acmg-sf-overview`, `lifestyle-experiment`, `default`.
-6. Plugin tools `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`, `genomeclaw_report` wired and returning structured JSON.
+4. `/v1/findings`, `/v1/findings/{id}`, `/v1/evidence/{ref}`.
+5. Plugin tools `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence` wired and returning structured payloads via `jsonResult(...)`.
 
 ### Invariants Enforced Here
 - **INV-E001** — every finding has an evidence reference; schema rejects findings without one.
-- **INV-C001** — `clinical_escalation` set on `clinical-actionable`; `evidence_quality` set on `lifestyle`; over-deferral and over-claim snapshot tests pass.
+- **INV-C001** — `clinical_escalation` set on `clinical-actionable`; `evidence_quality` set on `lifestyle`; over-deferral and over-claim snapshot tests pass on agent-rendered prose against fixture conversations (since report assembly is at the agent layer).
 - **INV-P002** — bulk-class endpoints wired but disabled in the MVP; reject-with-error tests confirm.
 
 ### Success Criteria
-- [ ] Snapshot tests pass for the three reference user-stories conversations (Story 2, Story 4, Story 9).
+- [ ] Snapshot tests pass for the three reference user-stories conversations (Story 2, Story 4, Story 9). The agent assembles its own report-shaped responses; tests assert structural correctness (escalation markers surfaced, evidence refs cited, no forbidden phrases) of the agent's output.
 - [ ] *CYP1A2* finding renders with `evidence_quality` populated, `clinical_escalation` unset.
 - [ ] BRCA2 pathogenic finding (if present in fixture) renders with `clinical_escalation` set.
 
@@ -268,7 +284,7 @@ None of `INV-Dxxx` / `INV-Exxx` / `INV-Pxxx` / `INV-Cxxx` yet — this phase is 
 - `packages/toolkit/tests/evidence/`: every finding emitted by the host service has a non-null evidence reference; deleting an evidence record marks dependent findings stale on next rebuild.
 
 ### Report Rendering Tests
-- `packages/toolkit/tests/reports/`: snapshot tests on `/v1/report?scope=...` outputs against fixture findings; over-claim and over-deferral both fail.
+- `packages/toolkit/tests/reports/`: integration-level snapshot tests on the **agent's rendered prose** against fixture conversations (Story 2, Story 4, Story 6, Story 9). Over-claim and over-deferral both fail. Report assembly happens at the agent layer — there is no host-service `/v1/report` endpoint in the MVP (see spec Q3).
 
 ### Invariant Tests
 - `packages/toolkit/tests/invariants/test_invXxxx_*.py`: one or more tests per `INV-xxx`, named so the ID appears in the test name.

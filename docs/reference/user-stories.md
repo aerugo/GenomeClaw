@@ -35,7 +35,7 @@ The agent is an **OpenClaw instance** running inside an OpenShell sandbox on the
 
 - It uses **OpenAI gpt-5.4** for reasoning, routed through OpenShell's L7 inference proxy at `inference.local` (the API key never enters the sandbox).
 - It receives messages from the user over **Telegram** (whitelisted in the OpenClaw default policy).
-- It has access to a small set of **callable tools**, including the GenomeClaw plugin tools (`genomeclaw_status`, `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`, `genomeclaw_report`) and any other tools NemoClaw has installed (web search via Brave, possibly URL-fetch, etc.).
+- It has access to a small set of **callable tools**, including the GenomeClaw plugin tools (`genomeclaw_status`, `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`) and any other tools NemoClaw has installed (web search via Brave, possibly URL-fetch, etc.). Report-shaped responses are assembled by the agent itself from these primitives; there is no `genomeclaw_report` tool (see MVP spec Q3).
 - It maintains **session memory** in `/sandbox/.openclaw/memory/` — facts the user has told it (current medications, family history, ongoing concerns) live here.
 - It has **no autonomy by default** beyond responding to user messages. Proactive notifications (e.g., "a ClinVar release affects one of your prior findings") are an opt-in feature in a later horizon, not something it does on day one.
 - It does not run pipelines. It cannot read raw genomic files. It cannot write to the derived store. It can only *query* through the host service via the plugin.
@@ -201,9 +201,9 @@ The agent receives a structured list. In this user's run, suppose there are two 
 
 **Tool calls**:
 
-- `genomeclaw_findings category=acmg-sf gene=BRCA1` — scoped to BRCA1 specifically.
+- `genomeclaw_findings category=acmg-sf genes=["BRCA1"]` — scoped to BRCA1 specifically.
 
-(*Surfaced gap: the current `genomeclaw_findings` tool description mentions `gene=`, but the host service endpoint sketch in `architecture.md` doesn't list `?gene=` as a query param. We need to make that explicit.*)
+(*Surfaced gap, ✅ resolved at MVP spec Q4: `/v1/findings` accepts `genes` as a repeated query parameter (typed `list[str]` server-side); the plugin tool exposes `genes: string[]` via TypeBox. Documented in [architecture.md](architecture.md) Component 2.*)
 
 The host service returns findings filtered to BRCA1. Suppose the run has one VUS in BRCA1 and no pathogenic variants.
 
@@ -251,9 +251,7 @@ The host service returns findings filtered to BRCA1. Suppose the run has one VUS
 
 **Tool calls**:
 
-- `genomeclaw_findings category=pgx gene=CYP2C19` — scoped pharmacogenomic findings on the metabolizer-status genes for this drug class.
-
-(*Surfaced gap: this query pattern wants the tool to be parameterizable by **drug** as well as gene. "What's relevant for clopidogrel?" is a more useful framing than "what's in CYP2C19?" — the latter requires the user or agent to know the gene-drug map. Either: (a) the host service exposes a `drug=` filter, or (b) PharmCAT's drug-keyed output is what we surface. Worth making explicit.*)
+- `genomeclaw_findings category=pgx genes=["CYP2C19"]` — scoped pharmacogenomic findings on the metabolizer-status gene for this drug class. (Equivalent: `genomeclaw_findings category=pgx drugs=["clopidogrel"]` — the agent can map the drug to relevant genes from its training, or the host service can resolve `drugs` via PharmCAT's drug-keyed actionability map. Per MVP spec Q4 both are first-class typed arrays.)
 
 Suppose the user's *CYP2C19* haplotype is `*1/*2`, an intermediate metabolizer.
 
@@ -285,8 +283,8 @@ Suppose the user's *CYP2C19* haplotype is `*1/*2`, an intermediate metabolizer.
 
 **Surfaced gaps**:
 
-- **Drug-keyed PGx queries** are a real pattern. Either the plugin tool needs a `drug=` parameter, or `genomeclaw_findings category=pgx` needs to accept enough parameters to express it. PharmCAT's natural output is keyed by both gene and drug; we should follow that.
-- **Caliber language for clinical handoffs** is a recurring pattern. Worth a separate `genomeclaw_report scope=clinical-handoff` style or at least a templated paragraph in the report-skeleton output.
+- **Drug-keyed PGx queries** are a real pattern. ✅ Resolved at MVP spec Q4: `genomeclaw_findings` accepts `drugs: string[]` as a typed-array parameter (TypeBox `Type.Array(Type.String(), { minItems: 1 })`), alongside the analogous `genes: string[]`. The host service resolves drug→relevant-gene mappings via PharmCAT's drug-keyed actionability tables. The agent can use either parameter; choosing depends on whether the question is gene-shaped ("what's in *CYP2C19*?") or drug-shaped ("what's relevant for clopidogrel?").
+- **Caliber language for clinical handoffs** is a recurring pattern. The agent generates these directly from its training plus the underlying findings — no host-service report scope is needed (per MVP spec Q3, `/v1/report` is deferred entirely; report assembly happens at the agent layer).
 - The user's ongoing medication context (they were prescribed clopidogrel today) is **phenotype-linked information** that the agent might persist in OpenClaw memory. We should be explicit that this kind of memory is sensitive and stays in the sandbox memory store, never sent to the host or to GenomeClaw's derived store.
 
 ---
@@ -366,9 +364,8 @@ Suppose the user is a non-carrier (REF/REF) at this locus.
 - `genomeclaw_findings category=acmg-sf` — actionable findings on the ACMG Secondary Findings list.
 - `genomeclaw_findings category=pgx` — pharmacogenomic findings broadly (without a specific drug).
 - `genomeclaw_status` — to confirm annotation-source versions for the report.
-- `genomeclaw_report scope=physician-handoff` — assembles a handoff skeleton.
 
-The host service's `genomeclaw_report` returns a structured skeleton: a small set of sections, each with finding ids and evidence refs, plus a provenance envelope and the `clinical_escalation` markers carried verbatim. The agent renders this into prose for the chat.
+The agent assembles the report itself from these returns: triages by `clinical_escalation` then ClinVar review status, demotes benign findings, bundles annotation versions from `genomeclaw_status` as the provenance footer, and renders the prose. There is no host-service report skeleton — the section breakdown lives in the agent's prompt + reasoning (per MVP spec Q3).
 
 > **Agent**: Three categories worth mentioning, in priority order. (Annotation versions: ClinVar 2026-04, gnomAD v4.1, dbSNP b156, PharmCAT 2026.3.)
 >
@@ -392,8 +389,8 @@ The host service's `genomeclaw_report` returns a structured skeleton: a small se
 
 **Surfaced gaps**:
 
-- The `genomeclaw_report scope=...` interface needs at least these scopes in v0/v1: `physician-handoff`, `pgx-overview`, `acmg-sf-overview`, plus a default. The current architecture sketch mentions a generic report endpoint without listing scopes — worth pinning down.
-- The agent's offer of a "one-page handoff doc you can print" is a nudge toward the host service producing a Markdown / PDF artifact. That's Horizon 4 (cautious reporting) territory, but we should make sure the host service's report endpoint returns enough structure to render Markdown without further interpretation.
+- ~~The `genomeclaw_report scope=...` interface needs at least these scopes in v0/v1: `physician-handoff`, `pgx-overview`, `acmg-sf-overview`, plus a default.~~ ✅ Resolved at MVP spec Q3: `/v1/report` is deferred entirely; the agent assembles reports from `/v1/findings` + `/v1/health`. Section breakdown / triage logic lives in the agent's prompt, not in the host service.
+- The agent's offer of a "one-page handoff doc you can print" is the agent's own Markdown rendering — *not* a host-service artifact (per MVP spec Q3, `/v1/report` is deferred entirely). If a persistable, printable artifact ever becomes a real need that the agent's prose can't satisfy, that's the revisit criterion for adding `/v1/report` later.
 - The annotation-version disclosure in the response is important. We should make sure the host service `/v1/health` and every report response includes the annotation-source versions verbatim.
 
 ---
@@ -484,7 +481,7 @@ Suppose the user is heterozygous (A/C; the relevant *MTHFR* polymorphism).
 
 **Tool calls**:
 
-- `genomeclaw_findings category=lifestyle gene=CYP1A2` — scoped lifestyle findings on caffeine metabolism.
+- `genomeclaw_findings category=lifestyle genes=["CYP1A2"]` — scoped lifestyle findings on caffeine metabolism.
 
 Suppose the user is `*1F/*1F` at *CYP1A2* (slow-metabolizer phenotype). The host service returns a `lifestyle`-category finding with `evidence_quality: replicated-rct` and no `clinical_escalation` marker.
 
@@ -508,7 +505,7 @@ Suppose the user is `*1F/*1F` at *CYP1A2* (slow-metabolizer phenotype). The host
 
 **Tool calls**:
 
-- `genomeclaw_findings category=lifestyle gene=PER3,CLOCK,ADORA2A`
+- `genomeclaw_findings category=lifestyle genes=["PER3","CLOCK","ADORA2A"]` — single round-trip, typed-array query (per MVP spec Q4).
 
 > **Agent**: Three more variants worth flagging, with calibration:
 >
@@ -525,8 +522,8 @@ Suppose the user is `*1F/*1F` at *CYP1A2* (slow-metabolizer phenotype). The host
 - The host service `/v1/findings` needs to support `category=lifestyle` filtering. The finding schema's `category` field needs values: `clinical-actionable | clinical-non-actionable | lifestyle | mixed` (now formalized in `INV-C001` v1.4).
 - Lifestyle findings need an **`evidence_quality`** field — distinct from ClinVar's review-status stars, since lifestyle findings draw from a different evidence base (RCTs, meta-analyses of observational data, mechanistic plausibility, etc.). Now formalized in `INV-C001` v1.4.
 - The plugin's `genomeclaw_findings` description should mention that `category=` accepts `lifestyle`, so the agent's tool catalog reflects the full surface.
-- The agent's "want me to also check for *PER3* / *ADORA2A*?" pattern implies the agent knows which genes co-cluster with a topic. Either: (a) the host service exposes a lifestyle-topic-keyed query (`genomeclaw_findings topic=caffeine` returning the relevant gene cluster), or (b) the agent learns the gene→topic map from the plugin tool descriptions / a topic taxonomy. Worth deciding before Horizon 6.
-- The "experiment template" pattern (a 2-week caffeine trial with falsifiability conditions) is a recurring artifact worth bundling into `genomeclaw_report scope=lifestyle-experiment` once Theme H matures.
+- The agent's "want me to also check for *PER3* / *ADORA2A*?" pattern implies the agent knows which genes co-cluster with a topic. ✅ Resolved at MVP spec Q4: option (b) wins — the agent owns the gene→topic map from its training; the host service stays generic and accepts a `genes: string[]` typed-array parameter. No `topic=` filter; no curated topic-cluster catalog on the host side.
+- The "experiment template" pattern (a 2-week caffeine trial with falsifiability conditions) is a recurring artifact in the agent's prose generation. The agent assembles these from `/v1/findings` results + its training knowledge — no host-service scope is needed (per MVP spec Q3, report assembly is at the agent layer).
 
 ---
 
@@ -536,15 +533,15 @@ Distilled from the eight stories above (plus the lifestyle dimension surfaced by
 
 ### Architecture gaps
 
-A1. **Active-run resolution** is missing. The host service must define how `/v1/findings`, `/v1/variants`, `/v1/report`, etc. choose the run-id when the caller doesn't supply one. → [architecture.md](architecture.md) endpoint section.
+A1. **Active-run resolution** is missing. The host service must define how `/v1/findings`, `/v1/variants`, etc. choose the run-id when the caller doesn't supply one. → [architecture.md](architecture.md) endpoint section.
 
 A2. **Annotation-source versions** belong on `/v1/health` (not just schema version), so the agent can disclose them in every conversation. → [architecture.md](architecture.md) endpoint section.
 
-A3. **Drug-keyed PGx queries**: the architecture lists `category=` filters but Story 4 needs `drug=` (or PharmCAT-style drug-keyed routes). Either: add `drug=` to the findings filter, or add a dedicated `/v1/pgx/drug/{name}` endpoint. → [architecture.md](architecture.md), and reflected in plugin tool params.
+A3. ~~**Drug-keyed PGx queries**: the architecture lists `category=` filters but Story 4 needs `drug=` (or PharmCAT-style drug-keyed routes). Either: add `drug=` to the findings filter, or add a dedicated `/v1/pgx/drug/{name}` endpoint.~~ ✅ Resolved at MVP spec Q4: `genomeclaw_findings` accepts `drugs: string[]` as a typed-array parameter (and `genes: string[]` analogously). No dedicated `/v1/pgx/drug/{name}` endpoint; PharmCAT's drug-keyed actionability table resolves the mapping inside the host service.
 
 A4. **Reanalysis-diff endpoint**: Story 7 needs a structured diff between runs. Add `/v1/reanalysis-diff?from=...&to=...` (and a "since-last-acknowledged" semantics). → [architecture.md](architecture.md), Horizon 6.
 
-A5. **Report scopes**: Story 6 implies the report endpoint needs at least `physician-handoff`, `pgx-overview`, `acmg-sf-overview`, plus default. → [architecture.md](architecture.md) + plugin manifest.
+A5. ~~**Report scopes**: Story 6 implies the report endpoint needs at least `physician-handoff`, `pgx-overview`, `acmg-sf-overview`, plus default.~~ ✅ Resolved at MVP spec Q3: `/v1/report` deferred entirely; report assembly happens at the agent layer. No scopes to pin down.
 
 A6. **Evidence is broader than variant-bound**: Story 8 cites a position statement; not all evidence is a ClinVar/gnomAD record. The `/v1/evidence/{ref}` endpoint and the evidence schema should accommodate non-variant-keyed evidence (guidelines, position statements, papers). → [architecture.md](architecture.md) endpoint description + schema.
 
@@ -554,11 +551,11 @@ A8. **Paper/URL fetching is agent-side, not GenomeClaw-side**: Story 5 implies a
 
 A9. **`genomeclaw-prep` subcommands** (`fetch`, `ingest`, `normalize`, `annotate`, `materialize`, `reanalyze`) are referenced inconsistently. → [architecture.md](architecture.md) Component 1 description.
 
-A10. **`lifestyle` finding category in the host service**: Story 9 needs `genomeclaw_findings category=lifestyle gene=...` to work. The finding schema needs `category ∈ {clinical-actionable, clinical-non-actionable, lifestyle, mixed}`, formalized in `INV-C001` v1.4. → [architecture.md](architecture.md) §2 endpoints + finding schema reference.
+A10. ~~**`lifestyle` finding category in the host service**: Story 9 needs `genomeclaw_findings category=lifestyle gene=...` to work.~~ ✅ Resolved: the finding schema's `category` enum (`clinical-actionable | clinical-non-actionable | lifestyle | mixed`) is formalized in `INV-C001` v1.4; the parameter shape (`category` enum + `genes: string[]` typed array) is formalized in MVP spec Q4 and documented in [architecture.md](architecture.md) Component 2.
 
 A11. **`evidence_quality` field on lifestyle findings**: Story 9 calibrates lifestyle advice with explicit evidence-quality language. The schema needs an `evidence_quality` field (`meta-analysis | replicated-rct | observational | mechanistic-only` or similar) on `lifestyle` findings, distinct from ClinVar review stars. Now formalized in `INV-C001` v1.4 → [architecture.md](architecture.md).
 
-A12. **Topic-keyed lifestyle queries** (Story 9 uses `gene=PER3,CLOCK,ADORA2A` to assemble a sleep-relevant gene cluster). Either expose a `topic=` filter (`topic=caffeine|sleep|alcohol|exercise`) or accept comma-separated `gene=` values. Decide before Horizon 6 lands. → [architecture.md](architecture.md).
+A12. ~~**Topic-keyed lifestyle queries** (Story 9 uses `gene=PER3,CLOCK,ADORA2A` to assemble a sleep-relevant gene cluster). Either expose a `topic=` filter or accept comma-separated `gene=` values.~~ ✅ Resolved at MVP spec Q4 with a third option neither of the above proposed: **typed array** `genes: string[]` (TypeBox `Type.Array(Type.String(), { minItems: 1 })`). No string-parsing of comma-separated lists; no curated topic→gene catalog on the host side. The host-service URL pattern is repeated query parameters (`/v1/findings?genes=PER3&genes=CLOCK&genes=ADORA2A`).
 
 ### Invariant gaps
 
@@ -571,6 +568,8 @@ I3. **Third-party data**: the user mentioned their mother's variant. GenomeClaw 
 I4. **"Tool returns are minimal-sufficient" includes tool *errors*** too. A 404 on a variant lookup should not echo back the user's other variants. (Likely fine in our v0 design, but worth a sentence.) → [INVARIANTS.md](INVARIANTS.md), `INV-P002` Requirements.
 
 I5. **`INV-C001` needed a clinical / lifestyle distinction** (Story 9, plus Story 5 hypothetical). ✅ Resolved in `INVARIANTS.md` v1.4: four-category schema (`clinical-actionable | clinical-non-actionable | lifestyle | mixed`), `evidence_quality` field on lifestyle findings, "over-deferral is a failure mode too" added to Requirements.
+
+I6. **Plugin tool-return shape — `registerCommand` was the wrong API**. The original scaffold ([packages/nemoclaw-plugin/src/index.ts](../../packages/nemoclaw-plugin/src/index.ts)) used `registerCommand`, which the OpenClaw SDK explicitly documents as bypassing the LLM agent (it builds chat slash commands, not agent-callable tools). The published agent-tool API is `registerTool`, accepting TypeBox parameter schemas and returning `AgentToolResult<TDetails>` via `jsonResult(payload)`. ✅ Resolved as MVP spec Q2 — Phase 5 deliverable. The v0 `GENOMECLAW_JSON:` text-encoding marker is dropped entirely.
 
 ### Grand-plan gaps
 
@@ -622,14 +621,14 @@ Items that affect the host service / plugin contract. These are still v0-shaped:
 
 - `architecture.md` §2 (host service) endpoints:
   - `/v1/health` returns `run_id`, `schema_version`, **annotation_source_versions** (clinvar release, gnomad version, dbsnp build, pharmcat version), `last_refresh`.
-  - `/v1/findings` accepts `category=`, `gene=`, **`drug=`**, `limit=` query params; defaults to active run.
+  - `/v1/findings` accepts `category=` (scalar enum), `genes=` and `drugs=` (typed-array, repeated query parameters per MVP spec Q4), `limit=` (scalar integer); defaults to active run.
   - `/v1/findings/{id}` defaults to active run unless `?run-id=` provided.
   - `/v1/variants` and `/v1/variants/{key}` likewise default to active run.
-  - **`/v1/report?scope=physician-handoff|pgx-overview|acmg-sf-overview|default`** explicit scope list.
+  - ~~`/v1/report?scope=...` explicit scope list~~ — dropped per MVP spec Q3; report assembly lives at the agent layer.
   - `/v1/evidence/{ref}` accepts non-variant-keyed evidence (guidelines, position statements). The evidence schema includes a `kind` field (`clinvar`, `gnomad`, `paper`, `guideline`, `position-statement`, `internal`).
   - **`/v1/reanalysis-diff?from={run-id}&to={run-id}`** (Horizon 6 — drafted now, not implemented in v0).
   - **Active-run resolution rule**: in the absence of `?run-id`, the host service uses the run pointed at by `/mnt/genomeclaw/derived/CURRENT` (a symlink updated atomically by `genomeclaw-prep`). Documented in architecture.md.
-- Plugin tool params: `genomeclaw_findings` accepts `gene=`, `drug=`, plus existing; `genomeclaw_report` accepts `scope=`. Update [`packages/nemoclaw-plugin/openclaw.plugin.json`](../../packages/nemoclaw-plugin/openclaw.plugin.json) and [`packages/nemoclaw-plugin/src/index.ts`](../../packages/nemoclaw-plugin/src/index.ts) accordingly.
+- Plugin tool params: `genomeclaw_findings` accepts `genes: string[]` and `drugs: string[]` (typed-array TypeBox schemas, per MVP spec Q4), plus existing scalar `category` and `limit`. (`genomeclaw_report` dropped per MVP spec Q3.) Update [`packages/nemoclaw-plugin/openclaw.plugin.json`](../../packages/nemoclaw-plugin/openclaw.plugin.json) and [`packages/nemoclaw-plugin/src/index.ts`](../../packages/nemoclaw-plugin/src/index.ts) during the Phase 5 `registerTool` rewrite.
 - Plugin policy preset: confirm GET paths cover the new endpoints. Update [`packages/nemoclaw-plugin/policy-preset.yaml`](../../packages/nemoclaw-plugin/policy-preset.yaml).
 
 ### Change set 3 — diagrams and topology

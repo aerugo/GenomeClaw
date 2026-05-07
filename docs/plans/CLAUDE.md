@@ -45,38 +45,14 @@ Small efforts (a one-file fix, a doc clarification) may live as a single markdow
 
 ## The Loop in One Picture
 
-```text
-       ┌──────────────────────────────────────────────────┐
-       │  spec.md                                          │
-       │  - Goal, acceptance criteria, scope               │
-       │  - Applicable INV-xxx                             │
-       └─────────────────────┬────────────────────────────┘
-                             ▼
-       ┌──────────────────────────────────────────────────┐
-       │  development-plan.md                              │
-       │  - Solution design, phase overview                │
-       │  - Critical invariants + proposed new invariants  │
-       │  - Testing & verification strategy                │
-       └─────────────────────┬────────────────────────────┘
-                             ▼
-       ┌──────────────────────────────────────────────────┐
-       │  phases/phase-N.md  (one per phase)              │
-       │  - Invariants enforced in this phase              │
-       │  - TDD steps: RED → GREEN → REFACTOR              │
-       └─────────────────────┬────────────────────────────┘
-                             ▼
-       ┌──────────────────────────────────────────────────┐
-       │  Implementation (code) + work-notes.md            │
-       │  - Continuous session log                         │
-       │  - Decisions, blockers, next steps                │
-       └─────────────────────┬────────────────────────────┘
-                             ▼
-       ┌──────────────────────────────────────────────────┐
-       │  Completion                                       │
-       │  - All tests + invariant tests green              │
-       │  - INVARIANTS.md updated if new INV-xxx           │
-       │  - Plan moved to completed/                       │
-       └──────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    A["<b>spec.md</b><br/>Goal, acceptance criteria, scope<br/>Applicable INV-xxx"]
+    B["<b>development-plan.md</b><br/>Solution design, phase overview<br/>Critical invariants + proposed new invariants<br/>Testing &amp; verification strategy"]
+    C["<b>phases/phase-N.md</b> (one per phase)<br/>Invariants enforced in this phase<br/>TDD steps: RED → GREEN → REFACTOR"]
+    D["<b>Implementation</b> (code) + <b>work-notes.md</b><br/>Continuous session log<br/>Decisions, blockers, next steps"]
+    E["<b>Completion</b><br/>All tests + invariant tests green<br/>INVARIANTS.md updated if new INV-xxx<br/>Plan moved to completed/"]
+    A --> B --> C --> D --> E
 ```
 
 ---

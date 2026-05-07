@@ -63,65 +63,33 @@ The two packages share `docs/reference/INVARIANTS.md` and the planning protocol.
 
 ## Layered diagram
 
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│  External                                                                │
-│    OpenAI gpt-5.4  (or any NemoClaw-supported provider)                 │
-└──────────────────────────┬──────────────────────────────────────────────┘
-                           │  inference (managed via inference.local)
-                           │  credential injected at OpenShell L7 proxy
-                           ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Sandbox  (OpenShell pod, Landlock + seccomp + netns)                   │
-│                                                                          │
-│   ┌─────────────────────────────┐  ┌─────────────────────────────────┐ │
-│   │  OpenClaw agent             │  │  GenomeClaw plugin              │ │
-│   │  + NemoClaw plugin          │  │  /sandbox/.openclaw/extensions/ │ │
-│   │  (Node.js 22)               │  │    genomeclaw/                  │ │
-│   │                             │  │                                  │ │
-│   │  Tools registered:          │  │  - genomeclaw_status            │ │
-│   │   genomeclaw_status         │◀─┤  - genomeclaw_findings          │ │
-│   │   genomeclaw_findings       │  │  - genomeclaw_evidence          │ │
-│   │   genomeclaw_evidence       │  │  - genomeclaw_variant           │ │
-│   │   genomeclaw_variant        │  │  - genomeclaw_report            │ │
-│   │   genomeclaw_report         │  │                                  │ │
-│   └─────────────────────────────┘  └────────────────┬────────────────┘ │
-│                                                      │                  │
-└──────────────────────────────────────────────────────┼──────────────────┘
-                                                       │  HTTP GET
-                                                       │  via host.openshell.internal:8643
-                                                       │  (whitelisted by genomeclaw policy preset
-                                                       │   with allowed_ips: RFC 1918)
-                                                       ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Host  (Linux or macOS)                                                  │
-│                                                                          │
-│   ┌─────────────────────────────────────────────────────────────────┐  │
-│   │  genomeclaw-service                                              │  │
-│   │    listens 127.0.0.1:8643 (bridged into sandbox via              │  │
-│   │      host.openshell.internal)                                    │  │
-│   │    read-only HTTP/JSON                                           │  │
-│   │    shapes minimal-sufficient outputs (INV-P002)                  │  │
-│   └────────────────────────┬────────────────────────────────────────┘  │
-│                             │  reads                                     │
-│                             ▼                                            │
-│   ┌─────────────────────────────────────────────────────────────────┐  │
-│   │  Derived store    /mnt/genomeclaw/derived/<run-id>/             │  │
-│   │    (DuckDB / GenomicSQLite, evidence joins, provenance)          │  │
-│   └────────────────────────▲────────────────────────────────────────┘  │
-│                             │  written by                                │
-│                             │                                            │
-│   ┌─────────────────────────┴───────────────────────────────────────┐  │
-│   │  genomeclaw-prep (host CLI)                                      │  │
-│   │    wraps samtools / bcftools / SnpEff / cyvcf2 / PharmCAT       │  │
-│   │    runs ingest|normalize|annotate|materialize                    │  │
-│   └────────────────────────┬────────────────────────────────────────┘  │
-│                             │  reads (RO)                                │
-│                             ▼                                            │
-│   /mnt/genomeclaw/raw/         (RO — Nebula source files)               │
-│   /mnt/genomeclaw/reference/   (RO at runtime)                           │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph EXT["External"]
+        LLM["<b>OpenAI gpt-5.4</b><br/>(or any NemoClaw-supported provider)"]
+    end
+
+    subgraph SBX["Sandbox — OpenShell pod (Landlock + seccomp + netns)"]
+        Agent["<b>OpenClaw agent + NemoClaw plugin</b><br/>(Node.js 22)<br/><br/>Tools registered:<br/>genomeclaw_status, genomeclaw_findings,<br/>genomeclaw_variant, genomeclaw_evidence"]
+        Plugin["<b>GenomeClaw plugin</b><br/>/sandbox/.openclaw/extensions/genomeclaw/"]
+        Agent <-->|tool calls| Plugin
+    end
+
+    subgraph HST["Host — Linux or macOS"]
+        Service["<b>genomeclaw-service</b><br/>127.0.0.1:8643<br/>read-only HTTP / JSON<br/>minimal-sufficient outputs (INV-P002)"]
+        Store[("<b>Derived store</b><br/>/mnt/genomeclaw/derived/&lt;run-id&gt;/<br/>DuckDB / GenomicSQLite<br/>evidence joins, provenance")]
+        Prep["<b>genomeclaw-prep</b> (host CLI)<br/>wraps samtools / bcftools / SnpEff /<br/>cyvcf2 / PharmCAT<br/>ingest | normalize | annotate | materialize"]
+        Raw[("/mnt/genomeclaw/raw/<br/>RO — Nebula source files")]
+        Ref[("/mnt/genomeclaw/reference/<br/>RO at runtime")]
+
+        Service -->|reads| Store
+        Prep -->|writes| Store
+        Raw -->|reads RO| Prep
+        Ref -->|reads RO| Prep
+    end
+
+    LLM ==>|"inference via inference.local<br/>(OpenShell L7 proxy injects credential)"| Agent
+    Plugin ==>|"HTTP GET<br/>host.openshell.internal:8643<br/>(whitelisted; allowed_ips: RFC 1918)"| Service
 ```
 
 ---
@@ -140,15 +108,23 @@ The two packages share `docs/reference/INVARIANTS.md` and the planning protocol.
 **Lives**: host process, listens on `127.0.0.1:8643` by default.
 **Implementation**: Python (FastAPI/Uvicorn or similar) — TBD in toolkit phase.
 **Responsibility**: read-only HTTP/JSON API serving queries against the most recent derived store run. Endpoints (initial set):
-- `GET /v1/health` — liveness + active run-id + schema version
-- `GET /v1/findings` — scoped findings list (summary class)
-- `GET /v1/findings/{id}` — single finding with bound evidence references
-- `GET /v1/variants` — scoped variant query (summary class)
-- `GET /v1/variants/{key}` — single variant lookup
-- `GET /v1/evidence/{ref}` — evidence record fetch
-- `GET /v1/provenance/{run-id}` — provenance envelope for a run
 
-**Output shape**: minimal-sufficient by default (`INV-P002`). A future `?class=bulk` opt-in is reserved but not enabled in v0.
+- `GET /v1/health` — liveness + active run-id + schema version + annotation source versions.
+- `GET /v1/findings` — scoped findings list (summary class). Query parameters:
+  - `category` (one of `clinical-actionable | clinical-non-actionable | lifestyle | mixed`).
+  - `genes` — **repeated query parameter** for multi-gene filter (`?genes=CYP1A2&genes=ADORA2A`); typed `list[str]` server-side.
+  - `drugs` — **repeated query parameter** for drug-keyed PGx filter (`?drugs=clopidogrel`); typed `list[str]`.
+  - `limit` — integer, 1–200.
+  - All four are optional; an empty list is rejected with a clear error.
+- `GET /v1/findings/{id}` — single finding with bound evidence references.
+- `GET /v1/variants` — scoped variant query (summary class). Same `genes` / `rsids` repeated-query-parameter shape as `/v1/findings`.
+- `GET /v1/variants/{key}` — single variant lookup by canonical key (rsid or `chr-pos-ref-alt`).
+- `GET /v1/evidence/{ref}` — evidence record fetch.
+- `GET /v1/provenance/{run-id}` — provenance envelope for a run.
+
+(Per MVP spec Q3 — Decision Taken: there is no `/v1/report` endpoint. Report-shaped responses are assembled by the agent from `/v1/findings` + `/v1/health` + its training.)
+
+**Output shape**: minimal-sufficient by default (`INV-P002`). A future `?class=bulk` opt-in is reserved but not enabled in v0. Per MVP spec Q4: array-shaped query parameters use the FastAPI repeated-query-parameter convention (`?genes=A&genes=B`), not comma-separated strings.
 
 ### 3. NemoClaw plugin — `@genomeclaw/nemoclaw-plugin`
 
@@ -186,12 +162,14 @@ Raw and reference are mounted read-only at the OS layer. Derived is the only wri
 
 ## Network topology (verified)
 
-```text
-Host → Docker daemon → OpenShell gateway container → embedded k3s → sandbox pod
-                                       │
-                                       ├── L7 proxy intercepts inference + tool egress
-                                       └── SSRF guard blocks private addresses unless
-                                           the active policy declares `allowed_ips:`
+```mermaid
+flowchart LR
+    Host["Host"] --> Docker["Docker daemon"]
+    Docker --> Gateway["OpenShell gateway container"]
+    Gateway --> K3s["embedded k3s"]
+    K3s --> Pod["sandbox pod"]
+    Gateway -.->|intercepts<br/>inference + tool egress| L7["L7 proxy"]
+    Gateway -.->|"blocks private addresses<br/>unless policy declares<br/>allowed_ips:"| SSRF["SSRF guard"]
 ```
 
 Two paths cross trust boundaries:

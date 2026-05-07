@@ -1,0 +1,114 @@
+# --- GenomeClaw: never commit user data ---
+# Genomic source artifacts and derived stores must never enter version control.
+data/
+!data/.gitkeep
+
+# Common genomic file extensions (defense-in-depth, in case files land elsewhere)
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+*.bam
+*.bam.bai
+*.cram
+*.cram.crai
+*.sam
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.gvcf
+*.gvcf.gz
+*.bcf
+*.fa
+*.fasta
+*.fai
+*.dict
+*.bed.gz
+*.bed.gz.tbi
+
+# --- Secrets & credentials ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+secrets/
+credentials.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+venv/
+.venv/
+env/
+ENV/
+
+# --- Node / JS (in case of UI components) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+dist/
+.next/
+.turbo/
+
+# --- Databases & derived stores ---
+*.duckdb
+*.duckdb.wal
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.parquet
+*.feather
+*.arrow
+
+# --- Notebooks ---
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# --- Editors / IDEs ---
+.vscode/
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.cursor/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Logs & scratch ---
+*.log
+logs/
+tmp/
+temp/
+scratch/local/
+notebooks/local/
+
+# --- Build / CI artifacts ---
+.cache/
+coverage/
+*.tsbuildinfo

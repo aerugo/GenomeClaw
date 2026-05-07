@@ -276,34 +276,10 @@ export default function register(api: OpenClawPluginApi): void {
     },
   });
 
-  // ── genomeclaw_report ────────────────────────────────────────────────
-  // Drafts a report from a scoped findings set. v0 returns the structured
-  // assembly metadata only (sections, finding ids, evidence refs); the agent
-  // is expected to render the prose because rendering belongs to the agent
-  // layer, not to GenomeClaw (INV-C001 framing stays in agent prompts).
-  api.registerCommand({
-    name: "genomeclaw_report",
-    description:
-      "Assemble a report skeleton: sections, finding ids per section, evidence refs, " +
-      "clinical-escalation markers. Args: scope=<pgx|acmg-sf|all>. The agent renders " +
-      "the prose using its own report-writing template; this tool only returns the structure.",
-    acceptsArgs: true,
-    handler: async (ctx: PluginCommandContext) => {
-      const args = parseArgs(ctx.args);
-      const reject = rejectBulkAttempts(args);
-      if (reject) return reject;
-      try {
-        const result = await callHostService(
-          cfg.hostService,
-          "/v1/report",
-          args,
-        );
-        return encodeResult(result);
-      } catch (err) {
-        return encodeError(err instanceof Error ? err.message : String(err));
-      }
-    },
-  });
+  // Note: there is intentionally no genomeclaw_report tool. Per MVP spec Q3
+  // (docs/plans/active/mvp/spec.md § Decisions Taken), report assembly lives
+  // at the agent layer — the agent composes report-shaped responses from
+  // genomeclaw_status + genomeclaw_findings + its own framing knowledge.
 
   // ── Startup banner ───────────────────────────────────────────────────
   api.logger.info("");
@@ -317,10 +293,7 @@ export default function register(api: OpenClawPluginApi): void {
     "  │  Tools: genomeclaw_status, genomeclaw_findings,      │",
   );
   api.logger.info(
-    "  │         genomeclaw_variant, genomeclaw_evidence,     │",
-  );
-  api.logger.info(
-    "  │         genomeclaw_report                            │",
+    "  │         genomeclaw_variant, genomeclaw_evidence      │",
   );
   api.logger.info("  └─────────────────────────────────────────────────────┘");
   api.logger.info("");

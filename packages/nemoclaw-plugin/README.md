@@ -29,22 +29,22 @@ packages/nemoclaw-plugin/
 
 ## How it fits into the stack
 
-```text
-LLM (OpenAI gpt-5.4 — or any NemoClaw-supported provider)
-  ⇕  via inference.local (OpenShell L7 proxy)
-SANDBOX
-├── OpenClaw agent
-└── @genomeclaw/nemoclaw-plugin  ← this package
-       registers agent tools:
-         genomeclaw_status
-         genomeclaw_findings
-         genomeclaw_variant
-         genomeclaw_evidence
-         genomeclaw_report
-       implementation: HTTP GET → host.openshell.internal:8643
-  ⇕  whitelisted by genomeclaw policy preset (policy-preset.yaml)
-HOST
-└── genomeclaw-service (read-only HTTP, lives in packages/toolkit/)
+```mermaid
+flowchart TB
+    LLM["LLM<br/>OpenAI gpt-5.4 — or any NemoClaw-supported provider"]
+
+    subgraph SBX["SANDBOX"]
+        Agent["OpenClaw agent"]
+        Plugin["<b>@genomeclaw/nemoclaw-plugin</b> (this package)<br/>registers agent tools:<br/>genomeclaw_status, genomeclaw_findings,<br/>genomeclaw_variant, genomeclaw_evidence<br/>implementation: HTTP GET → host.openshell.internal:8643"]
+        Agent --- Plugin
+    end
+
+    subgraph HOST["HOST"]
+        Service["<b>genomeclaw-service</b><br/>read-only HTTP, lives in packages/toolkit/"]
+    end
+
+    LLM <==>|"via inference.local<br/>(OpenShell L7 proxy)"| Agent
+    Plugin <==>|"whitelisted by genomeclaw policy preset<br/>(policy-preset.yaml)"| Service
 ```
 
 Raw genomic artifacts are **never** reachable from the sandbox (`INV-D002`).
@@ -108,10 +108,11 @@ All tool returns are JSON-encoded inside the `text` field of `PluginCommandResul
 | Tool | Purpose | Output class |
 |------|---------|--------------|
 | `genomeclaw_status` | Service health, active run-id, schema version | summary |
-| `genomeclaw_findings` | Scoped findings list (`category=`, `gene=`, `limit=`) | summary |
+| `genomeclaw_findings` | Scoped findings list (`category=` scalar enum, `genes=[...]` typed array, `drugs=[...]` typed array, `limit=` scalar integer) | summary |
 | `genomeclaw_variant` | Single-variant lookup by canonical key | summary |
 | `genomeclaw_evidence` | Single evidence record by reference id | summary |
-| `genomeclaw_report` | Report skeleton (sections, finding ids, evidence refs) — agent renders the prose | summary |
+
+Per MVP spec Q3 there is no `genomeclaw_report` tool — report-shaped responses are assembled by the agent from `genomeclaw_status` + `genomeclaw_findings` plus its own framing.
 
 Bulk variants of any of these tools are reserved per `INV-P002` and not enabled in v0.
 

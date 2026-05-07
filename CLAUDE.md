@@ -87,36 +87,13 @@ GenomeClaw is a research and exploration assistant, not a doctor.
 
 ## Architecture at a Glance
 
-```text
-┌──────────────────────────────────────────────────────────────┐
-│  Agent / API / UX Layer                                     │
-│  - user queries                                              │
-│  - report generation                                         │
-│  - planning + retrieval orchestration                        │
-└───────────────────────┬──────────────────────────────────────┘
-                        │
-┌───────────────────────▼──────────────────────────────────────┐
-│  Query & Evidence Layer                                     │
-│  - DuckDB / SQLite / GenomicSQLite                           │
-│  - annotation joins                                          │
-│  - literature snippets / cached evidence                     │
-│  - optional local embeddings / reranking                     │
-└───────────────────────┬──────────────────────────────────────┘
-                        │
-┌───────────────────────▼──────────────────────────────────────┐
-│  Pipeline Layer                                              │
-│  - import VCF/gVCF                                            │
-│  - normalize/filter                                           │
-│  - annotate (ClinVar/gnomAD/PharmCAT/etc.)                   │
-│  - materialize derived tables                                │
-└───────────────────────┬──────────────────────────────────────┘
-                        │
-┌───────────────────────▼──────────────────────────────────────┐
-│  Source Data Layer                                            │
-│  - FASTQ / BAM / CRAM / VCF / gVCF                            │
-│  - references, BEDs, indexes                                  │
-│  - downloaded annotation datasets                             │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    A["<b>Agent / API / UX Layer</b><br/>user queries<br/>report generation<br/>planning + retrieval orchestration"]
+    B["<b>Query &amp; Evidence Layer</b><br/>DuckDB / SQLite / GenomicSQLite<br/>annotation joins<br/>literature snippets / cached evidence<br/>optional local embeddings / reranking"]
+    C["<b>Pipeline Layer</b><br/>import VCF/gVCF<br/>normalize/filter<br/>annotate (ClinVar/gnomAD/PharmCAT/etc.)<br/>materialize derived tables"]
+    D[("<b>Source Data Layer</b><br/>FASTQ / BAM / CRAM / VCF / gVCF<br/>references, BEDs, indexes<br/>downloaded annotation datasets")]
+    A --> B --> C --> D
 ```
 
 **Design Philosophy**:
