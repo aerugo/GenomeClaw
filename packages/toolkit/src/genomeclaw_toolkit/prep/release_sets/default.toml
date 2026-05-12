@@ -1,0 +1,38 @@
+# Default reference-data release set shipped with the toolkit.
+#
+# This manifest is the curated, reproducibility-anchored answer to
+# "what should `genomeclaw refs fetch --all` pull?". Two users on the
+# same toolkit version always fetch the same release labels — see
+# `INV-R001`. Bump these strings when the corresponding upstream
+# publishes a release we want to standardise on; do NOT add
+# `--release-set` overrides for transient experimentation (use the
+# explicit per-source `fetch --source X --release Y` form instead).
+#
+# Order matters: fetched sequentially. grch38 first because normalize's
+# left-alignment step uses its .fa.gz/.fai; ClinVar/dbSNP next as small
+# single-file artifacts; gnomad-exomes last because it's the heaviest
+# (~200 GB across 24 chromosomes).
+
+name = "default"
+description = "Curated Phase-4 reference quartet (grch38 + clinvar + dbsnp + gnomad-exomes v4.1)."
+
+[[sources]]
+source = "grch38"
+release = "ncbi-2014"
+
+[[sources]]
+source = "clinvar"
+release = "2026-05-09"
+
+[[sources]]
+source = "dbsnp"
+release = "b157"
+
+[[sources]]
+source = "gnomad-exomes"
+release = "v4.1"
+chroms = [
+  "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+  "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
+  "21", "22", "X", "Y",
+]

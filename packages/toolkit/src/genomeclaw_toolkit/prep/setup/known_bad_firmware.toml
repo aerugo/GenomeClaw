@@ -1,0 +1,14 @@
+# Known-bad drive firmware revisions.
+#
+# Setup refuses to proceed when a target drive's (model, firmware) pair
+# matches an entry here. Empty by default for the validated Samsung T7
+# Shield; populated when a vendor publishes a firmware-related data-loss
+# advisory. Update as a config change rather than a code change.
+#
+# Format:
+#
+#   [[entry]]
+#   model = "Vendor Display Name"
+#   firmware = "FirmwareRevision"
+#   advisory_url = "https://vendor.example/advisory"
+#   notes = "free-form why-this-is-bad"

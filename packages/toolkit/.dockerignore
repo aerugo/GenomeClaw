@@ -1,0 +1,25 @@
+# Build context lives at packages/toolkit/. Keep it lean so Docker copies
+# only what the Dockerfile actually needs.
+
+# Local virtualenvs / build artifacts
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+build/
+dist/
+*.egg-info/
+
+# Tests are not needed inside the runtime image (CI builds the same image,
+# then runs `pytest` against a separate volume mount of the test tree).
+tests/
+
+# Editor / OS noise
+.DS_Store
+*.swp
+*.swo
+
+# Don't ship the Dockerfile to itself
+Dockerfile
+.dockerignore
