@@ -239,14 +239,17 @@ GenomeClaw treats several test categories as **first-class**, not afterthoughts:
 | **Privacy default** | No outbound network call in default config | full assistant flow with mocked egress, asserts zero calls |
 | **Evidence binding** | Every interpretation cites a source record | finding rejection without `evidence_ref` |
 | **Report rendering** | Snapshot/structural tests for user-facing output | renders include citations + caution markers |
+| **Perf** | Wall-clock budget on a representative-scale fixture; guards against perf cliffs that surface only at scale | 100k-variant ingest completes in <30s on the toolkit image |
 | **Invariant** | One or more `INV-xxx` enforced as cross-cutting checks | walks all annotation rows and asserts schema version present |
 
 When a phase touches one of these categories, the phase plan must include the corresponding tests under **Step N.1**.
 
+**Real-data smoke as a phase-completion gate**. For phases touching scale-sensitive surfaces (DuckDB ingest, large-file streaming, multi-pass annotation joins, coverage / PRS computation over a genome), synthetic fixtures alone are insufficient — run the pipeline against the project owner's actual genome on actual hardware as part of the GREEN gate. The synthetic→real gap is exactly where production bugs live; verified empirically during MVP Phase 2 where two distinct bugs (4h09m perf cliff and ~1 GB virtiofs corruption) passed an otherwise-green synthetic suite.
+
 ### Test File Conventions
 
 - Co-locate unit tests with source where the language convention supports it.
-- Place broader tests under `tests/` with subdirectories matching category (`tests/integration/`, `tests/invariants/`, `tests/provenance/`, `tests/privacy/`, `tests/determinism/`).
+- Place broader tests under `tests/` with subdirectories matching category (`tests/integration/`, `tests/invariants/`, `tests/provenance/`, `tests/privacy/`, `tests/determinism/`, `tests/perf/`).
 - Name invariant tests so the `INV-xxx` ID appears in the test name or docstring.
 - Keep fixtures tiny and synthetic; **never** commit real human genomic data into the repo.
 
