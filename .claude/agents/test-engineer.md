@@ -48,9 +48,23 @@ GenomeClaw treats these categories as **first-class**:
 | **Evidence binding** | Every interpretation cites a source record | `INV-E001` |
 | **Report rendering** | Snapshot/structural tests for user-facing output | `INV-E001`, `INV-C001` |
 | **Clinical escalation** | Actionable findings carry escalation markers | `INV-C001` |
+| **Perf** | Wall-clock budget on a representative-scale fixture; guards against perf cliffs that surface only at scale | structurally protects `INV-R001` (a correct-but-unusable pipeline isn't rebuildable in any practical sense) |
 | **Invariant** | Cross-cutting walks asserting `INV-xxx` holds | varies |
 
 A phase that touches one of these categories must include the corresponding tests in **Step N.1**.
+
+### Perf tests + real-data smoke
+
+Synthetic fixtures (5 rows, 100k rows) **cannot catch perf cliffs or scale-dependent reliability bugs**. Two distinct production-grade bugs landed during the MVP and were missed by an otherwise-green synthetic suite:
+
+- DuckDB `executemany` was 250× slower than `COPY FROM` at million-row scale. The 100k synthetic test passed in 1s; the real 4.8M-variant Nebula VCF took 4h 9m.
+- Single-file CSV staging on a virtiofs + exFAT bind-mount corrupted mid-stream at ~1 GB sustained writes. No error — the COPY just saw NUL bytes where the source SHA256 should have been.
+
+Therefore:
+
+- **`tests/perf/<name>.py`** is a recognized first-class category. Each perf test exercises a representative-scale workload (e.g. ~100k rows, ~10 MB inputs) inside the toolkit image and asserts a wall-clock budget. Marked `@pytest.mark.needs_bio` when the path needs real bio binaries; runs in CI's image-build job. Budget pads ~10× headroom over the observed best path so noisy CI runners don't false-fail.
+- **Real-data smoke is a phase-completion gate** for any phase touching scale-sensitive surfaces (DuckDB ingest, large-file streaming, multi-pass annotation joins, mosdepth/`pgsc_calc` over a genome). At least once per phase, run the pipeline against the project owner's actual genome on actual hardware. The synthetic→real gap is exactly where production bugs live. The result lands in the phase's work-notes alongside the synthetic-test green output.
+- **Synthetic + image-resident is not the same as real-data smoke.** The image-resident test still reads from the container's writable layer, not the user's USB-attached / virtiofs-mounted volume. Reliability bugs hide in the bind-mount path.
 
 ## TDD Ritual
 
@@ -111,6 +125,7 @@ You write or review the tests that enforce **all** invariants in `INVARIANTS.md`
   - `tests/privacy/`
   - `tests/evidence/`
   - `tests/reports/`
+  - `tests/perf/`
   - `tests/invariants/`
 - **Name invariant tests so the `INV-xxx` ID appears** in the test name or docstring (e.g., `test_invR001_pipeline_rerun_is_byte_equivalent`).
 - Keep fixtures under `tests/fixtures/` and **never** commit real human genomic data.

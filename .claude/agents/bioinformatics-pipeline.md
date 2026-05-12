@@ -85,6 +85,10 @@ When you contribute to a plan, you produce or update:
 - Hand-edited derived data justified only verbally — the plan must capture the deviation.
 - Adding a remote annotation source as a hard dependency without an offline / cached fallback.
 - "Temporary" caches that bypass the provenance schema.
+- **Materialising per-row data into a Python list** when the row count is unbounded by input size. `[{**row, ...} for row in iter(...)]` over millions of records multiplies memory ~10× (Python dict overhead) and triggers minutes-long GC pauses. The default pattern is **streaming**: a generator → batched writer → bulk-load. Verified 2026-05-09 against a 4.8M-variant Nebula VCF; the materialising path took 4h 9m, the streaming path took 1m 17s.
+- **`executemany` for bulk DuckDB inserts at million-row scale.** Picks per-tool by row count: `executemany` for ≤10k rows; **`COPY FROM` (CSV staging, batched ~10 MB per file) for the bulk-genome case**; `Appender` / `register(arrow_table)` only when pyarrow is already a dep. The `executemany` cliff at 200k+ rows is real (~250× slower than `COPY FROM` on the same workload).
+- **Bind-mount writes that don't batch-align.** Mac + colima + USB / NAS exposes a virtiofs + exFAT write-reliability cliff at ~1 GB sustained streaming writes — mid-stream NUL truncation, no error. Mitigation: batch writes to ~10 MB chunks (~50k rows for VCF-shaped CSV) with `os.fsync` between writer-close and any reader-open. Verified 2026-05-09 — single-CSV staging corrupted at row 3.7M of the project owner's Nebula VCF; batched + fsync'd staging completed cleanly. Document the batch-size choice in the design.
+- **"Synthetic-only test coverage of perf or scale-dependent behavior."** Synthetic fixtures (5 rows, 100k rows) cannot catch perf cliffs at scale or scale-dependent reliability bugs. Hand off to `test-engineer` to plan a real-data smoke as part of the GREEN gate when the pipeline change touches scale-sensitive surfaces (DuckDB ingest, large-file streaming, fsync timing).
 
 ## Handoffs
 
