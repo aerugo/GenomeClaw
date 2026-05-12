@@ -1,8 +1,8 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.4
-**Last Updated**: 2026-05-06
+**Version**: 1.7
+**Last Updated**: 2026-05-12
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
 
@@ -64,7 +64,7 @@ Numbers are assigned in order of introduction within a category and never reused
 
 **Requirements**:
 - The agent-facing OpenShell sandbox has **no filesystem path** to `/mnt/genomeclaw/raw/` or to any other location holding raw artifacts.
-- The host-side pipeline (`genomeclaw-prep` and equivalents) runs as ordinary host processes, outside any NemoClaw / OpenShell sandbox.
+- The host-side pipeline (`genomeclaw` and equivalents) runs as ordinary host processes, outside any NemoClaw / OpenShell sandbox.
 - The sandbox accesses only the *derived* store, and only through a host-side HTTP service that exposes minimum-sufficient queries (governed by `INV-P002`).
 - Bioinformatics tooling (`samtools`, `bcftools`, `bgzip`, `tabix`, `bedtools`, `SnpEff`, `SnpSift`, `cyvcf2`, `pysam`, `PharmCAT`, etc.) is installed only on the host, never in the sandbox image.
 
@@ -77,6 +77,59 @@ Numbers are assigned in order of introduction within a category and never reused
 - A test asserting the built sandbox image does not contain bioinformatics tool binaries on PATH (`samtools`, `bcftools`, `bgzip`, `SnpEff.jar`, etc.).
 - A test asserting the OpenShell policy preset for GenomeClaw exposes only the agreed host service endpoint, not a generic file-server endpoint.
 - A test asserting the host service refuses to serve raw byte ranges from `/mnt/genomeclaw/raw/`.
+
+---
+
+## INV-D003: Heavy Scratch Is Separated From Authoritative Outputs
+
+**Rule**: Pipeline intermediates of meaningful size (anything > 1 GB) write to a scratch mount that is structurally distinct from the authoritative derived store. The scratch mount can be wiped without breaking derived; a mid-run crash on scratch can never produce a half-written artifact under derived. Originally proposed as "block-attached scratch, not virtiofs" — that framing was a Phase-2 implementation hypothesis that became unimplementable on colima 0.9.1; the underlying separation principle survives the pivot.
+
+**Requirements**:
+- Orchestrators (`ingest`, `normalize`, `annotate`, `materialize`, and any future CRAM→VCF / coverage / PRS step) write multi-GB intermediates to `/mnt/genomeclaw/scratch` (host-side: `<drive>/genomeclaw/_scratch/`), never to `/mnt/genomeclaw/derived`.
+- Per-step shards are allocated via `shard_scratch(step, run_id, *, shard, base)` (a context manager): `<scratch>/<step>/<run-id>/<shard>/`. Cleanup runs on `__exit__`, even on exception, so zombie scratch dirs cannot accumulate.
+- Final artifact promotion goes through `atomic_promote(src, dst)`: copy + fsync(file) + within-FS rename + fsync(parent dir). The destination directory under `derived/` never observes a partially-written file.
+- Pre-flight assertions (`assert_derived_writable`, `assert_scratch_writable`) run at every orchestrator entry — a missing or read-only scratch mount is a typed `PreflightError` with a `genomeclaw host setup` hint.
+- The setup orchestrator creates both mounts on the canonical layout; the container shim binds both at every container entry.
+
+**Where it applies**:
+- All orchestrators under `packages/toolkit/src/genomeclaw_toolkit/prep/` that emit large intermediates.
+- The scratch-primitives library `packages/toolkit/src/genomeclaw_toolkit/prep/scratch.py` (`shard_scratch`, `atomic_promote`).
+- The pre-flight assertion library `packages/toolkit/src/genomeclaw_toolkit/prep/preflight.py`.
+- The setup orchestrator under `packages/toolkit/src/genomeclaw_toolkit/prep/setup/`.
+- The host-side container shim `bin/genomeclaw`.
+
+**How to verify**:
+- `shard_scratch` tests assert per-step purge on success and on exception — no zombie scratch dirs.
+- `atomic_promote` tests assert crash-safety: an interrupted promotion leaves `derived/` byte-identical; the orphaned `.tmp` lives on scratch and is harmless.
+- Setup tests (`test_setup_execute.py`) assert the post-state layout contains all four canonical subdirs (`raw`, `reference`, `derived`, `_scratch`).
+- Pre-flight tests assert each canonical mount-shape failure raises a typed exception with a fixable message.
+- Doctor (`genomeclaw host doctor`) host-side existence + write probes for `derived/` and `_scratch/` give the user a single command to confirm the structural separation is intact.
+- A scratch-discipline integration test observes write targets during a real `annotate` run and asserts every > 1 GB target is under `/mnt/genomeclaw/scratch`, none under `/mnt/genomeclaw/derived`. (Replaces the originally-proposed static lint rule, which couldn't reliably distinguish "final artifact" from "heavy scratch" — both write to disk, both are large.)
+
+---
+
+## INV-D004: Destructive Operations Require Explicit Confirmation
+
+**Rule**: Any CLI command that mutates host state outside `derived/` (reformats a disk, ejects a drive, modifies colima/lima state, alters the canonical mount layout) requires one of two deliberate consents before it executes: an explicit `--yes` flag on the command line, or an interactive TTY where the user types an operation-specific phrase (the typed-confirmation pattern). Without either, the command refuses with exit code 2 (usage error) and an error envelope naming both ways forward.
+
+**Requirements**:
+- Destructive commands invoke `genomeclaw_toolkit._cli.confirm.require_destructive_confirmation()` (or equivalent gate) before any irreversible action.
+- The typed-confirmation phrase is operation-specific (e.g., `REFORMAT GENOMECLAW DRIVE` for `host setup --force-reset`; the drive's mount-point basename for `host eject`). Generic yes/no prompts are not sufficient — the typed-phrase pattern is preferred because it prevents thoughtless `y\n` muscle-memory.
+- Non-TTY invocation without `--yes` always refuses. This protects scripts and CI from accidental destructive flows.
+- The confirmation gate is independent of other safety bypass flags (e.g., `host eject --force` bypasses the in-flight-pipeline check but does **not** imply confirmation; the user must pass `--yes --force` together).
+- The error envelope on refusal names both routes forward (`--yes` and the typed phrase) in `suggested_actions` so the user / agent can pick the appropriate one.
+
+**Where it applies**:
+- `genomeclaw host setup --force-reset` (the destructive drive-reformat path).
+- `genomeclaw host eject`.
+- Any future command that mutates host state outside `derived/` (e.g., a hypothetical `host reset` or `host wipe-cache`).
+- The `_cli/confirm.py` helper is the single seam for this invariant; new commands gain enforcement by calling it.
+
+**How to verify**:
+- Per-command refusal tests (`test_cli_host_setup_confirmation.py`, `test_cli_host_eject_confirmation.py`) cover both refusal paths: non-TTY without `--yes` → exit 2, and TTY with wrong-phrase → exit 2.
+- Per-command accept tests cover both consent paths: `--yes` on non-TTY → proceeds, and typed-phrase on TTY → proceeds.
+- Integration tests assert that `--force` (the pipeline-safety bypass) is independent of `--yes` — passing `--force` alone on non-TTY still refuses.
+- The error envelope's `suggested_actions` is asserted to include both routes forward in the refusal-path tests.
 
 ---
 
@@ -195,22 +248,53 @@ Numbers are assigned in order of introduction within a category and never reused
   - **`lifestyle`** (e.g., caffeine metabolism via `CYP1A2`, lactase persistence via `LCT`, muscle-fiber composition via `ACTN3`, circadian preference, alcohol metabolism via `ALDH2`/`ADH1B`) — no escalation marker; agent may give **direct lifestyle advice with calibrated evidence framing**; clinician-deferral is *not* the default response. Recommendations are framed as falsifiable experiments rather than guidelines.
   - **`mixed`** (a finding with both a lifestyle dimension and a clinical-actionability angle) — carries both lifestyle framing and an escalation marker; the agent disambiguates the two angles in its response.
 - Lifestyle advice must still cite evidence and **calibrate uncertainty explicitly**. The evidence base for lifestyle findings is generally weaker than for ClinVar-grade pathogenicity calls; the agent acknowledges this when relevant. Lifestyle findings include an `evidence_quality` field (e.g., `meta-analysis`, `replicated-rct`, `observational`, `mechanistic-only`) distinct from ClinVar's review-status stars.
+- **Curated lifestyle calibration via `reference/curated_notes/`** *(v1.5; per [MVP spec Q9](../plans/active/mvp/spec.md))*: lifestyle findings may cite a `gene_note:<gene>` evidence reference resolving to a host-side, user-authored markdown note under `reference/curated_notes/<gene>.md`. Companion topic notes resolve under `reference/curated_notes/topics/<topic>.md` (e.g., `topic:hard-genes` per Q7). The note carries the project owner's calibrated framing of the variant's effect, evidence quality, and any disclosure language. The structured `evidence_quality` field above remains in the schema for future-proofing but is **not the primary calibration surface** in v0; the agent composes lifestyle responses from the user's variant call plus the curated note's framing, in the user's voice. This pattern is uniquely well-suited to single-user systems (the user is the curator; the agent is the reader) and uniquely poorly-suited to multi-user systems.
 - Clinical findings use research/educational framing, never diagnostic phrasing.
 - Uncertainty is expressed structurally (categorical confidence levels and evidence-quality fields), not buried in prose.
 - Default report copy and prompt templates are reviewed for **over-claim *and* over-deferral** before merge — punting every lifestyle question to a clinician is its own failure mode.
 
 **Where it applies**:
 - Agent-rendered prose for report-shaped responses (assembled by the agent from `/v1/findings` + `/v1/health` plus its training; there is no host-service `/v1/report` endpoint in v0). Snapshot tests on the agent's rendered output against fixture conversations are the verification surface.
-- Plugin tool descriptions (the `description` strings registered via `registerCommand` in `packages/nemoclaw-plugin/src/`) — these flow into the agent's tool catalog and shape its framing.
+- Plugin tool descriptions (the `description` strings registered via `registerTool` in `packages/nemoclaw-plugin/src/`) — these flow into the agent's tool catalog and shape its framing.
 - The finding schema in `packages/toolkit/src/genomeclaw_toolkit/schemas/` where `category`, `clinical_escalation`, and `evidence_quality` are structural fields.
 - Agent prompt templates rendered by the user's NemoClaw stack (out-of-repo but in-scope for review).
+- The `reference/curated_notes/<gene>.md` and `reference/curated_notes/topics/<topic>.md` files *(v1.5; per [MVP spec Q9](../plans/active/mvp/spec.md))*. Editing a curated note is a user-facing-copy change. The privacy-safety-reviewer agent reviews curated-note diffs before merge.
 
 **How to verify**:
 - Lint / snapshot tests on host service report responses and on plugin tool descriptions asserting absence of disallowed phrases for `clinical-actionable` findings (configurable list).
 - Schema tests asserting that `clinical_escalation` is set on findings whose category is `clinical-actionable` and unset on `lifestyle` and `clinical-non-actionable`.
 - Schema tests asserting `evidence_quality` is populated on `lifestyle` findings.
 - Snapshot tests on lifestyle-category responses asserting that the response provides **direct guidance plus an evidence-quality caveat** — i.e., it does not punt to a clinician for what is a lifestyle question.
-- Manual privacy-safety-reviewer agent pass before user-facing copy changes.
+- Snapshot tests on lifestyle-category responses asserting that the agent cites a `gene_note:<gene>` evidence reference and that the response prose tracks the curated note's framing — no new claims introduced by the agent that aren't in the note. Failure modes: agent over-extending the note ("the note doesn't say that"), agent ignoring the note (over-deferral or generic clinical-deferral on a lifestyle question). *(v1.5)*
+- Manual privacy-safety-reviewer agent pass before user-facing copy changes (including curated-note diffs).
+
+---
+
+## INV-C002: CLI Output Contract Stability
+
+**Rule**: Every `genomeclaw` subcommand provides a `--json` mode whose stdout payload conforms to a versioned schema. The schema version travels with every payload as the `cli_output_schema_version` field. Stdout in `--json` mode is reserved for the structured result (single envelope, or NDJSON event stream); stderr is for progress, log, and diagnostic output. Adding new optional fields is additive (no version bump); renaming or removing fields requires a major-version bump and a deprecation cycle.
+
+**Requirements**:
+- Every command's `--json` output is a JSON object (or NDJSON stream of objects) carrying `cli_output_schema_version` at the envelope level.
+- Two output modes coexist:
+  - **One-shot envelope** for short commands: a single line `{"cli_output_schema_version": "1.0", "command": "...", "payload": {...}}` on stdout.
+  - **NDJSON stream** for long-running commands: a first-line envelope `{"cli_output_schema_version": "1.0", "command": "...", "stream": true}` followed by one event object per line. The `"stream": true` field is the discriminator agents use to branch on stream-vs-envelope.
+- Stdout is reserved for the structured result in `--json` mode. Rich-progress output, logs, and diagnostic prints go to stderr. The fetcher (`prep/fetch.py`) and any orchestrator that grew a `progress_callback` parameter suppress their legacy stdout prints when the callback is wired — the callback is the canonical surface for user-facing output.
+- Trailing error envelopes (when a command fails mid-stream) go to **stderr** so they don't corrupt the stream. The `_cli.output.stdout_already_consumed` sentinel tracks whether a payload has been emitted; the exception boundary routes the error envelope accordingly.
+- The per-command JSON shapes are documented in [docs/reference/cli-output-schemas.md](cli-output-schemas.md) with worked examples for both happy and failure paths.
+- Field additions don't bump the version. Field renames or removals require a major version bump (`1.0` → `2.0`) and a deprecation cycle where both shapes are accepted.
+
+**Where it applies**:
+- `src/genomeclaw_toolkit/_cli/` — every command-handler module, the `emit()` dispatcher in `_cli/output.py`, the envelope writers in `commands/pipeline.py`, `commands/refs.py`, `commands/host.py`.
+- `docs/reference/cli-output-schemas.md` — the single source of truth for the documented schemas + worked examples per command.
+- The schema-version constant `CLI_OUTPUT_SCHEMA_VERSION = "1.0"` in `_cli/types/envelope.py`.
+
+**How to verify**:
+- Per-command JSON-shape tests assert `cli_output_schema_version == "1.0"` on every envelope.
+- `test_cli_pipeline_events.py::test_pipeline_run_no_stdout_pollution_outside_events` asserts every stdout line in NDJSON mode parses as JSON — no legacy print pollution.
+- `test_cli_refs_fetch.py::test_refs_fetch_json_emits_ndjson_event_stream` asserts the first-line envelope shape (`"stream": true`).
+- The `stdout_already_consumed` sentinel is exercised by every test that emits a payload then triggers an error — the error envelope must appear on stderr, not stdout.
+- `cli-output-schemas.md` documents the contract; PR reviewers cite this invariant when reviewing changes to the per-command schemas.
 
 ---
 
@@ -237,8 +321,11 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 |----|-------|----------|
 | INV-D001 | Raw Genomic Files Are Source-of-Truth Artifacts | Data |
 | INV-D002 | Raw Genomic Artifacts Are Host-Side Only | Data |
+| INV-D003 | Heavy Scratch Is Separated From Authoritative Outputs | Data |
+| INV-D004 | Destructive Operations Require Explicit Confirmation | Data |
 | INV-E001 | Assistant Claims Must Be Traceable to Evidence | Evidence |
 | INV-P001 | Privacy Is the Default Operating Mode | Privacy |
 | INV-P002 | Agent Egress Is a Named, Minimal-Sufficient Boundary | Privacy |
 | INV-R001 | Derived Assistant Stores Must Stay Rebuildable | Rebuildability |
-| INV-C001 | Separate Research Assistance from Clinical Advice | Clinical Boundary |
+| INV-C001 | Separate Clinical Advice from Lifestyle and Research Assistance | Clinical Boundary |
+| INV-C002 | CLI Output Contract Stability | Communication |
