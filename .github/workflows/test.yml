@@ -1,0 +1,70 @@
+name: test
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  toolkit:
+    name: toolkit (pytest + ruff, host venv)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/toolkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - name: Install Python
+        run: uv python install 3.11
+      - name: Sync dependencies
+        run: uv sync
+      - name: Run pytest (skips needs_bio)
+        run: uv run pytest -q -m "not needs_bio"
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format check
+        run: uv run ruff format --check .
+
+  toolkit-image:
+    name: toolkit image (build + needs_bio)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build genomeclaw/toolkit:ci
+        uses: docker/build-push-action@v6
+        with:
+          context: packages/toolkit
+          file: packages/toolkit/Dockerfile
+          tags: genomeclaw/toolkit:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify pinned tool versions
+        run: |
+          docker run --rm --entrypoint bcftools genomeclaw/toolkit:ci --version | head -1
+          docker run --rm --entrypoint mosdepth genomeclaw/toolkit:ci --version
+          docker run --rm --entrypoint samtools genomeclaw/toolkit:ci --version | head -1
+      - name: CLI smoke
+        run: docker run --rm genomeclaw/toolkit:ci --help
+      - name: Run needs_bio tests inside the image
+        run: |
+          # Tolerate exit code 5 ("no tests collected"): until Phase 2 lands
+          # tests marked needs_bio, this step asserts the harness is wired,
+          # not that any tests exist yet.
+          set +e
+          docker run --rm \
+            --user $(id -u):$(id -g) \
+            --mount type=bind,source=${{ github.workspace }}/packages/toolkit,target=/work \
+            --workdir /work \
+            --entrypoint pytest \
+            -e GENOMECLAW_HAS_BIO=1 \
+            genomeclaw/toolkit:ci \
+            -q -m needs_bio
+          rc=$?
+          if [[ $rc -ne 0 && $rc -ne 5 ]]; then exit $rc; fi
+          exit 0
