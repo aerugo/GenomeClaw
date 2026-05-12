@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# genomeclaw — host shim that delegates to the genomeclaw/toolkit image.
+#
+# Usage:
+#   genomeclaw <group> <verb> [args...]      # canonical (after rich-cli)
+#
+# Environment knobs:
+#   GENOMECLAW_IMAGE        Image reference (default: genomeclaw/toolkit:dev)
+#   GENOMECLAW_RAW_DIR      Host path bind-mounted at /mnt/genomeclaw/raw (RO)
+#   GENOMECLAW_REF_DIR      Host path bind-mounted at /mnt/genomeclaw/reference
+#                           (RO at runtime; RW only during `refs fetch`)
+#   GENOMECLAW_DERIVED_DIR  Host path bind-mounted at /mnt/genomeclaw/derived (RW)
+#   GENOMECLAW_SCRATCH_DIR  Host path bind-mounted at /mnt/genomeclaw/scratch (RW)
+#                           Ephemeral scratch — temp / sort-temp / DuckDB
+#                           spill / Nextflow `work/`. Nothing inside is
+#                           authoritative; safe to delete between runs.
+#
+#   When the four *_DIR env vars are unset, the shim auto-detects the
+#   canonical layout produced by `genomeclaw host setup` at
+#   `/Volumes/Genome_Work/genomeclaw/{raw,reference,derived,_scratch}/`
+#   and uses those paths. If neither the env vars nor the canonical
+#   layout is present, the shim refuses to start with a `setup`
+#   pointing message.
+#
+#   GENOMECLAW_NATIVE=1     Bypass Docker; invoke a locally installed
+#                           genomeclaw on PATH instead. Auto-set for
+#                           host-side subcommand groups (host).
+#   GENOMECLAW_NO_DOCKER=1  Alias of GENOMECLAW_NATIVE=1.
+#   GENOMECLAW_DEBUG=1      Print the docker invocation before running it.
+#   GENOMECLAW_OFFLINE=1    Pass --network none to docker run (forbids egress).
+#                           Will break `genomeclaw refs fetch`; intended for
+#                           tightening privacy on local-only subcommands.
+#
+# Architecture: see docs/reference/architecture.md, "Host-side packaging".
+
+set -euo pipefail
+
+# Record the shim's own path so the natively-running Python entry point
+# can re-invoke us for sub-operations that need the docker route (e.g.
+# `host setup --fetch-all` post-setup hands off to `refs fetch --all`
+# here so the grch38 post-fetch `samtools faidx` runs inside the toolkit
+# image).
+export GENOMECLAW_SHIM_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
+# Subcommand groups that intrinsically need host-side facilities
+# (diskutil, colima/lima config edits, drive eject) bypass docker by
+# force, even without GENOMECLAW_NATIVE=1. These run via a host-installed
+# `genomeclaw` (uv-managed venv).
+case "${1:-}" in
+  host)
+    : "${GENOMECLAW_NATIVE:=1}"
+    ;;
+esac
+
+if [[ "${GENOMECLAW_NATIVE:-0}" == "1" || "${GENOMECLAW_NO_DOCKER:-0}" == "1" ]]; then
+  # Find a `genomeclaw` on PATH that isn't this shim. If none is on
+  # PATH, fall back to running it via uv from the toolkit checkout next
+  # to this shim — covers the common dev case where the user has uv but
+  # hasn't put the venv on PATH yet.
+  shim_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  while IFS= read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    candidate_real="$(cd "$(dirname "$candidate")" && pwd)/$(basename "$candidate")"
+    if [[ "$candidate_real" != "$shim_path" ]]; then
+      exec "$candidate" "$@"
+    fi
+  done < <(type -ap genomeclaw 2>/dev/null || true)
+
+  toolkit_dir="$(cd "$(dirname "$0")/.." && pwd)/packages/toolkit"
+  if [[ -d "$toolkit_dir" ]] && command -v uv >/dev/null 2>&1; then
+    cd "$toolkit_dir"
+    exec uv run genomeclaw "$@"
+  fi
+
+  echo "genomeclaw: GENOMECLAW_NATIVE=1 but no non-shim genomeclaw found on PATH" >&2
+  echo "  install the toolkit (cd packages/toolkit && uv sync) and put .venv/bin on PATH" >&2
+  exit 127
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "genomeclaw: docker not found on PATH" >&2
+  echo "  set GENOMECLAW_NATIVE=1 to run a locally installed toolkit instead" >&2
+  exit 127
+fi
+
+# Auto-detect the canonical post-setup layout. The user can override any
+# of the four *_DIR env vars individually; otherwise we default to the
+# Genome_Work layout that `genomeclaw host setup` produces.
+canonical_root="/Volumes/Genome_Work/genomeclaw"
+raw_dir="${GENOMECLAW_RAW_DIR:-${canonical_root}/raw}"
+ref_dir="${GENOMECLAW_REF_DIR:-${canonical_root}/reference}"
+derived_dir="${GENOMECLAW_DERIVED_DIR:-${canonical_root}/derived}"
+scratch_dir="${GENOMECLAW_SCRATCH_DIR:-${canonical_root}/_scratch}"
+
+# Refuse to start unless every canonical path exists. No silent
+# fallbacks, no auto-mkdir for paths the user is supposed to have set
+# up via `genomeclaw host setup`.
+missing=()
+[[ -d "$raw_dir" ]]      || missing+=("raw_dir=$raw_dir")
+[[ -d "$ref_dir" ]]      || missing+=("ref_dir=$ref_dir")
+[[ -d "$derived_dir" ]]  || missing+=("derived_dir=$derived_dir")
+[[ -d "$scratch_dir" ]]  || missing+=("scratch_dir=$scratch_dir")
+if (( ${#missing[@]} > 0 )); then
+  echo "genomeclaw: canonical mount path(s) missing:" >&2
+  for m in "${missing[@]}"; do echo "  $m" >&2; done
+  echo "  run \`genomeclaw host setup\` to create the canonical layout, or" >&2
+  echo "  set GENOMECLAW_{RAW,REF,DERIVED,SCRATCH}_DIR to override paths" >&2
+  exit 2
+fi
+
+# Sanity check: scratch and authoritative outputs must live on separate
+# trees. DuckDB / bcftools-sort temp under derived/ would corrupt
+# provenance-aware tooling later.
+derived_real="$(cd "$derived_dir" && pwd -P)"
+scratch_real="$(cd "$scratch_dir" && pwd -P)"
+case "$scratch_real" in
+  "$derived_real"|"$derived_real"/*)
+    echo "genomeclaw: GENOMECLAW_SCRATCH_DIR ($scratch_dir) cannot be inside GENOMECLAW_DERIVED_DIR ($derived_dir)" >&2
+    echo "  scratch and authoritative outputs must live on separate trees" >&2
+    exit 2
+    ;;
+esac
+
+# reference/ is read-only at runtime per the architecture's bind-mount
+# discipline. The exception is `genomeclaw refs fetch`, the one
+# user-initiated write to the reference volume — for that subcommand,
+# mount RW. All other subcommands keep RO so accidental writes can't
+# poison the reference tree.
+ref_mount_opts="readonly"
+if [[ "${1:-}" == "refs" && "${2:-}" == "fetch" ]]; then
+  ref_mount_opts=""
+fi
+
+image="${GENOMECLAW_IMAGE:-genomeclaw/toolkit:dev}"
+mounts=(
+  "--mount" "type=bind,source=${raw_dir},target=/mnt/genomeclaw/raw,readonly"
+  "--mount" "type=bind,source=${derived_dir},target=/mnt/genomeclaw/derived"
+  "--mount" "type=bind,source=${scratch_dir},target=/mnt/genomeclaw/scratch"
+)
+if [[ -n "$ref_mount_opts" ]]; then
+  mounts+=(
+    "--mount" "type=bind,source=${ref_dir},target=/mnt/genomeclaw/reference,${ref_mount_opts}"
+  )
+else
+  mounts+=("--mount" "type=bind,source=${ref_dir},target=/mnt/genomeclaw/reference")
+fi
+
+uid="$(id -u)"
+gid="$(id -g)"
+
+network_args=()
+if [[ "${GENOMECLAW_OFFLINE:-0}" == "1" ]]; then
+  network_args+=("--network" "none")
+fi
+
+cmd=(
+  docker run --rm
+  --user "${uid}:${gid}"
+  ${network_args[@]+"${network_args[@]}"}
+  ${mounts[@]+"${mounts[@]}"}
+  "$image"
+  genomeclaw
+  "$@"
+)
+
+if [[ "${GENOMECLAW_DEBUG:-0}" == "1" ]]; then
+  printf 'genomeclaw:' >&2
+  printf ' %q' "${cmd[@]}" >&2
+  printf '\n' >&2
+fi
+
+exec "${cmd[@]}"
