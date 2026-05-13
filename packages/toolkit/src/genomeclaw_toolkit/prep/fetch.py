@@ -315,6 +315,49 @@ def _samtools_faidx_in_target_dir(target_dir: Path) -> None:
         raise RuntimeError(f"samtools faidx failed for {fasta_path}: {stderr}")
 
 
+def _extract_vep_cache_tarball(target_dir: Path) -> None:
+    """Extract Ensembl's VEP cache tarball in-place, then delete the .tar.gz.
+
+    Ensembl publishes the indexed VEP cache as a single tarball at
+    ``/pub/release-N/variation/indexed_vep_cache/homo_sapiens_vep_N_GRCh38.tar.gz``.
+    Inside is ``homo_sapiens/<N>_GRCh38/...`` — VEP's ``--dir_cache``
+    flag expects the parent dir of ``homo_sapiens/``, so the
+    extraction target IS ``target_dir`` and the tarball's existing
+    directory structure carries through.
+
+    Post-extraction we delete the .tar.gz to reclaim ~21 GB. The
+    fetcher records the upstream md5 in the on-disk ``.md5`` sidecar
+    so a re-fetch is detectable by ``doctor`` even after the tarball
+    is gone.
+
+    Soft-fails when ``tar`` isn't on PATH so the mocked-HTTP fetch
+    tests can run on a host venv without bio binaries. Production
+    paths inside the toolkit image always have tar (it's a base-image
+    package); downstream consumers fail loudly when the cache
+    structure is missing.
+    """
+    import tarfile
+
+    tarball = target_dir / "vep_cache.tar.gz"
+    if not tarball.exists():
+        log.warning("vep_cache tarball not found at %s; skipping extraction", tarball)
+        return
+    print("    extracting VEP cache tarball (≈21 GB → ~75 GB on disk)…", file=sys.stdout, flush=True)
+    extract_start = time.monotonic()
+    # tarfile.data_filter (3.12+) refuses absolute-path / parent-traversal
+    # members; ``data`` is the safe-by-default filter for arbitrary
+    # tarballs of this shape. Ensembl's tarballs use relative paths
+    # exclusively (``homo_sapiens/...``) so this is a defensive guard.
+    with tarfile.open(tarball, mode="r:gz") as tf:
+        tf.extractall(path=target_dir, filter="data")
+    print(
+        f"    ✓ extracted in {time.monotonic() - extract_start:.0f}s; removing tarball",
+        file=sys.stdout,
+        flush=True,
+    )
+    tarball.unlink()
+
+
 # Canonical chromosome set for per-chrom human-genome sources. Used as
 # ``default_chroms`` for gnomad-exomes; callers can pass a subset via
 # ``chroms=`` for partial fetches or test injection.
@@ -409,6 +452,80 @@ _LAYOUTS: dict[str, _SourceLayout] = {
             ),
         ),
     ),
+    # Phase 4D: VEP cache (Ensembl release-pinned). The indexed cache
+    # tarball is ~21 GB compressed → ~75 GB extracted. The fetcher
+    # downloads + atomically renames the tarball into
+    # ``reference/vep_cache/<release>/vep_cache.tar.gz``, then the
+    # post-fetch hook extracts the tarball in place + deletes it. After
+    # extraction the layout is
+    # ``reference/vep_cache/<release>/homo_sapiens/<N>_GRCh38/...``,
+    # which VEP's ``--dir_cache <reference/vep_cache/<release>>``
+    # consumes directly. Ensembl publishes the cache without an MD5
+    # sidecar — integrity is structural (a corrupt tarball fails
+    # extraction; a corrupt cache fails the first VEP invocation).
+    # The user must pass an explicit ``--release`` matching their VEP
+    # version (e.g. ``ensembl-114`` to match VEP 114.1 in our image).
+    "vep_cache": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath=(
+                    "/pub/release-{release_n}/variation/indexed_vep_cache/"
+                    "homo_sapiens_vep_{release_n}_GRCh38.tar.gz"
+                ),
+                output_filename="vep_cache.tar.gz",
+            ),
+        ),
+        post_fetch=_extract_vep_cache_tarball,
+    ),
+    # Phase 4D: AlphaMissense precomputed scores for the AlphaMissense
+    # VEP plugin. Hosted on Google Cloud Storage (DeepMind's public
+    # bucket); two files — the scores TSV (.gz) + the matching tabix
+    # index (.tbi). The plugin's ``file=`` arg consumes the .tsv.gz;
+    # the .tbi sidecar must live alongside it (htslib's tabix
+    # convention). After fetch, point the plugin at
+    # ``reference/vep_cache/Plugins/AlphaMissense/AlphaMissense_hg38.tsv.gz``.
+    "alphamissense": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath="/dm_alphamissense/AlphaMissense_hg38.tsv.gz",
+                output_filename="AlphaMissense_hg38.tsv.gz",
+            ),
+            _FetchFile(
+                relpath="/dm_alphamissense/AlphaMissense_hg38.tsv.gz.tbi",
+                output_filename="AlphaMissense_hg38.tsv.gz.tbi",
+            ),
+        ),
+        output_subdir="AlphaMissense",
+    ),
+    # Phase 4D: SpliceAI precomputed scores for the SpliceAI VEP
+    # plugin. Two precomputed VCFs (SNV + indel) + their tabix
+    # sidecars. Historically distributed via Illumina Basespace
+    # (registration required); a public mirror at Broad's Google
+    # Cloud bucket hosts the gnomAD-restricted v1.3 set. The user
+    # supplies the base URL via ``--base-url`` because licensing /
+    # mirror choice is user-specific; the layout pins only the
+    # canonical relative paths.
+    "spliceai": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath="/spliceai_scores.raw.snv.hg38.vcf.gz",
+                output_filename="spliceai_scores.raw.snv.hg38.vcf.gz",
+            ),
+            _FetchFile(
+                relpath="/spliceai_scores.raw.snv.hg38.vcf.gz.tbi",
+                output_filename="spliceai_scores.raw.snv.hg38.vcf.gz.tbi",
+            ),
+            _FetchFile(
+                relpath="/spliceai_scores.raw.indel.hg38.vcf.gz",
+                output_filename="spliceai_scores.raw.indel.hg38.vcf.gz",
+            ),
+            _FetchFile(
+                relpath="/spliceai_scores.raw.indel.hg38.vcf.gz.tbi",
+                output_filename="spliceai_scores.raw.indel.hg38.vcf.gz.tbi",
+            ),
+        ),
+        output_subdir="SpliceAI",
+    ),
 }
 
 _DEFAULT_BASE_URLS: dict[str, str] = {
@@ -416,6 +533,13 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     "grch38": "https://ftp.ncbi.nlm.nih.gov",
     "gnomad-exomes": "https://storage.googleapis.com/gcp-public-data--gnomad",
     "dbsnp": "https://ftp.ncbi.nlm.nih.gov",
+    "vep_cache": "https://ftp.ensembl.org",
+    "alphamissense": "https://storage.googleapis.com",
+    # SpliceAI base URL is intentionally absent — the user picks the
+    # mirror at fetch time via ``--base-url`` (Illumina Basespace,
+    # Broad's GCS bucket, etc.). The CLI rejects ``fetch --source
+    # spliceai`` without a ``--base-url`` so the licensing choice is
+    # always explicit.
 }
 
 
@@ -780,15 +904,42 @@ def fetch(  # noqa: PLR0913 — top-level orchestrator
     target_dir = reference_root / source / release
     out_dir = target_dir / layout.output_subdir if layout.output_subdir else target_dir
 
-    # Resolve the concrete list of files to fetch.
-    files_to_fetch: list[_FetchFile] = list(layout.files)
+    # Resolve the concrete list of files to fetch. Sources whose
+    # upstream URLs embed the release tag (e.g. Ensembl's VEP cache at
+    # ``/pub/release-114/.../homo_sapiens_vep_114_GRCh38.tar.gz``) use
+    # ``{release}`` placeholders in their layout entries; substitute
+    # here before any URL-templating happens. Single-file sources
+    # (no ``{chrom}`` templating) just get the substitution applied to
+    # each entry directly.
+    def _apply_release(tmpl: _FetchFile) -> _FetchFile:
+        return _FetchFile(
+            relpath=tmpl.relpath.replace("{release_n}", release).replace("{release}", release),
+            output_filename=tmpl.output_filename.replace("{release_n}", release).replace(
+                "{release}", release
+            ),
+            md5_relpath=(
+                tmpl.md5_relpath.replace("{release_n}", release).replace("{release}", release)
+                if tmpl.md5_relpath is not None
+                else None
+            ),
+            md5_checksums_relpath=(
+                tmpl.md5_checksums_relpath.replace("{release_n}", release).replace(
+                    "{release}", release
+                )
+                if tmpl.md5_checksums_relpath is not None
+                else None
+            ),
+            md5_checksums_key=tmpl.md5_checksums_key,
+        )
+
+    files_to_fetch: list[_FetchFile] = [_apply_release(f) for f in layout.files]
     if layout.is_multi_file:
         used_chroms = chroms if chroms is not None else layout.default_chroms
         if not used_chroms:
             raise ValueError(f"source {source!r} has no chroms to fetch (empty default_chroms)")
         for c in used_chroms:
             for tmpl in layout.chrom_files:
-                files_to_fetch.append(tmpl.for_chrom(c))
+                files_to_fetch.append(_apply_release(tmpl).for_chrom(c))
 
     # `INV-D001`: refuse to overwrite a previously-fetched release. Any
     # already-present target file trips this.

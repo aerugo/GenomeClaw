@@ -80,16 +80,24 @@ def _read_csq_header_if_present(vcf: Path) -> tuple[str, ...] | None:
     import gzip
 
     opener = gzip.open if str(vcf).endswith(".gz") else open
-    with opener(vcf, "rt", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if not line.startswith("##"):
-                break
-            if line.startswith("##INFO=<ID=CSQ,"):
-                try:
-                    return parse_csq_header(line)
-                except ValueError:
-                    log.warning("malformed CSQ header in %s; ignoring", vcf)
-                    return None
+    try:
+        with opener(vcf, "rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if not line.startswith("##"):
+                    break
+                if line.startswith("##INFO=<ID=CSQ,"):
+                    try:
+                        return parse_csq_header(line)
+                    except ValueError:
+                        log.warning("malformed CSQ header in %s; ignoring", vcf)
+                        return None
+    except (OSError, gzip.BadGzipFile):
+        # File isn't actually gzip (stub fixtures in unit tests, or a
+        # truncated/corrupt VCF). The CSQ-extract path is a no-op
+        # without a header anyway — log + return None so the rest of
+        # materialize keeps working.
+        log.warning("could not read VCF header from %s for CSQ inspection", vcf)
+        return None
     return None
 
 
@@ -272,8 +280,15 @@ def materialize(
     # order is declared in ``##INFO=<ID=CSQ,...>`` and is stable for
     # the run, so we parse it once and reuse for every record. Falls
     # back to None when CSQ is absent (pre-VEP runs); the per-row CSQ
-    # extraction below skips when csq_fields is None.
-    csq_fields = _read_csq_header_if_present(materialize_input)
+    # extraction below skips when csq_fields is None. Only inspected
+    # for the annotated-input branch — the normalized VCF doesn't
+    # carry CSQ and a stubbed / non-gzip normalized.vcf.gz in unit
+    # tests would crash the gzip reader otherwise.
+    csq_fields = (
+        _read_csq_header_if_present(materialize_input)
+        if materialize_input_kind == "annotated"
+        else None
+    )
 
     def _row_stream() -> Iterator[dict[str, Any]]:
         for row in iter_variant_rows(materialize_input, info_fields=info_fields):
