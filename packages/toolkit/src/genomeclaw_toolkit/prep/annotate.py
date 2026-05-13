@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING
 from genomeclaw_toolkit.prep import preflight
 from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart
 from genomeclaw_toolkit.prep.annotate_vcfanno import annotate_vcfanno
+from genomeclaw_toolkit.prep.annotate_vep import annotate_vep
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -127,22 +128,37 @@ def annotate(
         progress_callback=progress_callback,
     )
 
-    # Sub-orchestrator 2: VEP (Phase 4D placeholder). When 4D ships,
-    # ``annotate_vep`` reads vcfanno.vcf.gz, runs VEP + LOFTEE +
-    # AlphaMissense + SpliceAI, and writes a VEP-annotated VCF to
-    # ``run_dir/annotated.vcf.gz`` (replacing the copy this stub
-    # produces). The vcfanno.vcf.gz intermediate stays on disk for
-    # inspection / debugging.
+    # Sub-orchestrator 2: VEP (Phase 4D). Reads vcfanno.vcf.gz, runs
+    # VEP + (when their data is staged) LOFTEE + AlphaMissense +
+    # SpliceAI, writes vep.vcf.gz + .tbi to the run dir. Returns the
+    # promoted output path on success, or ``None`` when no VEP cache is
+    # staged on the host — in which case the chain falls back to the
+    # vcfanno output (so an install that hasn't fetched the ~75 GB
+    # VEP cache still gets a usable annotated VCF for materialize).
+    vep_out = annotate_vep(
+        run_dir=run_dir,
+        reference_dir=reference_dir,
+        started_at=started_at,
+        progress_callback=progress_callback,
+    )
 
-    # 4C.3 stub: annotated.vcf.gz is a copy of vcfanno.vcf.gz so the
-    # existing materialize contract (read from annotated.vcf.gz) keeps
-    # working. Within-FS within ``derived/<run-id>/``; cheap.
+    # Materialize reads from annotated.vcf.gz. Pick the highest-tier
+    # annotation that actually ran: VEP output when it produced one,
+    # otherwise the vcfanno output. Either way, annotated.vcf.gz is the
+    # in-run-dir identity downstream tools open.
     vcfanno_vcf = run_dir / "vcfanno.vcf.gz"
     vcfanno_tbi = run_dir / "vcfanno.vcf.gz.tbi"
     annotated_vcf = run_dir / "annotated.vcf.gz"
     annotated_tbi = run_dir / "annotated.vcf.gz.tbi"
-    shutil.copyfile(vcfanno_vcf, annotated_vcf)
-    shutil.copyfile(vcfanno_tbi, annotated_tbi)
+    if vep_out is not None:
+        # vep.vcf.gz + .tbi are both in run_dir already (atomic_promote'd
+        # by annotate_vep). Copy forward as annotated.vcf.gz so
+        # materialize's existing contract is preserved.
+        shutil.copyfile(vep_out, annotated_vcf)
+        shutil.copyfile(run_dir / "vep.vcf.gz.tbi", annotated_tbi)
+    else:
+        shutil.copyfile(vcfanno_vcf, annotated_vcf)
+        shutil.copyfile(vcfanno_tbi, annotated_tbi)
 
     annotated_sha = _sha256_file(annotated_vcf)
     annotated_tbi_sha = _sha256_file(annotated_tbi)

@@ -26,6 +26,18 @@ ARG MOSDEPTH_VERSION=0.3.10
 ARG SAMTOOLS_VERSION=1.21
 ARG HTSLIB_VERSION=1.21
 ARG VCFANNO_VERSION=0.3.5
+ARG VEP_VERSION=114.1
+# LOFTEE: konradjk/loftee. The ``master`` branch is GRCh37-era; the
+# ``grch38`` branch is the canonical GRCh38 build (Phase 4D ships
+# GRCh38 only — Q5 of phase-4.md).
+ARG LOFTEE_REPO=https://github.com/konradjk/loftee.git
+ARG LOFTEE_REF=grch38
+# Ensembl/VEP_plugins: master is rolling-latest. Pin to the
+# release/<vep-major> branch that ships alongside the VEP release in
+# Stage 1 to keep plugin code + VEP code in sync. The runtime
+# ``--dir_plugins`` flag resolves these in /opt/vep/.vep/Plugins/.
+ARG VEP_PLUGINS_REPO=https://github.com/Ensembl/VEP_plugins.git
+ARG VEP_PLUGINS_REF=release/114
 
 # ---------------------------------------------------------------------------
 # Stage 1 — bioinformatics binaries via bioconda.
@@ -45,6 +57,45 @@ RUN micromamba install -y -n base \
         "htslib=${HTSLIB_VERSION}" \
         "vcfanno=${VCFANNO_VERSION}" \
     && micromamba clean -a -y
+
+# ---------------------------------------------------------------------------
+# Stage 1a — VEP in its own micromamba env. VEP's perl-bioperl deps pull
+# in perl-bio-samtools, which pins samtools < 1.0 — that conflicts with
+# our samtools=1.21 in Stage 1. Isolating VEP in /opt/conda-vep keeps
+# both versions installable; the runtime image puts /opt/conda/bin
+# first on PATH so the toolkit's samtools/bcftools/etc. resolve to the
+# 1.x versions, and /opt/conda-vep/bin is appended for VEP itself.
+# ---------------------------------------------------------------------------
+FROM mambaorg/micromamba:${MAMBA_TAG} AS vep
+ARG VEP_VERSION
+USER root
+RUN micromamba create -y -p /opt/conda-vep \
+        -c conda-forge -c bioconda \
+        "ensembl-vep=${VEP_VERSION}" \
+    && micromamba clean -a -y
+
+# ---------------------------------------------------------------------------
+# Stage 1b — VEP plugins (LOFTEE + Ensembl/VEP_plugins) git-cloned in
+# a separate stage so the runtime image can ``COPY --from=plugins``
+# without dragging git's working-tree metadata. Plugin **code** lives
+# in the image; plugin **data** (AlphaMissense / SpliceAI scores,
+# LOFTEE human_ancestor.fa) is bind-mounted from
+# ``reference/vep_cache/Plugins/`` at run time per Q3 of phase-4.md.
+# ---------------------------------------------------------------------------
+FROM debian:stable-slim AS vep-plugins
+ARG LOFTEE_REPO
+ARG LOFTEE_REF
+ARG VEP_PLUGINS_REPO
+ARG VEP_PLUGINS_REF
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/vep/.vep/Plugins \
+    && git clone --depth 1 --branch "${LOFTEE_REF}" "${LOFTEE_REPO}" /tmp/loftee \
+    && cp -R /tmp/loftee/. /opt/vep/.vep/Plugins/ \
+    && git clone --depth 1 --branch "${VEP_PLUGINS_REF}" "${VEP_PLUGINS_REPO}" /tmp/vep_plugins \
+    && cp -R /tmp/vep_plugins/. /opt/vep/.vep/Plugins/ \
+    && rm -rf /tmp/loftee /tmp/vep_plugins /opt/vep/.vep/Plugins/.git
 
 # ---------------------------------------------------------------------------
 # Stage 2 — Python toolkit installed into a uv-managed venv.
@@ -89,11 +140,34 @@ RUN apt-get update \
 # Bioinformatics binaries from the micromamba env.
 COPY --from=bio /opt/conda /opt/conda
 
+# VEP from its isolated env (see Stage 1a comment above for why VEP
+# can't co-habit /opt/conda — its perl-bioperl deps pin samtools < 1).
+COPY --from=vep /opt/conda-vep /opt/conda-vep
+
+# VEP plugins (LOFTEE + Ensembl/VEP_plugins). The plugin code is in the
+# image at /opt/vep/.vep/Plugins/. Plugin **data** (AlphaMissense /
+# SpliceAI scores, LOFTEE human_ancestor.fa, etc.) lives on the
+# bind-mounted reference/vep_cache/Plugins/ volume per Q3.
+COPY --from=vep-plugins /opt/vep /opt/vep
+
 # Python toolkit venv from the uv build.
 COPY --from=pybuild /opt/genomeclaw/toolkit /opt/genomeclaw/toolkit
 
-# Put both on PATH; toolkit venv first so `genomeclaw-prep` resolves there.
-ENV PATH="/opt/genomeclaw/toolkit/.venv/bin:/opt/conda/bin:${PATH}"
+# Put everything on PATH; toolkit venv first so ``genomeclaw`` resolves
+# there. /opt/conda/bin is next so the project-pinned bcftools /
+# mosdepth / samtools / htslib / vcfanno take priority over VEP's
+# bundled versions. /opt/conda-vep/bin is last so ``vep`` resolves
+# but doesn't shadow the rest.
+ENV PATH="/opt/genomeclaw/toolkit/.venv/bin:/opt/conda/bin:/opt/conda-vep/bin:${PATH}"
+
+# VEP's perl interpreter (/opt/conda-vep/bin/perl) has its @INC default
+# pointing at /opt/conda/lib/perl5/... (the project-pinned env's perl
+# tree, NOT its own), so ``vep --help`` fails with "Can't locate DBI.pm"
+# unless we steer perl back to /opt/conda-vep's module tree. Setting
+# PERL5LIB at the image level avoids forcing every caller to source
+# micromamba's activate script. The order matters: VEP's bundled
+# modules come first, then DBI / BioPerl / etc. from the conda env.
+ENV PERL5LIB="/opt/conda-vep/share/ensembl-vep-114.1-0:/opt/conda-vep/share/ensembl-vep-114.1-0/modules:/opt/conda-vep/lib/perl5/5.32/site_perl:/opt/conda-vep/lib/perl5/site_perl:/opt/conda-vep/lib/perl5/5.32/vendor_perl:/opt/conda-vep/lib/perl5/vendor_perl:/opt/conda-vep/lib/perl5/5.32/core_perl:/opt/conda-vep/lib/perl5/core_perl"
 
 # Mount points for the on-disk layout that architecture.md documents.
 # `scratch/` is the ephemeral tier for temp / sort-temp / DuckDB spill /
