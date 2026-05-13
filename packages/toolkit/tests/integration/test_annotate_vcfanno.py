@@ -92,14 +92,19 @@ def _build_gnomad_exomes_release(reference_dir: Path, release: str) -> None:
             '##INFO=<ID=grpmax,Number=A,Type=String,Description="Popmax population">\n'
             '##INFO=<ID=AF_afr,Number=A,Type=Float,Description="AF in afr">\n'
             '##INFO=<ID=AF_amr,Number=A,Type=Float,Description="AF in amr">\n'
+            '##INFO=<ID=AF_asj,Number=A,Type=Float,Description="AF in asj">\n'
             '##INFO=<ID=AF_eas,Number=A,Type=Float,Description="AF in eas">\n'
+            '##INFO=<ID=AF_fin,Number=A,Type=Float,Description="AF in fin">\n'
+            '##INFO=<ID=AF_mid,Number=A,Type=Float,Description="AF in mid">\n'
             '##INFO=<ID=AF_nfe,Number=A,Type=Float,Description="AF in nfe">\n'
+            '##INFO=<ID=AF_remaining,Number=A,Type=Float,Description="AF in remaining">\n'
             '##INFO=<ID=AF_sas,Number=A,Type=Float,Description="AF in sas">\n'
             f"##contig=<ID={chrom},length=248956422>\n"
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
             f"{chrom}\t{pos}\t.\tA\tG\t.\t.\t"
             "AF_grpmax=0.0123;grpmax=nfe;"
-            "AF_afr=0.001;AF_amr=0.005;AF_eas=0.0001;AF_nfe=0.0123;AF_sas=0.003\n"
+            "AF_afr=0.001;AF_amr=0.005;AF_asj=0.002;AF_eas=0.0001;"
+            "AF_fin=0.011;AF_mid=0.007;AF_nfe=0.0123;AF_remaining=0.004;AF_sas=0.003\n"
         )
         bgz = _bgz_index(plain)
         # Rename .vcf.gz → .vcf.bgz to match production gnomAD layout.

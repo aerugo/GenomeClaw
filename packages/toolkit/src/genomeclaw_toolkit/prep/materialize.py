@@ -200,8 +200,12 @@ def materialize(
             "gnomad_af_popmax_pop",
             "gnomad_af_afr",
             "gnomad_af_amr",
+            "gnomad_af_asj",
             "gnomad_af_eas",
+            "gnomad_af_fin",
+            "gnomad_af_mid",
             "gnomad_af_nfe",
+            "gnomad_af_remaining",
             "gnomad_af_sas",
         )
         if materialize_input_kind == "annotated"

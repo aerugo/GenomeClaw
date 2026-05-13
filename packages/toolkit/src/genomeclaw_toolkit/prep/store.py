@@ -59,10 +59,19 @@ _VARIANT_DOMAIN_COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("dbsnp_rsid", "TEXT", True),
     ("gnomad_af_popmax", "REAL", True),
     ("gnomad_af_popmax_pop", "TEXT", True),
+    # Per-population AFs for all nine gnomAD v4 populations. ``asj``,
+    # ``fin``, ``mid``, and ``remaining`` were added alongside the
+    # original 5 so a popmax indicator pointing at any of them comes
+    # with the corresponding per-population value (otherwise the user
+    # sees the label but no number).
     ("gnomad_af_afr", "REAL", True),
     ("gnomad_af_amr", "REAL", True),
+    ("gnomad_af_asj", "REAL", True),
     ("gnomad_af_eas", "REAL", True),
+    ("gnomad_af_fin", "REAL", True),
+    ("gnomad_af_mid", "REAL", True),
     ("gnomad_af_nfe", "REAL", True),
+    ("gnomad_af_remaining", "REAL", True),
     ("gnomad_af_sas", "REAL", True),
 )
 
@@ -85,10 +94,16 @@ CREATE TABLE variants (
     dbsnp_rsid              TEXT,
     gnomad_af_popmax        REAL,
     gnomad_af_popmax_pop    TEXT,
+    -- All nine gnomAD v4 population AFs (so popmax_pop labels always
+    -- have a corresponding per-population AF to look up).
     gnomad_af_afr           REAL,
     gnomad_af_amr           REAL,
+    gnomad_af_asj           REAL,
     gnomad_af_eas           REAL,
+    gnomad_af_fin           REAL,
+    gnomad_af_mid           REAL,
     gnomad_af_nfe           REAL,
+    gnomad_af_remaining     REAL,
     gnomad_af_sas           REAL,
     -- Provenance (the canonical seven; INV-R001)
     source_path     TEXT NOT NULL,

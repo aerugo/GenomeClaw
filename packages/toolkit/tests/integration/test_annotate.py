@@ -78,7 +78,15 @@ def _build_clinvar_release(reference_dir: Path, release: str) -> Path:
 
 
 def _build_gnomad_exomes_release(reference_dir: Path, release: str) -> None:
-    """Stage a minimal gnomAD-exomes per-chrom layout (chr1 + chr17)."""
+    """Stage a minimal gnomAD-exomes per-chrom layout (chr1 + chr17).
+
+    Declares + emits all nine gnomAD v4 population AFs (afr, amr, asj,
+    eas, fin, mid, nfe, remaining, sas) so the materialize-side
+    extraction has data to populate every per-population column in the
+    v0.2 schema. Kept structurally in sync with the same-named helper
+    in ``test_annotate_vcfanno.py`` — both files duplicate this fixture
+    pending the Phase-4E shared-fixture extract.
+    """
     target = reference_dir / "gnomad-exomes" / release / "by_chrom"
     target.mkdir(parents=True)
     for chrom, pos in (("chr1", 1000), ("chr17", 43044295)):
@@ -89,14 +97,19 @@ def _build_gnomad_exomes_release(reference_dir: Path, release: str) -> None:
             '##INFO=<ID=grpmax,Number=A,Type=String,Description="Popmax population">\n'
             '##INFO=<ID=AF_afr,Number=A,Type=Float,Description="AF in afr">\n'
             '##INFO=<ID=AF_amr,Number=A,Type=Float,Description="AF in amr">\n'
+            '##INFO=<ID=AF_asj,Number=A,Type=Float,Description="AF in asj">\n'
             '##INFO=<ID=AF_eas,Number=A,Type=Float,Description="AF in eas">\n'
+            '##INFO=<ID=AF_fin,Number=A,Type=Float,Description="AF in fin">\n'
+            '##INFO=<ID=AF_mid,Number=A,Type=Float,Description="AF in mid">\n'
             '##INFO=<ID=AF_nfe,Number=A,Type=Float,Description="AF in nfe">\n'
+            '##INFO=<ID=AF_remaining,Number=A,Type=Float,Description="AF in remaining">\n'
             '##INFO=<ID=AF_sas,Number=A,Type=Float,Description="AF in sas">\n'
             f"##contig=<ID={chrom},length=248956422>\n"
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
             f"{chrom}\t{pos}\t.\tA\tG\t.\t.\t"
             "AF_grpmax=0.0123;grpmax=nfe;"
-            "AF_afr=0.001;AF_amr=0.005;AF_eas=0.0001;AF_nfe=0.0123;AF_sas=0.003\n"
+            "AF_afr=0.001;AF_amr=0.005;AF_asj=0.002;AF_eas=0.0001;"
+            "AF_fin=0.011;AF_mid=0.007;AF_nfe=0.0123;AF_remaining=0.004;AF_sas=0.003\n"
         )
         bgz = _bgz_index(plain)
         bgz.rename(target / f"{chrom}.vcf.bgz")
@@ -280,13 +293,15 @@ def test_materialize_after_annotate_populates_clinvar_columns(
         non_annotated_count = conn.execute(
             "SELECT COUNT(*) FROM variants WHERE clinvar_classification IS NULL"
         ).fetchone()
-        # Phase 4E surface: dbSNP rsids + gnomAD population AFs land
-        # in their own v0.2 columns. The synthetic fixture's chr1:1000
-        # variant has data for every source — assert each new column
-        # is populated for that record.
+        # Phase 4E surface: dbSNP rsids + all nine gnomAD v4 population
+        # AFs land in their own v0.2 columns. The synthetic fixture's
+        # chr1:1000 variant has data for every source — assert each
+        # new column is populated for that record.
         row_chr1_1000 = conn.execute(
             "SELECT dbsnp_rsid, gnomad_af_popmax, gnomad_af_popmax_pop, "
-            "       gnomad_af_afr, gnomad_af_amr, gnomad_af_eas, gnomad_af_nfe, gnomad_af_sas "
+            "       gnomad_af_afr, gnomad_af_amr, gnomad_af_asj, gnomad_af_eas, "
+            "       gnomad_af_fin, gnomad_af_mid, gnomad_af_nfe, "
+            "       gnomad_af_remaining, gnomad_af_sas "
             "FROM variants WHERE chrom = 'chr1' AND pos = 1000"
         ).fetchone()
     finally:
@@ -305,8 +320,12 @@ def test_materialize_after_annotate_populates_clinvar_columns(
         af_popmax_pop,
         af_afr,
         af_amr,
+        af_asj,
         af_eas,
+        af_fin,
+        af_mid,
         af_nfe,
+        af_remaining,
         af_sas,
     ) = row_chr1_1000
     assert dbsnp_rsid == "rs1", dbsnp_rsid
@@ -314,8 +333,12 @@ def test_materialize_after_annotate_populates_clinvar_columns(
     assert af_popmax_pop == "nfe"
     assert af_afr == pytest.approx(0.001)
     assert af_amr == pytest.approx(0.005)
+    assert af_asj == pytest.approx(0.002)
     assert af_eas == pytest.approx(0.0001)
+    assert af_fin == pytest.approx(0.011)
+    assert af_mid == pytest.approx(0.007)
     assert af_nfe == pytest.approx(0.0123)
+    assert af_remaining == pytest.approx(0.004)
     assert af_sas == pytest.approx(0.003)
 
 

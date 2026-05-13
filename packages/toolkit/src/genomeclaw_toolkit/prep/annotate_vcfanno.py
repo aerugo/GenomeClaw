@@ -287,13 +287,25 @@ _MAX_ANNOTATE_WORKERS = 8
 # ``_joint`` suffix only exists in gnomAD's separate joint exomes+
 # genomes frequency dataset, not in the exomes-only sites VCF we
 # ship in v0 (per phase-4.md Q8.1). Per-population AFs use ``AF_<pop>``.
+#
+# gnomAD v4 has 9 population groups: afr, amr, asj, eas, fin, mid, nfe,
+# remaining, sas. We materialise an ``AF_<pop>`` column for every one
+# so that a popmax indicator pointing at any population (e.g.
+# ``grpmax = 'mid'`` on a Middle Eastern-enriched variant) is always
+# accompanied by the corresponding per-population AF for downstream
+# inspection. Without all nine, popmax_pop labels for asj / fin / mid /
+# remaining would leave consumers with a label but no value to read.
 _GNOMAD_FIELDS: tuple[str, ...] = (
     "AF_grpmax",
     "grpmax",
     "AF_afr",
     "AF_amr",
+    "AF_asj",
     "AF_eas",
+    "AF_fin",
+    "AF_mid",
     "AF_nfe",
+    "AF_remaining",
     "AF_sas",
 )
 _GNOMAD_NAMES: tuple[str, ...] = (
@@ -301,8 +313,12 @@ _GNOMAD_NAMES: tuple[str, ...] = (
     "gnomad_af_popmax_pop",
     "gnomad_af_afr",
     "gnomad_af_amr",
+    "gnomad_af_asj",
     "gnomad_af_eas",
+    "gnomad_af_fin",
+    "gnomad_af_mid",
     "gnomad_af_nfe",
+    "gnomad_af_remaining",
     "gnomad_af_sas",
 )
 
