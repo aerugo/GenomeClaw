@@ -5,8 +5,7 @@ mini-string whose field order is declared in the VCF's ``##INFO=<ID=CSQ,
 ...,Description="Format: A|B|C|...">``. Materialize uses this parser to
 extract Phase-4D typed columns (gene_symbol, mane_select_transcript,
 hgvsc, hgvsp, consequence, loftee_lof, loftee_filter,
-alphamissense_score, alphamissense_class, spliceai_max_delta) from
-each variant's CSQ string.
+alphamissense_score, alphamissense_class) from each variant's CSQ string.
 
 These tests are pure-Python — no VEP binary, no fixture files — so
 they exercise the parser's edge cases without the bio image.
@@ -18,7 +17,6 @@ import pytest
 
 from genomeclaw_toolkit.prep._csq import (
     csq_entry_to_columns,
-    extract_spliceai_max_delta,
     parse_csq_header,
     pick_canonical_entry,
     split_csq,
@@ -173,52 +171,6 @@ def test_pick_canonical_returns_none_for_empty_input() -> None:
 
 
 # ---------------------------------------------------------------------------
-# extract_spliceai_max_delta
-# ---------------------------------------------------------------------------
-
-
-def test_spliceai_max_delta_returns_max_from_csq_escaped_form() -> None:
-    """The CSQ-escaped form (``&`` separators) is the production VEP shape.
-
-    VEP escapes embedded ``|`` characters to ``&`` when writing a
-    SpliceAI_pred value inside CSQ — otherwise the inner pipe would
-    collide with CSQ's outer field separator. The parser handles this
-    shape natively.
-    """
-    pred = "A&BRCA1&0.05&0.92&0.10&0.30&10&-25&5&-3"
-    assert extract_spliceai_max_delta(pred) == pytest.approx(0.92)
-
-
-def test_spliceai_max_delta_falls_back_to_pipe_when_no_amp() -> None:
-    """Top-level (non-CSQ) SpliceAI_pred values may still use ``|``.
-
-    When a SpliceAI value is emitted as its own INFO field outside CSQ
-    (less common, but documented), pipes are unescaped. The parser
-    accepts both shapes — split on ``&`` first, fall back to ``|``.
-    """
-    pred = "A|BRCA1|0.05|0.92|0.10|0.30|10|-25|5|-3"
-    assert extract_spliceai_max_delta(pred) == pytest.approx(0.92)
-
-
-def test_spliceai_max_delta_returns_none_for_empty_input() -> None:
-    """Missing SpliceAI_pred → None (column stays NULL)."""
-    assert extract_spliceai_max_delta(None) is None
-    assert extract_spliceai_max_delta("") is None
-
-
-def test_spliceai_max_delta_tolerates_dot_placeholder_tokens() -> None:
-    """``.`` is a common "no value" placeholder; skipped, not parsed as 0."""
-    pred = "A&BRCA1&.&.&0.42&."
-    assert extract_spliceai_max_delta(pred) == pytest.approx(0.42)
-
-
-def test_spliceai_max_delta_returns_none_when_no_ds_token_parses() -> None:
-    """All four DS_* slots empty / non-numeric → None, not 0.0."""
-    pred = "A&BRCA1&&&&"
-    assert extract_spliceai_max_delta(pred) is None
-
-
-# ---------------------------------------------------------------------------
 # csq_entry_to_columns
 # ---------------------------------------------------------------------------
 
@@ -237,16 +189,11 @@ def test_csq_entry_to_columns_extracts_all_phase4d_columns() -> None:
         "LoF_filter",
         "am_pathogenicity",
         "am_class",
-        "SpliceAI_pred",
     )
-    # Note SpliceAI_pred uses ``&`` separators inside CSQ — VEP escapes
-    # the plugin's native ``|`` to avoid colliding with CSQ's outer
-    # field separator.
     entries = split_csq(
         "A|missense_variant|BRCA1|ENST00000357654.9|YES|"
         "ENST00000357654.9:c.181T>G|ENSP00000350283.3:p.Cys61Gly|"
-        "HC|PHYLOCSF_WEAK|0.857|likely_pathogenic|"
-        "A&BRCA1&0.05&0.92&0.10&0.30&10&-25&5&-3",
+        "HC|PHYLOCSF_WEAK|0.857|likely_pathogenic",
         fields,
     )
     cols = csq_entry_to_columns(entries[0])
@@ -259,7 +206,6 @@ def test_csq_entry_to_columns_extracts_all_phase4d_columns() -> None:
     assert cols["loftee_filter"] == "PHYLOCSF_WEAK"
     assert cols["alphamissense_score"] == pytest.approx(0.857)
     assert cols["alphamissense_class"] == "likely_pathogenic"
-    assert cols["spliceai_max_delta"] == pytest.approx(0.92)
     # LOEUF is reserved for the gnomAD-constraint follow-up — always None here.
     assert cols["gene_loeuf"] is None
 
@@ -274,7 +220,6 @@ def test_csq_entry_to_columns_handles_partial_data() -> None:
     assert cols["mane_select_transcript"] is None
     assert cols["hgvsc"] is None
     assert cols["alphamissense_score"] is None
-    assert cols["spliceai_max_delta"] is None
 
 
 def test_csq_entry_to_columns_alphamissense_score_coerces_to_float() -> None:

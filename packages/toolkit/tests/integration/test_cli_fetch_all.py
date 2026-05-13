@@ -40,8 +40,8 @@ def test_fetch_all_iterates_default_release_set(
     result = invoke_cli(["refs", "fetch", "--all", "--reference-root", str(tmp_path)])
 
     assert result.exit_code == 0, result.stderr
-    # Default set ships eight sources after Phase 4D (the four
-    # vcfanno-overlay sources plus VEP cache + the three plugin-data
+    # Default set ships seven sources after Phase 4D (the four
+    # vcfanno-overlay sources plus VEP cache + the two plugin-data
     # sources). Assert the SET — parallel fetch makes completion
     # order non-deterministic.
     sources_called = {c["source"] for c in calls}
@@ -50,9 +50,9 @@ def test_fetch_all_iterates_default_release_set(
         "clinvar",
         "dbsnp",
         "gnomad-exomes",
+        "gnomad-constraint",
         "vep_cache",
         "alphamissense",
-        "spliceai",
         "loftee",
     }
     # gnomAD must propagate its chroms tuple from the manifest; the others
@@ -63,8 +63,8 @@ def test_fetch_all_iterates_default_release_set(
     assert by_source["grch38"]["chroms"] is None
     assert by_source["vep_cache"]["chroms"] is None
     assert by_source["alphamissense"]["chroms"] is None
-    assert by_source["spliceai"]["chroms"] is None
     assert by_source["loftee"]["chroms"] is None
+    assert by_source["gnomad-constraint"]["chroms"] is None
     assert by_source["gnomad-exomes"]["chroms"] is not None
     assert "1" in by_source["gnomad-exomes"]["chroms"]
     assert "fetching release set 'default'" in result.stderr
@@ -128,9 +128,9 @@ def test_fetch_all_skips_already_present_sources(
         "clinvar",
         "dbsnp",
         "gnomad-exomes",
+        "gnomad-constraint",
         "vep_cache",
         "alphamissense",
-        "spliceai",
         "loftee",
     }
     assert "[skip]" in result.stderr and "clinvar" in result.stderr

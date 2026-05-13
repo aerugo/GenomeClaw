@@ -315,6 +315,88 @@ def _samtools_faidx_in_target_dir(target_dir: Path) -> None:
         raise RuntimeError(f"samtools faidx failed for {fasta_path}: {stderr}")
 
 
+def _build_alphamissense_tbi_in_target_dir(target_dir: Path) -> None:
+    """Build the AlphaMissense tabix index post-fetch.
+
+    DeepMind's ``dm_alphamissense`` GCS bucket publishes
+    ``AlphaMissense_hg38.tsv.gz`` but **not** the matching ``.tbi``
+    sidecar — verified 2026-05-13 against the live bucket. The
+    AlphaMissense VEP plugin needs the index to be present alongside
+    the data, so we build it locally with ``tabix``.
+
+    Schema (confirmed against DeepMind's TSV layout): column 1 is
+    CHROM, column 2 is POS, header lines start with ``#``. A point-
+    variant tabix index keyed on (chrom, pos) is what the plugin
+    consumes::
+
+        tabix -f -s 1 -b 2 -e 2 -c '#' AlphaMissense_hg38.tsv.gz
+
+    Soft-fails when ``tabix`` is not on PATH so mocked-HTTP fetch
+    tests can run on a host venv without bio binaries — the production
+    toolkit image always has tabix via the htslib package, and the
+    AlphaMissense VEP plugin's first invocation would fail loudly if
+    the index were silently absent (so a soft-fail can't poison a real
+    run).
+    """
+    am_dir = target_dir / "AlphaMissense"
+    am_file = am_dir / "AlphaMissense_hg38.tsv.gz"
+    if not am_file.exists():
+        log.warning("AlphaMissense .tsv.gz not found at %s; skipping tbi build", am_file)
+        return
+    if shutil.which("tabix") is None:
+        log.warning(
+            "tabix not on PATH; skipping AlphaMissense .tbi build for %s. "
+            "Build manually with `tabix -f -s 1 -b 2 -e 2 -c '#' %s` before "
+            "running annotate.",
+            am_file,
+            am_file,
+        )
+        return
+    print("    building AlphaMissense tabix index…", file=sys.stdout, flush=True)
+    build_start = time.monotonic()
+    subprocess.run(
+        ["tabix", "-f", "-s", "1", "-b", "2", "-e", "2", "-c", "#", str(am_file)],
+        check=True,
+    )
+    print(
+        f"    ✓ tabix index built in {time.monotonic() - build_start:.0f}s",
+        file=sys.stdout,
+        flush=True,
+    )
+
+
+def _gunzip_loftee_sql_in_target_dir(target_dir: Path) -> None:
+    """Decompress ``loftee.sql.gz`` → ``loftee.sql`` post-fetch.
+
+    LOFTEE's ``conservation_file`` plugin arg accepts a SQLite database
+    file, not a gzipped one — the plugin opens it directly via the
+    DBI bindings the toolkit image's perl ships. The mirror hosts the
+    file gzipped (~150 MB → ~600 MB uncompressed), so we gunzip once
+    at fetch time and keep both on disk: the ``.gz`` for archival /
+    re-mirroring, the ``.sql`` for runtime use. Soft-fails if the .gz
+    is absent (the plugin would just skip conservation filtering and
+    return less-granular ``loftee_filter`` values).
+    """
+    sql_gz = target_dir / "loftee.sql.gz"
+    sql = target_dir / "loftee.sql"
+    if not sql_gz.exists():
+        log.warning("loftee.sql.gz not found at %s; skipping decompression", sql_gz)
+        return
+    if sql.exists():
+        return
+    print("    decompressing loftee.sql.gz…", file=sys.stdout, flush=True)
+    start = time.monotonic()
+    import gzip
+
+    with gzip.open(sql_gz, "rb") as src, sql.open("wb") as dst:
+        shutil.copyfileobj(src, dst)
+    print(
+        f"    ✓ decompressed in {time.monotonic() - start:.0f}s",
+        file=sys.stdout,
+        flush=True,
+    )
+
+
 def _extract_vep_cache_tarball(target_dir: Path) -> None:
     """Extract Ensembl's VEP cache tarball in-place, then delete the .tar.gz.
 
@@ -490,48 +572,35 @@ _LAYOUTS: dict[str, _SourceLayout] = {
                 relpath="/dm_alphamissense/AlphaMissense_hg38.tsv.gz",
                 output_filename="AlphaMissense_hg38.tsv.gz",
             ),
-            _FetchFile(
-                relpath="/dm_alphamissense/AlphaMissense_hg38.tsv.gz.tbi",
-                output_filename="AlphaMissense_hg38.tsv.gz.tbi",
-            ),
+            # DeepMind doesn't publish ``AlphaMissense_hg38.tsv.gz.tbi``
+            # on the GCS bucket (verified 2026-05-13). The post-fetch
+            # hook builds it locally via tabix; the on-disk layout
+            # ends up identical to the published-alongside-data
+            # convention the VEP plugin expects.
         ),
         output_subdir="AlphaMissense",
+        post_fetch=_build_alphamissense_tbi_in_target_dir,
     ),
-    # Phase 4D: SpliceAI precomputed scores for the SpliceAI VEP
-    # plugin. Two precomputed VCFs (SNV + indel) + their tabix
-    # sidecars. The default base URL points at Broad's public-data
-    # GCS bucket (no registration required); users who hit a missing
-    # file can override with ``--base-url`` to use Illumina Basespace
-    # or an institutional mirror.
-    "spliceai": _SourceLayout(
-        files=(
-            _FetchFile(
-                relpath="/spliceai_scores.raw.snv.hg38.vcf.gz",
-                output_filename="spliceai_scores.raw.snv.hg38.vcf.gz",
-            ),
-            _FetchFile(
-                relpath="/spliceai_scores.raw.snv.hg38.vcf.gz.tbi",
-                output_filename="spliceai_scores.raw.snv.hg38.vcf.gz.tbi",
-            ),
-            _FetchFile(
-                relpath="/spliceai_scores.raw.indel.hg38.vcf.gz",
-                output_filename="spliceai_scores.raw.indel.hg38.vcf.gz",
-            ),
-            _FetchFile(
-                relpath="/spliceai_scores.raw.indel.hg38.vcf.gz.tbi",
-                output_filename="spliceai_scores.raw.indel.hg38.vcf.gz.tbi",
-            ),
-        ),
-        output_subdir="SpliceAI",
-    ),
-    # Phase 4D: LOFTEE plugin data files. ``human_ancestor.fa.gz`` is
-    # the ancestral-allele reference LOFTEE uses to confirm
-    # loss-of-function predictions; without it the LoF plugin runs
-    # but emits NULL for ``loftee_lof`` on every record. The file +
-    # its .fai/.gzi indices are hosted on Broad's personal-mirror at
-    # the URL the LOFTEE grch38 README points at. ~600 MB total.
-    # The plugin **code** ships in the toolkit image at
-    # /opt/vep/.vep/Plugins/; only the data is fetched here.
+    # Phase 4D: LOFTEE plugin data files. Five files in total per the
+    # LOFTEE grch38 README, hosted on Konrad Karczewski's Broad
+    # personal-mirror. ~1 GB combined.
+    #
+    # Required for any LOFTEE output:
+    #   - human_ancestor.fa.gz (+ .fai + .gzi) — ancestral-allele
+    #     reference used to confirm loss-of-function predictions.
+    #
+    # Optional but enables finer-grained ``loftee_filter`` values
+    # (the LoF plugin auto-detects them when present):
+    #   - gerp_conservation_scores.homo_sapiens.GRCh38.bw — GERP
+    #     BigWig used for the ``gerp_bigwig`` plugin arg.
+    #   - loftee.sql.gz — gnomAD constraint database. Decompressed
+    #     post-fetch to loftee.sql so the plugin can open it via
+    #     ``conservation_file:<path>``.
+    #
+    # Mirror has no MD5 sidecars (Broad-personal hosting); structural
+    # integrity is checked at first LOFTEE invocation. Worth mirroring
+    # internally for strict reproducibility — the URL is stable in
+    # practice but not under institutional SLA.
     "loftee": _SourceLayout(
         files=(
             _FetchFile(
@@ -546,6 +615,29 @@ _LAYOUTS: dict[str, _SourceLayout] = {
                 relpath="/human_ancestor.fa.gz.gzi",
                 output_filename="human_ancestor.fa.gz.gzi",
             ),
+            _FetchFile(
+                relpath="/gerp_conservation_scores.homo_sapiens.GRCh38.bw",
+                output_filename="gerp_conservation_scores.homo_sapiens.GRCh38.bw",
+            ),
+            _FetchFile(
+                relpath="/loftee.sql.gz",
+                output_filename="loftee.sql.gz",
+            ),
+        ),
+        post_fetch=_gunzip_loftee_sql_in_target_dir,
+    ),
+    # Phase 4D: gnomAD constraint metrics (per-transcript LOEUF
+    # observed/expected upper-bound fraction). A flat TSV (~1-2 MB)
+    # used at materialize time to populate the ``gene_loeuf`` column.
+    # Hosted on gnomAD's public-data GCS bucket alongside the variant
+    # data. Per gnomAD's docs v4.1 fixes minor transcript-annotation
+    # bugs from v4.0 and is the recommended pin.
+    "gnomad-constraint": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath="/release/4.1/constraint/gnomad.v4.1.constraint_metrics.tsv",
+                output_filename="gnomad.v4.1.constraint_metrics.tsv",
+            ),
         ),
     ),
 }
@@ -557,15 +649,14 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     "dbsnp": "https://ftp.ncbi.nlm.nih.gov",
     "vep_cache": "https://ftp.ensembl.org",
     "alphamissense": "https://storage.googleapis.com",
-    # SpliceAI: Broad's public-data GCS bucket hosts the hg38 v1.3
-    # SNV + indel score files. No registration required. Users who
-    # need a different mirror (Illumina Basespace etc.) can override
-    # with ``--base-url`` at fetch time.
-    "spliceai": "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/SpliceAI",
     # LOFTEE: Broad personal-mirror at the URL the LOFTEE grch38
-    # README points at. Hosts ``human_ancestor.fa.gz`` + .fai + .gzi
-    # indices.
+    # README points at. Hosts human_ancestor.fa.gz + .fai + .gzi,
+    # gerp_conservation_scores.homo_sapiens.GRCh38.bw, and
+    # loftee.sql.gz.
     "loftee": "https://personal.broadinstitute.org/konradk/loftee_data/GRCh38",
+    # gnomAD constraint metrics — public-data GCS bucket, same root
+    # as gnomad-exomes (different sub-tree).
+    "gnomad-constraint": "https://storage.googleapis.com/gcp-public-data--gnomad",
 }
 
 

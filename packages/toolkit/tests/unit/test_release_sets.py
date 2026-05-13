@@ -18,9 +18,9 @@ def test_default_release_set_loads_and_pins_phase4_sources() -> None:
     Phase-4 source ``annotate`` + ``materialize`` rely on.
 
     Originally the set covered just the vcfanno-overlay quartet (4C);
-    Phase 4D added vep_cache + the three plugin-data sources so a
-    single ``refs fetch --all`` populates everything the pipeline
-    needs to run the full VEP chain.
+    Phase 4D added vep_cache + the two plugin-data sources (LOFTEE,
+    AlphaMissense) so a single ``refs fetch --all`` populates everything
+    the pipeline needs to run the full VEP chain.
     """
     from genomeclaw_toolkit.prep.release_sets import (
         DEFAULT_RELEASE_SET,
@@ -37,9 +37,9 @@ def test_default_release_set_loads_and_pins_phase4_sources() -> None:
         "clinvar",
         "dbsnp",
         "gnomad-exomes",
+        "gnomad-constraint",
         "vep_cache",
         "alphamissense",
-        "spliceai",
         "loftee",
     }
     # Every entry pins a non-empty release label (`INV-R001` rebuildability).

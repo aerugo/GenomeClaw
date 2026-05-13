@@ -19,8 +19,8 @@ SCHEMA_VERSION: str = "v0.2"
 - v0.2 (Phase 4A): adds ClinVar annotation columns to variants —
   ``clinvar_id``, ``clinvar_classification``, ``clinvar_review_status``.
   All nullable; pre-annotate rows have NULLs in these columns. Future
-  Phase-4B/C/D/E sub-phases extend with VEP / LOFTEE / AlphaMissense /
-  SpliceAI columns; the schema-version field stays at v0.2 across those
+  Phase-4B/C/D/E sub-phases extend with VEP / LOFTEE / AlphaMissense
+  columns; the schema-version field stays at v0.2 across those
   sub-phases (they're additive non-breaking column additions). A future
   v0.3 lands when the column set stabilises post-Phase-4."""
 

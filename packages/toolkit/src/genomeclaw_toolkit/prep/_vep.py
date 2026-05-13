@@ -7,15 +7,11 @@ transcript HGVS strings, and plugin-derived columns:
 - **LOFTEE** — high-confidence loss-of-function flag + filter reason.
 - **AlphaMissense** — DeepMind's pathogenicity score + class for
   missense variants.
-- **SpliceAI** — per-variant splice-affecting delta scores; aggregated
-  server-side into ``spliceai_max_delta``.
-
 Phase 4D chains VEP after :mod:`annotate_vcfanno` in the parent
 :mod:`annotate` orchestrator. VEP's plugin **code** lives in the
 toolkit image at ``/opt/vep/.vep/Plugins/``; plugin **data** (the
-AlphaMissense scores TSV, SpliceAI per-chrom files, LOFTEE's
-``human_ancestor.fa``) ships on the bind-mounted
-``reference/vep_cache/Plugins/`` volume.
+AlphaMissense scores TSV, LOFTEE's ``human_ancestor.fa``) ships on
+the bind-mounted ``reference/vep_cache/Plugins/`` volume.
 
 The wrapper isolates three concerns:
 

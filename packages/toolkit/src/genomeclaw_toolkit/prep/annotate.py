@@ -8,7 +8,7 @@ VCF a Phase-4 ``materialize`` consumes:
    vcfanno. Writes ``run_dir/vcfanno.vcf.gz`` + ``.tbi`` and appends a
    ``vcfanno`` step to ``provenance.json``.
 2. ``annotate_vep`` *(Phase 4D, currently a no-op)* — VEP +
-   LOFTEE + AlphaMissense + SpliceAI cache-driven annotations. Will read
+   LOFTEE + AlphaMissense cache-driven annotations. Will read
    ``run_dir/vcfanno.vcf.gz`` and write a VEP-annotated VCF that
    replaces ``annotated.vcf.gz``. Until 4D ships, the parent simply
    promotes ``vcfanno.vcf.gz`` → ``annotated.vcf.gz`` so the existing
@@ -129,8 +129,8 @@ def annotate(
     )
 
     # Sub-orchestrator 2: VEP (Phase 4D). Reads vcfanno.vcf.gz, runs
-    # VEP + (when their data is staged) LOFTEE + AlphaMissense +
-    # SpliceAI, writes vep.vcf.gz + .tbi to the run dir. Returns the
+    # VEP + (when their data is staged) LOFTEE + AlphaMissense,
+    # writes vep.vcf.gz + .tbi to the run dir. Returns the
     # promoted output path on success, or ``None`` when no VEP cache is
     # staged on the host — in which case the chain falls back to the
     # vcfanno output (so an install that hasn't fetched the ~75 GB

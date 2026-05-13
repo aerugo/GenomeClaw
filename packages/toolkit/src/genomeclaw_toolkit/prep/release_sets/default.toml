@@ -14,7 +14,7 @@
 # (~200 GB across 24 chromosomes).
 
 name = "default"
-description = "Curated Phase-4 reference set (grch38 + clinvar + dbsnp + gnomad-exomes v4.1 + VEP cache 114 + AlphaMissense v1.0 + SpliceAI v1.3 + LOFTEE data)."
+description = "Curated Phase-4 reference set (grch38 + clinvar + dbsnp + gnomad-exomes v4.1 + gnomad-constraint v4.1 + VEP cache 114 + AlphaMissense v1.0 + LOFTEE data)."
 
 [[sources]]
 source = "grch38"
@@ -53,20 +53,22 @@ release = "114"
 source = "alphamissense"
 release = "v1.0"
 
-# Phase 4D — SpliceAI precomputed scores from Broad's public-data
-# GCS bucket (no registration required). Two large VCF files (SNV +
-# indel) + their tabix sidecars, ~50 GB total. Users whose mirror of
-# choice differs (Illumina Basespace, institutional copies) can
-# re-fetch the source with an explicit ``--base-url`` override.
-[[sources]]
-source = "spliceai"
-release = "v1.3"
-
-# Phase 4D — LOFTEE data (``human_ancestor.fa.gz`` + indices) from
-# Broad's personal-mirror. ~600 MB. The LOFTEE plugin **code** ships
-# in the toolkit Docker image; only the data file is fetched here.
-# Without this, the LoF plugin still runs but emits NULL for
+# Phase 4D — LOFTEE data (human_ancestor.fa.gz + indices, plus the
+# optional gerp_conservation_scores.bw + loftee.sql.gz for finer-
+# grained loftee_filter values). ~1 GB total. The LOFTEE plugin
+# **code** ships in the toolkit Docker image; only the data is
+# fetched here. Without this, the LoF plugin runs but emits NULL for
 # ``loftee_lof`` on every variant.
 [[sources]]
 source = "loftee"
 release = "v1.0"
+
+# Phase 4D — gnomAD constraint metrics (per-transcript LOEUF / pLI
+# scores). Small TSV (~1-2 MB) on gnomAD's public-data GCS bucket.
+# Used at materialize time to populate the ``gene_loeuf`` column from
+# the canonical-transcript gene symbol VEP extracts. v4.1 is the
+# recommended pin (resolves minor transcript-annotation bugs from
+# v4.0). The materialize-side join lands in a separate change.
+[[sources]]
+source = "gnomad-constraint"
+release = "v4.1"

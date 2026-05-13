@@ -6,7 +6,7 @@ chained orchestrator (4C.2 → 4C.3):
 1. ``annotate(run_dir, reference_dir, ...)`` is a thin parent that
    calls ``annotate_vcfanno`` (ClinVar + gnomAD-exomes + dbSNP overlays
    via vcfanno), then (4D-pending) ``annotate_vep`` (VEP + LOFTEE +
-   AlphaMissense + SpliceAI), then promotes the final output to
+   AlphaMissense), then promotes the final output to
    ``annotated.vcf.gz``.
 2. Until 4D ships, ``annotate_vep`` is a no-op — ``annotated.vcf.gz``
    is the vcfanno output. ``materialize`` reads from ``annotated.vcf.gz``

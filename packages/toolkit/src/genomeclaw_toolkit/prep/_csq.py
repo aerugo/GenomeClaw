@@ -16,7 +16,10 @@ separated by ``,``::
 Materialize needs to (a) figure out the field order from the header,
 (b) pick one canonical consequence per variant (the MANE Select
 transcript when present; otherwise the ``--pick`` default), and (c)
-extract the Phase-4D columns into typed scalar values.
+extract the Phase-4D columns into typed scalar values. Phase-4D
+columns: gene_symbol, mane_select_transcript, hgvsc, hgvsp,
+consequence, loftee_lof, loftee_filter, alphamissense_score,
+alphamissense_class, gene_loeuf.
 
 This module is pure-Python with no bioinformatics dependencies — every
 parsing decision is unit-testable on synthetic CSQ strings without
@@ -125,64 +128,6 @@ def pick_canonical_entry(entries: tuple[CsqEntry, ...]) -> CsqEntry | None:
     return entries[0]
 
 
-# SpliceAI's score is encoded as a pipe-separated mini-string inside the
-# CSQ entry's SpliceAI_pred field:
-#   SpliceAI_pred = "ALLELE|SYMBOL|DS_AG|DS_AL|DS_DG|DS_DL|DP_AG|DP_AL|DP_DG|DP_DL"
-# The four DS_* columns are the per-event delta scores (acceptor gain /
-# acceptor loss / donor gain / donor loss). The "max delta" we surface
-# is the max of those four.
-_SPLICEAI_PRED_FIELDS: tuple[str, ...] = (
-    "ALLELE",
-    "SYMBOL",
-    "DS_AG",
-    "DS_AL",
-    "DS_DG",
-    "DS_DL",
-    "DP_AG",
-    "DP_AL",
-    "DP_DG",
-    "DP_DL",
-)
-
-
-def extract_spliceai_max_delta(spliceai_pred_value: str | None) -> float | None:
-    """Compute the max delta score from a SpliceAI_pred CSQ value.
-
-    Returns the max of ``DS_AG / DS_AL / DS_DG / DS_DL`` (the four
-    per-event delta scores), or ``None`` when the value is absent or
-    malformed. We coerce every parseable float and take the max; if no
-    DS_* token parses, returns None.
-
-    Note on separators: SpliceAI_pred's plugin documentation declares
-    a pipe-separated format (``ALLELE|SYMBOL|DS_AG|...``), but VEP
-    escapes embedded ``|`` characters to ``&`` when writing CSQ values
-    (CSQ's outer separator is also ``|``, so the inner pipe would
-    collide). We accept both: try ``&`` first (the VEP-escaped form),
-    then ``|`` as a fallback for plugin outputs that didn't go through
-    CSQ escaping.
-    """
-    if not spliceai_pred_value:
-        return None
-    parts = spliceai_pred_value.split("&")
-    if len(parts) == 1:
-        # No ``&`` — try the un-escaped pipe form (e.g. SpliceAI emitted
-        # as a top-level INFO field rather than wrapped in CSQ).
-        parts = spliceai_pred_value.split("|")
-    # Pad to header length so positional lookups are safe.
-    if len(parts) < len(_SPLICEAI_PRED_FIELDS):
-        parts = parts + [""] * (len(_SPLICEAI_PRED_FIELDS) - len(parts))
-    scores: list[float] = []
-    for key in ("DS_AG", "DS_AL", "DS_DG", "DS_DL"):
-        token = parts[_SPLICEAI_PRED_FIELDS.index(key)]
-        if not token or token == ".":
-            continue
-        try:
-            scores.append(float(token))
-        except ValueError:
-            continue
-    return max(scores) if scores else None
-
-
 # Phase-4D CSQ field-name → variants-table column-name mapping.
 # Keys are the field names VEP emits in the CSQ header (these depend on
 # the flag set + active plugins); values are the schema column names.
@@ -208,7 +153,7 @@ def csq_entry_to_columns(entry: CsqEntry) -> dict[str, Any]:
     Returns a dict whose keys match :mod:`store`'s
     ``_VARIANT_DOMAIN_COLUMNS`` column names. Values are typed:
 
-    - ``alphamissense_score`` and ``spliceai_max_delta`` are ``float | None``.
+    - ``alphamissense_score`` is ``float | None``.
     - everything else is ``str | None``.
 
     Fields absent from the entry (the CSQ header didn't have them, or
@@ -223,8 +168,6 @@ def csq_entry_to_columns(entry: CsqEntry) -> dict[str, Any]:
             columns[sql_name] = _safe_float(value)
         else:
             columns[sql_name] = value
-    spliceai_pred = entry.by_name.get("SpliceAI_pred")
-    columns["spliceai_max_delta"] = extract_spliceai_max_delta(spliceai_pred)
     # ``gene_loeuf`` is reserved for the gnomAD-constraint integration;
     # always NULL until that lands.
     columns["gene_loeuf"] = None
@@ -244,7 +187,6 @@ def _safe_float(value: str | None) -> float | None:
 __all__ = [
     "CsqEntry",
     "csq_entry_to_columns",
-    "extract_spliceai_max_delta",
     "parse_csq_header",
     "pick_canonical_entry",
     "split_csq",

@@ -2,7 +2,7 @@
 
 Runs VEP against the post-vcfanno VCF, layering transcript-level
 consequence predictions + MANE Select HGVS strings + LOFTEE /
-AlphaMissense / SpliceAI plugin outputs onto every variant.
+AlphaMissense plugin outputs onto every variant.
 
 Operates on an existing ``derived/<run-id>/`` from a prior
 ``annotate_vcfanno`` step:
@@ -71,7 +71,7 @@ log = logging.getLogger(__name__)
 # The toolkit image's VEP plugin code lives at this path (set in
 # Dockerfile via ``COPY --from=vep-plugins``). The orchestrator passes
 # this to ``vep --dir_plugins``. Plugin *data* (AlphaMissense scores,
-# SpliceAI per-chrom files, LOFTEE's human_ancestor.fa) lives under
+# LOFTEE's human_ancestor.fa) lives under
 # ``reference/vep_cache/Plugins/`` — fetched separately at fetch time.
 _IMAGE_PLUGIN_DIR = Path("/opt/vep/.vep/Plugins")
 
@@ -140,14 +140,12 @@ def _resolve_plugins(reference_dir: Path) -> tuple[VepPluginConfig, ...]:
     """Probe per-source reference dirs for plugin-data files; enable each
     plugin whose data is on disk.
 
-    Phase 4D enables three plugins when their data is present:
+    Phase 4D enables two plugins when their data is present:
 
     - **LoF (LOFTEE)** — requires
       ``reference/loftee/<release>/human_ancestor.fa.gz``.
     - **AlphaMissense** — requires
       ``reference/alphamissense/<release>/AlphaMissense/AlphaMissense_hg38.tsv.gz``.
-    - **SpliceAI** — requires
-      ``reference/spliceai/<release>/SpliceAI/spliceai_scores.raw.{snv,indel}.hg38.vcf.gz``.
 
     Each plugin's data lives under its own ``<source>/<release>/``
     directory (matching the layout produced by ``genomeclaw refs
@@ -163,34 +161,29 @@ def _resolve_plugins(reference_dir: Path) -> tuple[VepPluginConfig, ...]:
     if loftee_release is not None:
         loftee_anc = loftee_release / "human_ancestor.fa.gz"
         if loftee_anc.exists():
-            enabled.append(
-                VepPluginConfig(
-                    name="LoF",
-                    args=(
-                        f"loftee_path:{_IMAGE_PLUGIN_DIR}",
-                        f"human_ancestor_fa:{loftee_anc}",
-                    ),
-                )
-            )
+            # Base args are always required: where the plugin code
+            # lives + the ancestral-allele reference. Conservation +
+            # GERP add finer-grained ``loftee_filter`` distinctions
+            # when present (the LoF plugin no-ops on the missing-arg
+            # path, so partial fetches still produce LoF flags — just
+            # without the optional filtering metadata).
+            args: list[str] = [
+                f"loftee_path:{_IMAGE_PLUGIN_DIR}",
+                f"human_ancestor_fa:{loftee_anc}",
+            ]
+            conservation = loftee_release / "loftee.sql"
+            if conservation.exists():
+                args.append(f"conservation_file:{conservation}")
+            gerp = loftee_release / "gerp_conservation_scores.homo_sapiens.GRCh38.bw"
+            if gerp.exists():
+                args.append(f"gerp_bigwig:{gerp}")
+            enabled.append(VepPluginConfig(name="LoF", args=tuple(args)))
 
     am_release = _latest_release_dir(reference_dir / "alphamissense")
     if am_release is not None:
         am_file = am_release / "AlphaMissense" / "AlphaMissense_hg38.tsv.gz"
         if am_file.exists():
             enabled.append(VepPluginConfig(name="AlphaMissense", args=(f"file={am_file}",)))
-
-    spliceai_release = _latest_release_dir(reference_dir / "spliceai")
-    if spliceai_release is not None:
-        spliceai_dir = spliceai_release / "SpliceAI"
-        spliceai_snv = spliceai_dir / "spliceai_scores.raw.snv.hg38.vcf.gz"
-        spliceai_indel = spliceai_dir / "spliceai_scores.raw.indel.hg38.vcf.gz"
-        if spliceai_snv.exists() and spliceai_indel.exists():
-            enabled.append(
-                VepPluginConfig(
-                    name="SpliceAI",
-                    args=(f"snv={spliceai_snv}", f"indel={spliceai_indel}"),
-                )
-            )
 
     return tuple(enabled)
 

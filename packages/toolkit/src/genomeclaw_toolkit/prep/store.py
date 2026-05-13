@@ -93,7 +93,6 @@ _VARIANT_DOMAIN_COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("loftee_filter", "TEXT", True),
     ("alphamissense_score", "REAL", True),
     ("alphamissense_class", "TEXT", True),
-    ("spliceai_max_delta", "REAL", True),
     ("gene_loeuf", "REAL", True),
 )
 
@@ -139,7 +138,6 @@ CREATE TABLE variants (
     loftee_filter           TEXT,
     alphamissense_score     REAL,
     alphamissense_class     TEXT,
-    spliceai_max_delta      REAL,
     gene_loeuf              REAL,
     -- Provenance (the canonical seven; INV-R001)
     source_path     TEXT NOT NULL,

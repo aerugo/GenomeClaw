@@ -56,7 +56,7 @@ def test_plugin_config_renders_comma_joined_args() -> None:
 
 
 def test_plugin_config_supports_key_equals_value_args() -> None:
-    """AlphaMissense / SpliceAI use ``file=...`` / ``snv=...`` arg shape."""
+    """AlphaMissense uses ``file=...`` key=value arg shape."""
     p = VepPluginConfig(name="AlphaMissense", args=("file=/ref/am.tsv.gz",))
     assert p.to_flag() == "AlphaMissense,file=/ref/am.tsv.gz"
 
@@ -139,7 +139,7 @@ def test_build_vep_flags_emits_one_plugin_pair_per_plugin() -> None:
             plugins=(
                 VepPluginConfig("LoF", ("loftee_path:/p",)),
                 VepPluginConfig("AlphaMissense", ("file=/ref/am.tsv.gz",)),
-                VepPluginConfig("SpliceAI", ("snv=/ref/snv.vcf.gz", "indel=/ref/indel.vcf.gz")),
+                VepPluginConfig("Downstream", ("length=200",)),
             )
         )
     )
@@ -149,12 +149,12 @@ def test_build_vep_flags_emits_one_plugin_pair_per_plugin() -> None:
     assert rendered == [
         "LoF,loftee_path:/p",
         "AlphaMissense,file=/ref/am.tsv.gz",
-        "SpliceAI,snv=/ref/snv.vcf.gz,indel=/ref/indel.vcf.gz",
+        "Downstream,length=200",
     ]
 
 
 def test_build_vep_flags_preserves_plugin_order() -> None:
-    """LOFTEE typically runs first so AlphaMissense / SpliceAI see its
+    """LOFTEE typically runs first so AlphaMissense sees its
     consequence-filtered set. Plugin order in argv must match config
     order — VEP processes them sequentially.
     """
@@ -163,12 +163,12 @@ def test_build_vep_flags_preserves_plugin_order() -> None:
             plugins=(
                 VepPluginConfig("LoF"),
                 VepPluginConfig("AlphaMissense"),
-                VepPluginConfig("SpliceAI"),
+                VepPluginConfig("Downstream"),
             )
         )
     )
     plugin_args = [flags[i + 1] for i, f in enumerate(flags) if f == "--plugin"]
-    assert plugin_args == ["LoF", "AlphaMissense", "SpliceAI"]
+    assert plugin_args == ["LoF", "AlphaMissense", "Downstream"]
 
 
 # ---------------------------------------------------------------------------
