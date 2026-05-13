@@ -30,6 +30,12 @@ import duckdb
 
 from genomeclaw_toolkit import __version__ as TOOLKIT_VERSION
 from genomeclaw_toolkit.prep import preflight
+from genomeclaw_toolkit.prep._csq import (
+    csq_entry_to_columns,
+    parse_csq_header,
+    pick_canonical_entry,
+    split_csq,
+)
 from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart, emit_beat
 from genomeclaw_toolkit.prep._vcf import iter_variant_rows
 from genomeclaw_toolkit.prep.scratch import shard_scratch
@@ -58,6 +64,52 @@ def _serialise_for_json(value: object) -> object:
     if isinstance(value, Path):
         return str(value)
     raise TypeError(f"unserialisable: {value!r}")
+
+
+def _read_csq_header_if_present(vcf: Path) -> tuple[str, ...] | None:
+    """Scan a VCF's header for ``##INFO=<ID=CSQ,...>``; return the field list.
+
+    Returns the pipe-separated field-name tuple parsed out of the CSQ
+    description's ``Format: ...`` substring, or ``None`` when no CSQ
+    INFO line is present (typical for pre-VEP runs where the annotated
+    VCF is just the vcfanno output).
+
+    Reads the header only — stops as soon as the first non-``##`` line
+    is seen — so the cost is one-time and tiny regardless of file size.
+    """
+    import gzip
+
+    opener = gzip.open if str(vcf).endswith(".gz") else open
+    with opener(vcf, "rt", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if not line.startswith("##"):
+                break
+            if line.startswith("##INFO=<ID=CSQ,"):
+                try:
+                    return parse_csq_header(line)
+                except ValueError:
+                    log.warning("malformed CSQ header in %s; ignoring", vcf)
+                    return None
+    return None
+
+
+def _extract_vep_columns(
+    csq_value: str | None, csq_fields: tuple[str, ...] | None
+) -> dict[str, Any]:
+    """Parse one CSQ value into the Phase-4D typed column dict.
+
+    When ``csq_value`` or ``csq_fields`` is None, returns an empty dict
+    (the materialize CSV writer interprets missing nullable columns as
+    NULL). When both are present, picks the canonical consequence
+    (MANE Select → CANONICAL=YES → first) and extracts the columns.
+    """
+    if csq_value is None or csq_fields is None:
+        return {}
+    entries = split_csq(csq_value, csq_fields)
+    canonical = pick_canonical_entry(entries)
+    if canonical is None:
+        return {}
+    return csq_entry_to_columns(canonical)
 
 
 def _reset_variants_table(store_path: Path) -> None:
@@ -189,8 +241,11 @@ def materialize(
     # ClinVar fields come from the `vcfanno` clinvar block; the
     # ``gnomad_af_*`` + ``dbsnp_rsid`` fields come from the
     # gnomAD-exomes per-chrom block + the (cached, renamed) dbSNP block
-    # respectively. Every INFO field listed here MUST have a matching
-    # nullable column in store.py's ``_VARIANT_DOMAIN_COLUMNS``.
+    # respectively. ``CSQ`` is VEP's mega-string carrying the 10
+    # Phase-4D transcript-level columns; the per-row CSQ value gets
+    # parsed below via ``_csq``. Every INFO field listed here MUST have
+    # a matching nullable column in store.py's ``_VARIANT_DOMAIN_COLUMNS``
+    # (or be processed into one by the CSQ parser).
     info_fields: tuple[str, ...] = (
         (
             "clinvar_classification",
@@ -207,14 +262,27 @@ def materialize(
             "gnomad_af_nfe",
             "gnomad_af_remaining",
             "gnomad_af_sas",
+            "CSQ",
         )
         if materialize_input_kind == "annotated"
         else ()
     )
 
+    # Read the CSQ header line up-front (if any). VEP's INFO field
+    # order is declared in ``##INFO=<ID=CSQ,...>`` and is stable for
+    # the run, so we parse it once and reuse for every record. Falls
+    # back to None when CSQ is absent (pre-VEP runs); the per-row CSQ
+    # extraction below skips when csq_fields is None.
+    csq_fields = _read_csq_header_if_present(materialize_input)
+
     def _row_stream() -> Iterator[dict[str, Any]]:
         for row in iter_variant_rows(materialize_input, info_fields=info_fields):
-            yield {**row, "sample_id": sample_id}
+            # Convert CSQ → 10 typed columns when present; otherwise
+            # leave the column keys absent (write_variants treats
+            # missing nullable columns as None / NULL).
+            csq_value = row.pop("CSQ", None) if "CSQ" in row else None
+            vep_columns = _extract_vep_columns(csq_value, csq_fields)
+            yield {**row, "sample_id": sample_id, **vep_columns}
 
     # CSV-staging + DuckDB temp_directory live on /mnt/genomeclaw/scratch
     # via the shard_scratch primitive (auto-cleanup on exit). The variants

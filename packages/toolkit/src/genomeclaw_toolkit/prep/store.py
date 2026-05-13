@@ -73,6 +73,28 @@ _VARIANT_DOMAIN_COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("gnomad_af_nfe", "REAL", True),
     ("gnomad_af_remaining", "REAL", True),
     ("gnomad_af_sas", "REAL", True),
+    # VEP-derived columns (Phase 4D). All extracted from VEP's CSQ INFO
+    # field on the canonical / MANE Select transcript; see
+    # materialize.py's CSQ parser. Each is nullable so rows from
+    # pre-VEP pipeline runs land with NULLs without breaking the v0.2
+    # schema contract.
+    #
+    # ``gene_loeuf`` is reserved for the gnomAD constraint dataset
+    # which ships separately from the VEP cache and the three plugins;
+    # the column is declared here so the v0.2 schema doesn't need a
+    # bump when the gnomAD-constraint follow-up lands, but it stays
+    # NULL on every row until that integration is wired.
+    ("gene_symbol", "TEXT", True),
+    ("mane_select_transcript", "TEXT", True),
+    ("hgvsc", "TEXT", True),
+    ("hgvsp", "TEXT", True),
+    ("consequence", "TEXT", True),
+    ("loftee_lof", "TEXT", True),
+    ("loftee_filter", "TEXT", True),
+    ("alphamissense_score", "REAL", True),
+    ("alphamissense_class", "TEXT", True),
+    ("spliceai_max_delta", "REAL", True),
+    ("gene_loeuf", "REAL", True),
 )
 
 _VARIANTS_DDL = """
@@ -105,6 +127,20 @@ CREATE TABLE variants (
     gnomad_af_nfe           REAL,
     gnomad_af_remaining     REAL,
     gnomad_af_sas           REAL,
+    -- VEP-derived columns (Phase 4D). Extracted from the CSQ INFO
+    -- field on the canonical / MANE Select transcript. Each nullable
+    -- so pre-VEP runs land with NULLs and the schema stays uniform.
+    gene_symbol             TEXT,
+    mane_select_transcript  TEXT,
+    hgvsc                   TEXT,
+    hgvsp                   TEXT,
+    consequence             TEXT,
+    loftee_lof              TEXT,
+    loftee_filter           TEXT,
+    alphamissense_score     REAL,
+    alphamissense_class     TEXT,
+    spliceai_max_delta      REAL,
+    gene_loeuf              REAL,
     -- Provenance (the canonical seven; INV-R001)
     source_path     TEXT NOT NULL,
     source_sha256   TEXT NOT NULL,
