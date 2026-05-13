@@ -40,17 +40,31 @@ def test_fetch_all_iterates_default_release_set(
     result = invoke_cli(["refs", "fetch", "--all", "--reference-root", str(tmp_path)])
 
     assert result.exit_code == 0, result.stderr
-    # Default set ships four sources; assert the SET (parallel fetch
-    # means completion order is non-deterministic — what matters is
-    # that every source was dispatched, not the order).
+    # Default set ships eight sources after Phase 4D (the four
+    # vcfanno-overlay sources plus VEP cache + the three plugin-data
+    # sources). Assert the SET — parallel fetch makes completion
+    # order non-deterministic.
     sources_called = {c["source"] for c in calls}
-    assert sources_called == {"grch38", "clinvar", "dbsnp", "gnomad-exomes"}
+    assert sources_called == {
+        "grch38",
+        "clinvar",
+        "dbsnp",
+        "gnomad-exomes",
+        "vep_cache",
+        "alphamissense",
+        "spliceai",
+        "loftee",
+    }
     # gnomAD must propagate its chroms tuple from the manifest; the others
     # must not (single-file sources reject ``chroms``).
     by_source = {c["source"]: c for c in calls}
     assert by_source["clinvar"]["chroms"] is None
     assert by_source["dbsnp"]["chroms"] is None
     assert by_source["grch38"]["chroms"] is None
+    assert by_source["vep_cache"]["chroms"] is None
+    assert by_source["alphamissense"]["chroms"] is None
+    assert by_source["spliceai"]["chroms"] is None
+    assert by_source["loftee"]["chroms"] is None
     assert by_source["gnomad-exomes"]["chroms"] is not None
     assert "1" in by_source["gnomad-exomes"]["chroms"]
     assert "fetching release set 'default'" in result.stderr
@@ -107,7 +121,18 @@ def test_fetch_all_skips_already_present_sources(
 
     assert result.exit_code == 0, result.stderr
     # Set equality (parallel fetch → non-deterministic call order).
-    assert set(calls) == {"grch38", "clinvar", "dbsnp", "gnomad-exomes"}
+    # Default set now ships all Phase-4 sources; the one-source skip
+    # (clinvar) doesn't prevent the rest from running.
+    assert set(calls) == {
+        "grch38",
+        "clinvar",
+        "dbsnp",
+        "gnomad-exomes",
+        "vep_cache",
+        "alphamissense",
+        "spliceai",
+        "loftee",
+    }
     assert "[skip]" in result.stderr and "clinvar" in result.stderr
 
 

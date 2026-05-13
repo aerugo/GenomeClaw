@@ -13,9 +13,14 @@ from pathlib import Path
 import pytest
 
 
-def test_default_release_set_loads_and_pins_the_phase4_quartet() -> None:
-    """The shipped ``default.toml`` parses cleanly and includes the four
-    Phase-4 sources expected by ``annotate`` + ``normalize``.
+def test_default_release_set_loads_and_pins_phase4_sources() -> None:
+    """The shipped ``default.toml`` parses cleanly and includes every
+    Phase-4 source ``annotate`` + ``materialize`` rely on.
+
+    Originally the set covered just the vcfanno-overlay quartet (4C);
+    Phase 4D added vep_cache + the three plugin-data sources so a
+    single ``refs fetch --all`` populates everything the pipeline
+    needs to run the full VEP chain.
     """
     from genomeclaw_toolkit.prep.release_sets import (
         DEFAULT_RELEASE_SET,
@@ -27,7 +32,16 @@ def test_default_release_set_loads_and_pins_the_phase4_quartet() -> None:
     assert rs.name == "default"
     assert rs.description
     sources = {e.source for e in rs.sources}
-    assert sources == {"grch38", "clinvar", "dbsnp", "gnomad-exomes"}
+    assert sources == {
+        "grch38",
+        "clinvar",
+        "dbsnp",
+        "gnomad-exomes",
+        "vep_cache",
+        "alphamissense",
+        "spliceai",
+        "loftee",
+    }
     # Every entry pins a non-empty release label (`INV-R001` rebuildability).
     for e in rs.sources:
         assert e.release

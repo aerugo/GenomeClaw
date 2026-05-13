@@ -121,53 +121,76 @@ def _resolve_vep_cache_dir(reference_dir: Path, release: str | None) -> Path | N
     return cache_root / releases[-1]
 
 
+def _latest_release_dir(source_root: Path) -> Path | None:
+    """Pick the lexicographically-largest release dir under ``source_root``.
+
+    Mirrors the ``_resolve_newest_release`` pattern in
+    :mod:`annotate_vcfanno` so per-plugin data lookups follow the same
+    "newest release wins" convention as the vcfanno overlay sources.
+    Returns ``None`` when the source root doesn't exist or has no
+    release subdirs.
+    """
+    if not source_root.exists():
+        return None
+    releases = sorted(p for p in source_root.iterdir() if p.is_dir())
+    return releases[-1] if releases else None
+
+
 def _resolve_plugins(reference_dir: Path) -> tuple[VepPluginConfig, ...]:
-    """Probe ``reference/vep_cache/Plugins/`` for plugin-data files; enable each plugin
-    whose data is on disk.
+    """Probe per-source reference dirs for plugin-data files; enable each
+    plugin whose data is on disk.
 
     Phase 4D enables three plugins when their data is present:
 
-    - **LoF (LOFTEE)** — requires ``Plugins/loftee_data/human_ancestor.fa.gz``.
-    - **AlphaMissense** — requires ``Plugins/AlphaMissense/AlphaMissense_hg38.tsv.gz``.
-    - **SpliceAI** — requires ``Plugins/SpliceAI/spliceai_scores.raw.snv.hg38.vcf.gz``
-      and the matching ``...indel.hg38.vcf.gz`` sibling.
+    - **LoF (LOFTEE)** — requires
+      ``reference/loftee/<release>/human_ancestor.fa.gz``.
+    - **AlphaMissense** — requires
+      ``reference/alphamissense/<release>/AlphaMissense/AlphaMissense_hg38.tsv.gz``.
+    - **SpliceAI** — requires
+      ``reference/spliceai/<release>/SpliceAI/spliceai_scores.raw.{snv,indel}.hg38.vcf.gz``.
 
-    A plugin whose data file is missing is silently dropped from the
-    config so partial fetches still annotate everything they can. The
-    orchestrator's beat output names which plugins were enabled so the
-    user sees what their data layout supports.
+    Each plugin's data lives under its own ``<source>/<release>/``
+    directory (matching the layout produced by ``genomeclaw refs
+    fetch``), so no cross-source symlinks are needed: the orchestrator
+    picks the newest release of each source, probes for the expected
+    files, and enables the plugin when they're present. A plugin
+    whose data is missing is silently dropped from the config so
+    partial fetches still annotate everything they can.
     """
-    plugins_root = reference_dir / "vep_cache" / "Plugins"
     enabled: list[VepPluginConfig] = []
 
-    loftee_data = plugins_root / "loftee_data"
-    loftee_anc = loftee_data / "human_ancestor.fa.gz"
-    if loftee_anc.exists():
-        enabled.append(
-            VepPluginConfig(
-                name="LoF",
-                args=(
-                    f"loftee_path:{_IMAGE_PLUGIN_DIR}",
-                    f"human_ancestor_fa:{loftee_anc}",
-                ),
+    loftee_release = _latest_release_dir(reference_dir / "loftee")
+    if loftee_release is not None:
+        loftee_anc = loftee_release / "human_ancestor.fa.gz"
+        if loftee_anc.exists():
+            enabled.append(
+                VepPluginConfig(
+                    name="LoF",
+                    args=(
+                        f"loftee_path:{_IMAGE_PLUGIN_DIR}",
+                        f"human_ancestor_fa:{loftee_anc}",
+                    ),
+                )
             )
-        )
 
-    am_dir = plugins_root / "AlphaMissense"
-    am_file = am_dir / "AlphaMissense_hg38.tsv.gz"
-    if am_file.exists():
-        enabled.append(VepPluginConfig(name="AlphaMissense", args=(f"file={am_file}",)))
+    am_release = _latest_release_dir(reference_dir / "alphamissense")
+    if am_release is not None:
+        am_file = am_release / "AlphaMissense" / "AlphaMissense_hg38.tsv.gz"
+        if am_file.exists():
+            enabled.append(VepPluginConfig(name="AlphaMissense", args=(f"file={am_file}",)))
 
-    spliceai_dir = plugins_root / "SpliceAI"
-    spliceai_snv = spliceai_dir / "spliceai_scores.raw.snv.hg38.vcf.gz"
-    spliceai_indel = spliceai_dir / "spliceai_scores.raw.indel.hg38.vcf.gz"
-    if spliceai_snv.exists() and spliceai_indel.exists():
-        enabled.append(
-            VepPluginConfig(
-                name="SpliceAI",
-                args=(f"snv={spliceai_snv}", f"indel={spliceai_indel}"),
+    spliceai_release = _latest_release_dir(reference_dir / "spliceai")
+    if spliceai_release is not None:
+        spliceai_dir = spliceai_release / "SpliceAI"
+        spliceai_snv = spliceai_dir / "spliceai_scores.raw.snv.hg38.vcf.gz"
+        spliceai_indel = spliceai_dir / "spliceai_scores.raw.indel.hg38.vcf.gz"
+        if spliceai_snv.exists() and spliceai_indel.exists():
+            enabled.append(
+                VepPluginConfig(
+                    name="SpliceAI",
+                    args=(f"snv={spliceai_snv}", f"indel={spliceai_indel}"),
+                )
             )
-        )
 
     return tuple(enabled)
 

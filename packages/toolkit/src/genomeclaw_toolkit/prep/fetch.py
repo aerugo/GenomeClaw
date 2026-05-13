@@ -499,12 +499,10 @@ _LAYOUTS: dict[str, _SourceLayout] = {
     ),
     # Phase 4D: SpliceAI precomputed scores for the SpliceAI VEP
     # plugin. Two precomputed VCFs (SNV + indel) + their tabix
-    # sidecars. Historically distributed via Illumina Basespace
-    # (registration required); a public mirror at Broad's Google
-    # Cloud bucket hosts the gnomAD-restricted v1.3 set. The user
-    # supplies the base URL via ``--base-url`` because licensing /
-    # mirror choice is user-specific; the layout pins only the
-    # canonical relative paths.
+    # sidecars. The default base URL points at Broad's public-data
+    # GCS bucket (no registration required); users who hit a missing
+    # file can override with ``--base-url`` to use Illumina Basespace
+    # or an institutional mirror.
     "spliceai": _SourceLayout(
         files=(
             _FetchFile(
@@ -526,6 +524,30 @@ _LAYOUTS: dict[str, _SourceLayout] = {
         ),
         output_subdir="SpliceAI",
     ),
+    # Phase 4D: LOFTEE plugin data files. ``human_ancestor.fa.gz`` is
+    # the ancestral-allele reference LOFTEE uses to confirm
+    # loss-of-function predictions; without it the LoF plugin runs
+    # but emits NULL for ``loftee_lof`` on every record. The file +
+    # its .fai/.gzi indices are hosted on Broad's personal-mirror at
+    # the URL the LOFTEE grch38 README points at. ~600 MB total.
+    # The plugin **code** ships in the toolkit image at
+    # /opt/vep/.vep/Plugins/; only the data is fetched here.
+    "loftee": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath="/human_ancestor.fa.gz",
+                output_filename="human_ancestor.fa.gz",
+            ),
+            _FetchFile(
+                relpath="/human_ancestor.fa.gz.fai",
+                output_filename="human_ancestor.fa.gz.fai",
+            ),
+            _FetchFile(
+                relpath="/human_ancestor.fa.gz.gzi",
+                output_filename="human_ancestor.fa.gz.gzi",
+            ),
+        ),
+    ),
 }
 
 _DEFAULT_BASE_URLS: dict[str, str] = {
@@ -535,11 +557,15 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     "dbsnp": "https://ftp.ncbi.nlm.nih.gov",
     "vep_cache": "https://ftp.ensembl.org",
     "alphamissense": "https://storage.googleapis.com",
-    # SpliceAI base URL is intentionally absent — the user picks the
-    # mirror at fetch time via ``--base-url`` (Illumina Basespace,
-    # Broad's GCS bucket, etc.). The CLI rejects ``fetch --source
-    # spliceai`` without a ``--base-url`` so the licensing choice is
-    # always explicit.
+    # SpliceAI: Broad's public-data GCS bucket hosts the hg38 v1.3
+    # SNV + indel score files. No registration required. Users who
+    # need a different mirror (Illumina Basespace etc.) can override
+    # with ``--base-url`` at fetch time.
+    "spliceai": "https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/SpliceAI",
+    # LOFTEE: Broad personal-mirror at the URL the LOFTEE grch38
+    # README points at. Hosts ``human_ancestor.fa.gz`` + .fai + .gzi
+    # indices.
+    "loftee": "https://personal.broadinstitute.org/konradk/loftee_data/GRCh38",
 }
 
 

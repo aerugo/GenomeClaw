@@ -14,7 +14,7 @@
 # (~200 GB across 24 chromosomes).
 
 name = "default"
-description = "Curated Phase-4 reference quartet (grch38 + clinvar + dbsnp + gnomad-exomes v4.1)."
+description = "Curated Phase-4 reference set (grch38 + clinvar + dbsnp + gnomad-exomes v4.1 + VEP cache 114 + AlphaMissense v1.0 + SpliceAI v1.3 + LOFTEE data)."
 
 [[sources]]
 source = "grch38"
@@ -36,3 +36,37 @@ chroms = [
   "11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
   "21", "22", "X", "Y",
 ]
+
+# Phase 4D — VEP cache (Ensembl release 114, matching ensembl-vep
+# 114.1 in the toolkit image). ~21 GB compressed tarball that extracts
+# to ~75 GB on disk. The fetcher's post-hook handles tarball
+# extraction + cleanup automatically.
+[[sources]]
+source = "vep_cache"
+release = "114"
+
+# Phase 4D — AlphaMissense precomputed pathogenicity scores from
+# DeepMind's public GCS bucket. Two files (.tsv.gz + .tbi), ~4 GB.
+# annotate_vep.py probes the per-source dir directly — no symlinks
+# required.
+[[sources]]
+source = "alphamissense"
+release = "v1.0"
+
+# Phase 4D — SpliceAI precomputed scores from Broad's public-data
+# GCS bucket (no registration required). Two large VCF files (SNV +
+# indel) + their tabix sidecars, ~50 GB total. Users whose mirror of
+# choice differs (Illumina Basespace, institutional copies) can
+# re-fetch the source with an explicit ``--base-url`` override.
+[[sources]]
+source = "spliceai"
+release = "v1.3"
+
+# Phase 4D — LOFTEE data (``human_ancestor.fa.gz`` + indices) from
+# Broad's personal-mirror. ~600 MB. The LOFTEE plugin **code** ships
+# in the toolkit Docker image; only the data file is fetched here.
+# Without this, the LoF plugin still runs but emits NULL for
+# ``loftee_lof`` on every variant.
+[[sources]]
+source = "loftee"
+release = "v1.0"
