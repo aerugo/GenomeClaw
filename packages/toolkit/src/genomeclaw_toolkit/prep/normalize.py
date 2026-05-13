@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 from genomeclaw_toolkit.prep import preflight
 from genomeclaw_toolkit.prep._bcftools import bcftools_index_tbi, bcftools_version
 from genomeclaw_toolkit.prep._bcftools_norm import bcftools_norm
-from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart
+from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart, emit_beat
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -110,13 +110,24 @@ def normalize(
         raise FileNotFoundError(f"source vcf in manifest no longer exists: {src_vcf}")
 
     norm_vcf = run_dir / "normalized.vcf.gz"
+    emit_beat(
+        progress_callback,
+        phase="normalize",
+        message=(
+            "running bcftools norm -m- "
+            + ("(with reference fasta · left-align)" if reference_fasta else "(split multi-allelics)")
+        ),
+        logger=log,
+    )
     bcftools_norm(
         input_vcf=src_vcf,
         output_vcf=norm_vcf,
         reference_fasta=reference_fasta,
     )
+    emit_beat(progress_callback, phase="normalize", message="hashing normalized VCF", logger=log)
     norm_vcf_sha = _sha256_file(norm_vcf)
 
+    emit_beat(progress_callback, phase="normalize", message="building tabix index", logger=log)
     norm_tbi = bcftools_index_tbi(vcf=norm_vcf, derived_dir=run_dir)
     norm_tbi_sha = _sha256_file(norm_tbi)
 

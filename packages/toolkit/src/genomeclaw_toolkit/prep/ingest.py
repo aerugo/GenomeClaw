@@ -42,7 +42,7 @@ from genomeclaw_toolkit import __version__ as TOOLKIT_VERSION
 from genomeclaw_toolkit.prep import preflight
 from genomeclaw_toolkit.prep._bcftools import bcftools_index_tbi
 from genomeclaw_toolkit.prep._bcftools_stats import bcftools_stats
-from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart
+from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart, emit_beat
 from genomeclaw_toolkit.prep._mosdepth import (
     mosdepth_version,
     parse_regions_bed,
@@ -209,7 +209,12 @@ def ingest(
     if progress_callback is not None:
         progress_callback(PhaseStart(phase="ingest"))
 
-    log.info("computing source VCF sha256 (%s)", vcf)
+    emit_beat(
+        progress_callback,
+        phase="ingest",
+        message=f"computing source VCF sha256 ({vcf.name})",
+        logger=log,
+    )
     vcf_sha = _sha256_file(vcf)
 
     # Sniff the reference build before we commit any output. An
@@ -219,12 +224,22 @@ def ingest(
     contigs = read_contigs(vcf)
     reference_build = sniff_reference_build(contigs)
     validate_reference_build_match(reference_dir, reference_build)
-    log.info("inferred reference build %s from VCF contig headers", reference_build)
+    emit_beat(
+        progress_callback,
+        phase="ingest",
+        message=f"inferred reference build {reference_build} from VCF contig headers",
+        logger=log,
+    )
 
     run_id = generate_run_id(input_sha256=vcf_sha, started_at=started_at)
     run_dir = derived_root / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
-    log.info("allocated run dir %s", run_dir)
+    emit_beat(
+        progress_callback,
+        phase="ingest",
+        message=f"allocated run dir {run_dir.name}",
+        logger=log,
+    )
 
     # Index under derived/ if the source's .tbi is missing.
     src_tbi = vcf.parent / f"{vcf.name}.tbi"
@@ -232,7 +247,12 @@ def ingest(
         tbi_path = src_tbi
         tbi_sha: str | None = _sha256_file(src_tbi)
     else:
-        log.info("source VCF has no .tbi sidecar — indexing under %s", run_dir)
+        emit_beat(
+            progress_callback,
+            phase="ingest",
+            message="source VCF has no .tbi sidecar — indexing under derived/",
+            logger=log,
+        )
         tbi_path = bcftools_index_tbi(vcf=vcf, derived_dir=run_dir)
         tbi_sha = _sha256_file(tbi_path)
 
@@ -263,10 +283,20 @@ def ingest(
         for row in iter_variant_rows(vcf):
             yield {**row, "sample_id": sample_id}
 
-    log.info("streaming variants into duckdb (this is the slow step on a real-data ingest)")
+    emit_beat(
+        progress_callback,
+        phase="ingest",
+        message="streaming variants into duckdb (slow step on real-scale ingest)",
+        logger=log,
+    )
     write_variants(store_path, _row_stream(), tag=tag, work_dir=scratch_dir)
     ingest_completed_at = datetime.now(tz=UTC)
-    log.info("variants table written: %s", store_path)
+    emit_beat(
+        progress_callback,
+        phase="ingest",
+        message=f"variants table written: {store_path.name}",
+        logger=log,
+    )
 
     steps: list[dict[str, Any]] = [
         {
@@ -282,14 +312,17 @@ def ingest(
     ]
 
     # bcftools stats — populate manifest's qc.bcftools_stats block (case 19).
-    log.info("running bcftools stats")
+    emit_beat(progress_callback, phase="ingest", message="running bcftools stats", logger=log)
     stats_started_at = datetime.now(tz=UTC)
     stats_result = bcftools_stats(vcf)
-    log.info(
-        "bcftools stats: ts_tv_ratio=%.3f n_snps=%d n_indels=%d",
-        stats_result.ts_tv_ratio,
-        stats_result.n_snps,
-        stats_result.n_indels,
+    emit_beat(
+        progress_callback,
+        phase="ingest",
+        message=(
+            f"bcftools stats · ts_tv={stats_result.ts_tv_ratio:.3f} "
+            f"snps={stats_result.n_snps} indels={stats_result.n_indels}"
+        ),
+        logger=log,
     )
     qc_payload: dict[str, Any] = {
         "bcftools_stats": {
@@ -315,14 +348,24 @@ def ingest(
     bam_path: Path | None = None
     bam_sha: str | None = None
     if bam is not None and bed is not None:
-        log.info("computing BAM/CRAM sha256 (%s)", bam)
+        emit_beat(
+            progress_callback,
+            phase="ingest",
+            message=f"computing BAM/CRAM sha256 ({bam.name})",
+            logger=log,
+        )
         mosdepth_started_at = datetime.now(tz=UTC)
         bam_path = bam
         bam_sha = _sha256_file(bam)
 
         mos_prefix = scratch_dir / "mosdepth" / run_id
         mos_prefix.parent.mkdir(parents=True, exist_ok=True)
-        log.info("running mosdepth coverage against %s", bam)
+        emit_beat(
+            progress_callback,
+            phase="ingest",
+            message=f"running mosdepth coverage against {bam.name}",
+            logger=log,
+        )
         mosdepth_result = run_mosdepth(
             bam=bam,
             bed=bed,

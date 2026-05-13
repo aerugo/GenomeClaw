@@ -30,7 +30,7 @@ import duckdb
 
 from genomeclaw_toolkit import __version__ as TOOLKIT_VERSION
 from genomeclaw_toolkit.prep import preflight
-from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart
+from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart, emit_beat
 from genomeclaw_toolkit.prep._vcf import iter_variant_rows
 from genomeclaw_toolkit.prep.scratch import shard_scratch
 from genomeclaw_toolkit.prep.store import _VARIANTS_DDL, ProvenanceTag, write_variants
@@ -137,10 +137,11 @@ def materialize(
     else:
         materialize_input = norm_vcf
         materialize_input_kind = "normalized"
-    log.info(
-        "materialize starting: run_dir=%s input=%s",
-        run_dir,
-        materialize_input_kind,
+    emit_beat(
+        progress_callback,
+        phase="materialize",
+        message=f"reading {materialize_input_kind} VCF ({materialize_input.name})",
+        logger=log,
     )
 
     manifest = json.loads(manifest_path.read_text())
@@ -202,6 +203,12 @@ def materialize(
     # Scratch base inferred as a sibling of derived/ — see annotate.py /
     # annotate_vcfanno.py for the same pattern.
     scratch_base = run_dir.parent.parent / "scratch"
+    emit_beat(
+        progress_callback,
+        phase="materialize",
+        message="rewriting variants table in DuckDB",
+        logger=log,
+    )
     with shard_scratch(step="materialize", run_id=run_dir.name, base=scratch_base) as scratch:
         write_variants(store_path, _row_stream(), tag=tag, work_dir=scratch)
     completed_at = datetime.now(tz=UTC)

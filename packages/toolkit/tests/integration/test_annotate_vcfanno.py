@@ -318,6 +318,100 @@ def test_invD001_annotate_vcfanno_does_not_mutate_reference_files(
 
 
 @pytest.mark.needs_bio
+def test_annotate_vcfanno_caches_renamed_dbsnp_across_runs(
+    tiny_vcf_gz: Path, genomeclaw_layout: dict[str, Path]
+) -> None:
+    """Second annotate run reuses the cached renamed dbSNP from the first.
+
+    The dbSNP rename is the dominant cost of the annotate phase
+    (~15-30 min single-threaded on real data). Caching the output
+    keyed on (source_sha + rename_map) means iterative pipeline
+    development pays the rename cost once and reuses across runs. This
+    test exercises the cache by running annotate twice against the
+    same reference layout and asserting:
+
+    1. The cache directory + cached file appear after the first run.
+    2. The second run reuses the cached file (its mtime is unchanged).
+    3. Both runs produce structurally-equivalent vcfanno outputs
+       (same dbsnp_rsid annotations on the common variants).
+    """
+    import gzip
+
+    from genomeclaw_toolkit.prep.annotate_vcfanno import (
+        _DBSNP_REFSEQ_TO_UCSC_MAP,
+        _PERSISTENT_CACHE_SUBDIR,
+        _persistent_cache_key,
+        annotate_vcfanno,
+    )
+    from genomeclaw_toolkit.prep.ingest import ingest
+    from genomeclaw_toolkit.prep.normalize import normalize
+
+    _stage_full_reference(genomeclaw_layout["reference"])
+
+    # ----- Run 1: cache miss → builds the cached entry -----
+    run_dir_1 = ingest(
+        vcf=tiny_vcf_gz,
+        reference_dir=genomeclaw_layout["reference"],
+        derived_root=genomeclaw_layout["derived"],
+        sample_id="vcfanno-cache-1",
+    )
+    normalize(run_dir=run_dir_1)
+    out_1 = annotate_vcfanno(
+        run_dir=run_dir_1,
+        reference_dir=genomeclaw_layout["reference"],
+    )
+    assert out_1.exists()
+
+    # Locate the cached dbSNP entry: keyed on the source file's sha256
+    # + the rename-map text. The genomeclaw_layout fixture lays scratch
+    # at <tmp>/scratch (sibling of derived/).
+    dbsnp_source = genomeclaw_layout["reference"] / "dbsnp" / "b157" / "dbsnp.vcf.gz"
+    source_sha = _sha256(dbsnp_source)
+    key = _persistent_cache_key(source_sha, _DBSNP_REFSEQ_TO_UCSC_MAP)
+    cache_dir = (
+        genomeclaw_layout["derived"].parent / "scratch" / _PERSISTENT_CACHE_SUBDIR / "dbsnp" / key
+    )
+    cached_vcf = cache_dir / "dbsnp.ucsc.vcf.gz"
+    cached_tbi = cache_dir / "dbsnp.ucsc.vcf.gz.tbi"
+    assert cached_vcf.exists(), f"cache miss should have built {cached_vcf}"
+    assert cached_tbi.exists()
+    first_mtime = cached_vcf.stat().st_mtime_ns
+
+    # ----- Run 2: cache hit → reuses the entry (mtime unchanged) -----
+    run_dir_2 = ingest(
+        vcf=tiny_vcf_gz,
+        reference_dir=genomeclaw_layout["reference"],
+        derived_root=genomeclaw_layout["derived"],
+        sample_id="vcfanno-cache-2",
+    )
+    normalize(run_dir=run_dir_2)
+    out_2 = annotate_vcfanno(
+        run_dir=run_dir_2,
+        reference_dir=genomeclaw_layout["reference"],
+    )
+    assert out_2.exists()
+    second_mtime = cached_vcf.stat().st_mtime_ns
+    assert second_mtime == first_mtime, (
+        "cached dbsnp file mtime changed between runs — the cache wasn't reused"
+    )
+
+    # Both annotate outputs should carry the same dbsnp_rsid for the
+    # shared chr1:1000 variant — the cache hit must produce the same
+    # annotations as the cache miss.
+    def _dbsnp_rsid_at_chr1_1000(vcf: Path) -> str | None:
+        with gzip.open(vcf, "rt") as fh:
+            for line in fh:
+                if line.startswith("chr1\t1000\t"):
+                    info = line.split("\t")[7]
+                    for entry in info.split(";"):
+                        if entry.startswith("dbsnp_rsid="):
+                            return entry.split("=", 1)[1]
+        return None
+
+    assert _dbsnp_rsid_at_chr1_1000(out_1) == _dbsnp_rsid_at_chr1_1000(out_2)
+
+
+@pytest.mark.needs_bio
 def test_annotate_vcfanno_refuses_when_normalized_vcf_missing(
     tiny_vcf_gz: Path, genomeclaw_layout: dict[str, Path]
 ) -> None:

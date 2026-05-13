@@ -17,6 +17,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -187,6 +189,19 @@ def refs_fetch(
             help="Comma-separated chromosome filter for per-chromosome sources.",
         ),
     ] = None,
+    workers: Annotated[
+        int,
+        typer.Option(
+            "--workers",
+            help=(
+                "Max concurrent downloads under --all (one thread per source). "
+                "Default 4 — matches the curated release set. Set to 1 for "
+                "sequential / debugging."
+            ),
+            min=1,
+            max=16,
+        ),
+    ] = 4,
 ) -> None:
     """Download reference / annotation data into ``reference/<source>/<release>/``.
 
@@ -219,6 +234,7 @@ def refs_fetch(
             release_set=release_set,
             reference_root=reference_root,
             base_url=base_url,
+            max_workers=workers,
         )
         return
 
@@ -411,8 +427,17 @@ def _fetch_release_set(
     release_set: str | None,
     reference_root: Path,
     base_url: str | None,
+    max_workers: int = 4,
 ) -> None:
-    """Fetch every source in the named (or default) release set."""
+    """Fetch every source in the named (or default) release set.
+
+    Runs up to ``max_workers`` sources concurrently (one thread per
+    source). Shares one progress surface across every source so the
+    user sees a single live ``rich.progress.Progress`` panel (rich
+    mode) or one NDJSON event stream (JSON mode) for the whole bulk
+    fetch — concurrent bars stream into the panel as their underlying
+    downloads progress.
+    """
     from genomeclaw_toolkit.prep.release_sets import (
         DEFAULT_RELEASE_SET,
         ReleaseSetNotFound,
@@ -425,35 +450,173 @@ def _fetch_release_set(
         raise UsageError(str(exc)) from exc
 
     console = get_console()
-    if not ctx.is_quiet and not ctx.is_json:
-        console.print(f"fetching release set '{rs.name}' ({len(rs.sources)} source(s))")
 
-    fetched: list[str] = []
-    for entry in rs.sources:
-        if not ctx.is_quiet and not ctx.is_json:
-            console.print(f"--- {entry.source} @ {entry.release} ---")
-        try:
-            _do_fetch_one(
-                source=entry.source,
-                release=entry.release,
-                reference_root=reference_root,
-                base_url=base_url,
-                chroms=entry.chroms,
+    if ctx.is_json:
+        # One envelope for the whole bulk fetch + one shared NDJSON
+        # emitter. Per-source events stream through this one callback.
+        envelope = {
+            "cli_output_schema_version": "1.0",
+            "command": "refs.fetch_all",
+            "stream": True,
+            "release_set": rs.name,
+            "source_count": len(rs.sources),
+        }
+        sys.stdout.write(json.dumps(envelope, separators=(",", ":")))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        mark_stdout_consumed()
+
+        callback = _thread_safe_callback(make_fetch_ndjson_emitter(sys.stdout))
+        fetched = _run_release_set_loop(
+            rs, callback, reference_root, base_url, ctx=ctx, max_workers=max_workers
+        )
+
+        # Terminal summary event so consumers can detect end-of-stream
+        # without counting source completions themselves.
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "event": "fetch_all_complete",
+                    "release_set": rs.name,
+                    "sources_fetched": list(fetched),
+                },
+                separators=(",", ":"),
             )
-        except PreconditionError:
-            # Already-present treated as skip in bulk mode.
-            if not ctx.is_quiet and not ctx.is_json:
-                # Escape the literal '[skip]' so rich doesn't interpret it as markup.
-                console.print(rf"[dim]\[skip] {entry.source}/{entry.release} already present[/dim]")
-            continue
-        fetched.append(entry.source)
+        )
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        return
+
+    # Rich mode — one Progress panel across the whole bulk fetch.
+    if not ctx.is_quiet:
+        console.print(
+            f"[bold]fetching release set '{rs.name}'[/bold] "
+            f"({len(rs.sources)} source(s))"
+        )
+    progress = make_fetch_progress()
+    with progress:
+        # rich's Progress is documented as thread-safe; no extra lock
+        # needed around the renderer callback.
+        callback = make_fetch_rich_renderer(progress)
+        fetched = _run_release_set_loop(
+            rs, callback, reference_root, base_url, ctx=ctx, max_workers=max_workers
+        )
 
     emit(
         ctx=ctx,
         command="refs.fetch_all",
         payload=_FetchAllPayload(release_set=rs.name, sources_fetched=tuple(fetched)),
-        rich_renderer=lambda _p: console.print(f"release set '{rs.name}' fetched"),
+        rich_renderer=lambda _p: console.print(
+            f"release set '{rs.name}' fetched ({len(fetched)}/{len(rs.sources)} source(s))"
+        ),
     )
+
+
+def _thread_safe_callback(callback: object) -> object:
+    """Wrap a ``progress_callback`` in a mutex.
+
+    Multiple fetcher threads call the same callback concurrently. For
+    the NDJSON emitter that's a write-interleave hazard (two threads
+    could split each other's lines mid-byte). For the rich-progress
+    renderer it's belt-and-braces — rich's ``Progress`` is documented
+    as thread-safe, but the wrapper costs nothing and protects future
+    callback shapes.
+    """
+    if callback is None:
+        return None
+    lock = threading.Lock()
+
+    def _locked(event: object) -> None:
+        with lock:
+            callback(event)  # type: ignore[operator]
+
+    return _locked
+
+
+def _run_release_set_loop(
+    rs: object,
+    callback: object,
+    reference_root: Path,
+    base_url: str | None,
+    *,
+    ctx: AppContext,
+    max_workers: int = 4,
+) -> list[str]:
+    """Fetch every release-set entry concurrently; one shared ``callback``.
+
+    Args:
+        rs: A loaded ``ReleaseSet`` (kept as ``object`` to avoid an
+            import cycle when type-checking).
+        callback: ``progress_callback`` shared across every source — a
+            rich-progress driver or NDJSON emitter, depending on mode.
+        reference_root: Reference root passed to each underlying fetch.
+        base_url: Optional base-URL override.
+        ctx: Active ``AppContext``; consulted for quiet-mode skip
+            logging.
+        max_workers: Upper bound on concurrent source downloads. The
+            actual worker count is ``min(max_workers, len(sources))``.
+
+    Returns:
+        List of source names that were actually fetched (i.e. excluding
+        sources skipped because their version was already on disk).
+        Order reflects completion order, not release-set order.
+    """
+    console = get_console()
+    fetched: list[str] = []
+    fetched_lock = threading.Lock()
+    entries = list(rs.sources)  # type: ignore[attr-defined]
+
+    def _fetch_one_source(entry: object) -> None:
+        try:
+            _do_fetch_one(
+                source=entry.source,  # type: ignore[attr-defined]
+                release=entry.release,  # type: ignore[attr-defined]
+                reference_root=reference_root,
+                base_url=base_url,
+                chroms=entry.chroms,  # type: ignore[attr-defined]
+                progress_callback=callback,
+            )
+        except PreconditionError:
+            # Already-present sources are skipped silently in bulk
+            # mode — the user asked for "fetch everything missing"
+            # and refusing to re-download what's there is the right
+            # answer. Surface the skip in rich mode as a dim line
+            # above the live progress region.
+            if not ctx.is_quiet and not ctx.is_json:
+                console.print(
+                    rf"[dim]\[skip] {entry.source}/{entry.release} already present[/dim]"  # type: ignore[attr-defined]
+                )
+            return
+        with fetched_lock:
+            fetched.append(entry.source)  # type: ignore[attr-defined]
+
+    workers = max(1, min(max_workers, len(entries)))
+
+    if workers == 1:
+        # Sequential path — used when the user explicitly passed
+        # --workers 1 (debugging) or when the release set has only
+        # one source. Inline so exceptions propagate naturally.
+        for entry in entries:
+            _fetch_one_source(entry)
+        return fetched
+
+    # Parallel path — one thread per source, bounded by ``workers``.
+    # Collect any exceptions and re-raise after all in-flight downloads
+    # finish so a single failure doesn't abort everything else.
+    first_exc: BaseException | None = None
+    with ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="genomeclaw-fetch"
+    ) as pool:
+        futures = [pool.submit(_fetch_one_source, e) for e in entries]
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+            except BaseException as exc:
+                if first_exc is None:
+                    first_exc = exc
+    if first_exc is not None:
+        raise first_exc
+    return fetched
 
 
 def _legacy_fetch_all() -> None:

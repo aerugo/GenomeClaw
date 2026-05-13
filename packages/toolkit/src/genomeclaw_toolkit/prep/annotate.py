@@ -113,6 +113,10 @@ def annotate(
 
     # Sub-orchestrator 1: vcfanno overlays. Writes vcfanno.vcf.gz +
     # .tbi into run_dir; appends a ``vcfanno`` step to provenance.json.
+    # The progress_callback flows through so annotate-vcfanno can emit
+    # beat-by-beat PhaseMessage events ("staging clinvar", "[3/24] chr3
+    # vcfanno running", …) — the parent's PhaseStart/PhaseComplete pair
+    # frames the sub-orchestrator's per-step beats in the renderer.
     annotate_vcfanno(
         run_dir=run_dir,
         reference_dir=reference_dir,
@@ -120,6 +124,7 @@ def annotate(
         gnomad_exomes_release=gnomad_exomes_release,
         dbsnp_release=dbsnp_release,
         started_at=started_at,
+        progress_callback=progress_callback,
     )
 
     # Sub-orchestrator 2: VEP (Phase 4D placeholder). When 4D ships,

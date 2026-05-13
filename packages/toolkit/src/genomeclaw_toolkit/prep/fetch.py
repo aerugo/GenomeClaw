@@ -34,6 +34,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,15 @@ log = logging.getLogger(__name__)
 _DEFAULT_MAX_RESUME_ATTEMPTS: Final[int] = 5
 _DEFAULT_RETRY_BACKOFF_INITIAL_SEC: Final[float] = 1.0
 _DEFAULT_RETRY_BACKOFF_CAP_SEC: Final[float] = 30.0
+
+# Default file-level parallelism inside a single ``fetch()`` invocation.
+# 4 keeps total open connections modest while letting multi-file sources
+# (gnomAD-exomes' 48 files) actually run concurrently. The CLI's outer
+# source-level parallelism layers on top: with the default 4 sources × 4
+# inner workers the peak is ~16 concurrent downloads, capped naturally
+# by single-file sources (clinvar / dbsnp / grch38) having only 1-2
+# files each.
+_DEFAULT_CONCURRENT_FILES: Final[int] = 4
 
 # Periodic interval between in-flight progress lines on long downloads.
 # Tight enough to feel alive on a 100 Mbps link (one line every ~200 MB);
@@ -713,6 +723,7 @@ def fetch(  # noqa: PLR0913 — top-level orchestrator
     max_resume_attempts: int = _DEFAULT_MAX_RESUME_ATTEMPTS,
     retry_backoff_initial_sec: float = _DEFAULT_RETRY_BACKOFF_INITIAL_SEC,
     retry_backoff_cap_sec: float = _DEFAULT_RETRY_BACKOFF_CAP_SEC,
+    concurrent_files: int = _DEFAULT_CONCURRENT_FILES,
 ) -> Path:
     """Fetch ``source`` at ``release`` into ``reference_root/<source>/<release>/``.
 
@@ -804,10 +815,15 @@ def fetch(  # noqa: PLR0913 — top-level orchestrator
         )
 
     # Download each file; verify MD5 when sidecar present; atomic-rename.
+    # Files within a source can run concurrently — they write to
+    # disjoint scratch paths and the progress_callback the CLI passes
+    # is already thread-safe (see ``_thread_safe_callback`` in
+    # ``_cli/commands/refs.py``). Capped at ``concurrent_files`` to
+    # keep TCP connection counts modest.
     overall_start = time.monotonic()
-    for idx, f in enumerate(files_to_fetch, start=1):
-        if layout.is_multi_file and not quiet_stdout:
-            print(f"  [{idx}/{len(files_to_fetch)}]", file=sys.stdout, flush=True)
+    inner_workers = max(1, min(concurrent_files, len(files_to_fetch)))
+
+    def _fetch_one(f: _FetchFile) -> None:
         _fetch_one_file(
             f,
             resolved_base=resolved_base,
@@ -818,6 +834,33 @@ def fetch(  # noqa: PLR0913 — top-level orchestrator
             retry_backoff_initial_sec=retry_backoff_initial_sec,
             retry_backoff_cap_sec=retry_backoff_cap_sec,
         )
+
+    if inner_workers == 1:
+        # Sequential path — single-file source, or user passed
+        # ``concurrent_files=1`` for debugging.
+        for idx, f in enumerate(files_to_fetch, start=1):
+            if layout.is_multi_file and not quiet_stdout:
+                print(f"  [{idx}/{len(files_to_fetch)}]", file=sys.stdout, flush=True)
+            _fetch_one(f)
+    else:
+        # Parallel path — gnomAD-exomes' 48 files (and any other
+        # multi-file source) run with ``inner_workers`` threads. The
+        # first failure aborts the rest gracefully via the pool's
+        # context manager.
+        first_exc: BaseException | None = None
+        with ThreadPoolExecutor(
+            max_workers=inner_workers,
+            thread_name_prefix=f"fetch-{source}",
+        ) as pool:
+            futures = [pool.submit(_fetch_one, f) for f in files_to_fetch]
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except BaseException as exc:
+                    if first_exc is None:
+                        first_exc = exc
+        if first_exc is not None:
+            raise first_exc
 
     # Per-source post-fetch hook (e.g. ``samtools faidx`` for grch38).
     # Failures propagate — a missing index is a fixable error the user

@@ -40,11 +40,11 @@ def test_fetch_all_iterates_default_release_set(
     result = invoke_cli(["refs", "fetch", "--all", "--reference-root", str(tmp_path)])
 
     assert result.exit_code == 0, result.stderr
-    # Default set ships four sources; the call sequence must be the same
-    # order the TOML lays out (grch38 first because normalize depends on
-    # its index).
-    sources_called = [c["source"] for c in calls]
-    assert sources_called == ["grch38", "clinvar", "dbsnp", "gnomad-exomes"]
+    # Default set ships four sources; assert the SET (parallel fetch
+    # means completion order is non-deterministic — what matters is
+    # that every source was dispatched, not the order).
+    sources_called = {c["source"] for c in calls}
+    assert sources_called == {"grch38", "clinvar", "dbsnp", "gnomad-exomes"}
     # gnomAD must propagate its chroms tuple from the manifest; the others
     # must not (single-file sources reject ``chroms``).
     by_source = {c["source"]: c for c in calls}
@@ -106,7 +106,8 @@ def test_fetch_all_skips_already_present_sources(
     result = invoke_cli(["refs", "fetch", "--all", "--reference-root", str(tmp_path)])
 
     assert result.exit_code == 0, result.stderr
-    assert calls == ["grch38", "clinvar", "dbsnp", "gnomad-exomes"]
+    # Set equality (parallel fetch → non-deterministic call order).
+    assert set(calls) == {"grch38", "clinvar", "dbsnp", "gnomad-exomes"}
     assert "[skip]" in result.stderr and "clinvar" in result.stderr
 
 

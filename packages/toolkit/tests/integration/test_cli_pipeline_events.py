@@ -343,6 +343,136 @@ def test_pipeline_run_no_stdout_pollution_outside_events(
 
 
 # ---------------------------------------------------------------------------
+# PhaseMessage — beat-by-beat events plumbed through both renderers
+# ---------------------------------------------------------------------------
+
+
+def _stub_all_with_beats(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the four orchestrators so each emits PhaseStart → 2×PhaseMessage → PhaseComplete."""
+    import genomeclaw_toolkit._cli.commands.pipeline as pipeline_cmd
+    from genomeclaw_toolkit.prep._events import (
+        PhaseComplete,
+        PhaseMessage,
+        PhaseStart,
+    )
+
+    run_dir = Path("/fake/derived/run-id")
+
+    def _make_fake(phase: str, out_path: Path):
+        def fake(**kwargs):
+            cb = kwargs.get("progress_callback")
+            if cb is not None:
+                cb(PhaseStart(phase=phase))
+                cb(PhaseMessage(phase=phase, message=f"{phase} beat 1"))
+                cb(PhaseMessage(phase=phase, message=f"{phase} beat 2"))
+                cb(PhaseComplete(phase=phase, duration_sec=0.01, run_dir=str(run_dir)))
+            return out_path
+
+        return fake
+
+    monkeypatch.setattr(pipeline_cmd, "ingest_impl", _make_fake("ingest", run_dir))
+    monkeypatch.setattr(
+        pipeline_cmd,
+        "normalize_impl",
+        _make_fake("normalize", run_dir / "normalized.vcf.gz"),
+    )
+    monkeypatch.setattr(
+        pipeline_cmd, "annotate_impl", _make_fake("annotate", run_dir / "annotated.vcf.gz")
+    )
+    monkeypatch.setattr(
+        pipeline_cmd,
+        "materialize_impl",
+        _make_fake("materialize", run_dir / "variants.duckdb"),
+    )
+
+
+def test_pipeline_run_json_emits_phase_message_events_per_phase(
+    invoke_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`--json pipeline run` surfaces PhaseMessage beats as `phase_message` events.
+
+    The four stubbed orchestrators each emit two PhaseMessage events
+    between PhaseStart and PhaseComplete; the NDJSON stream must carry
+    each one as a `{"event": "phase_message", "phase": ..., "message": ...}`
+    line so downstream consumers (the agent layer, log collectors) see
+    sub-phase progress.
+    """
+    _stub_all_with_beats(monkeypatch)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    _stage_sample(raw, "MPNRGLQ2K", "MPNRGLQ2K.hc.vcf.gz")
+    ref_root = tmp_path / "reference"
+    (ref_root / "grch38").mkdir(parents=True)
+
+    result = invoke_cli(
+        [
+            "--json",
+            "pipeline",
+            "run",
+            "--raw-root",
+            str(raw),
+            "--reference-root",
+            str(ref_root),
+            "--derived-root",
+            str(tmp_path / "derived"),
+        ]
+    )
+    assert result.exit_code == 0, result.stderr
+
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    events = [json.loads(line) for line in lines[1:]]
+    messages = [e for e in events if e["event"] == "phase_message"]
+    # Two messages per phase × four phases = 8 total beats.
+    assert len(messages) == 8, f"expected 8 phase_message events; got {len(messages)}"
+    by_phase: dict[str, list[str]] = {}
+    for m in messages:
+        by_phase.setdefault(m["phase"], []).append(m["message"])
+    assert by_phase == {
+        "ingest": ["ingest beat 1", "ingest beat 2"],
+        "normalize": ["normalize beat 1", "normalize beat 2"],
+        "annotate": ["annotate beat 1", "annotate beat 2"],
+        "materialize": ["materialize beat 1", "materialize beat 2"],
+    }
+
+
+def test_pipeline_run_rich_renders_phase_message_beats_above_progress(
+    invoke_cli, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Rich mode prints each PhaseMessage as a sub-line attributed to its phase."""
+    _stub_all_with_beats(monkeypatch)
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    _stage_sample(raw, "MPNRGLQ2K", "MPNRGLQ2K.hc.vcf.gz")
+    ref_root = tmp_path / "reference"
+    (ref_root / "grch38").mkdir(parents=True)
+
+    result = invoke_cli(
+        [
+            "pipeline",
+            "run",
+            "--raw-root",
+            str(raw),
+            "--reference-root",
+            str(ref_root),
+            "--derived-root",
+            str(tmp_path / "derived"),
+        ]
+    )
+    assert result.exit_code == 0, result.stderr
+
+    # Every beat message body should appear in the rich-mode stderr,
+    # alongside its phase name (the renderer prefixes the line with
+    # the phase). Assert by message body rather than exact ANSI/box
+    # layout so the test stays robust against rich version drift.
+    for phase in ("ingest", "normalize", "annotate", "materialize"):
+        for beat_n in (1, 2):
+            needle = f"{phase} beat {beat_n}"
+            assert needle in result.stderr, (
+                f"expected beat {needle!r} in rich-mode stderr; got: {result.stderr!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # INV-D001: source VCF unchanged after rich-mode pipeline run
 # (covered by stubbed call args: the source VCF path is passed through
 # unchanged; no orchestrator writes to it).

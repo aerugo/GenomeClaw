@@ -153,9 +153,25 @@ if [[ "${GENOMECLAW_OFFLINE:-0}" == "1" ]]; then
   network_args+=("--network" "none")
 fi
 
+# Pseudo-TTY allocation. Off-TTY (CI / pipes / agents calling us
+# programmatically), the containerised CLI sees ``sys.stdout.isatty()
+# == False`` and rich's ``Live`` renderer (which drives ``Progress``)
+# silently disables itself — the user sees no progress bars at all.
+# Allocate ``-t`` when stdout IS a TTY so rich-mode progress renders
+# correctly. Keep it off otherwise — pipes + agents want clean
+# unbuffered bytes, not terminal control sequences.
+#
+# Override with GENOMECLAW_FORCE_TTY=1 / GENOMECLAW_NO_TTY=1 for tests
+# / CI smoke runs that explicitly want a different shape.
+tty_args=()
+if [[ "${GENOMECLAW_FORCE_TTY:-0}" == "1" ]] || { [[ "${GENOMECLAW_NO_TTY:-0}" != "1" ]] && [[ -t 1 ]]; }; then
+  tty_args+=("-t")
+fi
+
 cmd=(
   docker run --rm
   --user "${uid}:${gid}"
+  ${tty_args[@]+"${tty_args[@]}"}
   ${network_args[@]+"${network_args[@]}"}
   ${mounts[@]+"${mounts[@]}"}
   "$image"

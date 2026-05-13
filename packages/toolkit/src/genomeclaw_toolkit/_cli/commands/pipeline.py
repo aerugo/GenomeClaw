@@ -24,6 +24,7 @@ NDJSON output matches the documented schema in
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import time
@@ -43,6 +44,7 @@ from genomeclaw_toolkit._cli.errors import PreconditionError, RuntimeFailure, Us
 from genomeclaw_toolkit._cli.output import emit, mark_stdout_consumed
 from genomeclaw_toolkit._cli.renderers.pipeline import (
     make_pipeline_ndjson_emitter,
+    make_pipeline_progress,
     make_pipeline_rich_renderer,
 )
 from genomeclaw_toolkit.prep._events import PhaseFailed, PipelineComplete
@@ -53,7 +55,7 @@ from genomeclaw_toolkit.prep.normalize import normalize as normalize_impl
 from genomeclaw_toolkit.prep.reference_build import AmbiguousReferenceBuild
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from genomeclaw_toolkit._cli.context import AppContext
     from genomeclaw_toolkit.prep._events import _ProgressEvent
@@ -99,22 +101,36 @@ def _begin_ndjson_stream(*, command: str) -> None:
     mark_stdout_consumed()
 
 
-def _build_callback(ctx: AppContext, *, command: str) -> Callable[[_ProgressEvent], None] | None:
+@contextlib.contextmanager
+def _build_callback(
+    ctx: AppContext, *, command: str
+) -> Iterator[Callable[[_ProgressEvent], None] | None]:
     """Pick the right ``progress_callback`` for this output mode.
 
-    In JSON mode, also writes the first-line envelope to stdout before
-    returning the per-event emitter.
+    Returned as a context manager so the rich-mode caller can wrap the
+    orchestrator call in a ``with`` block — that's what keeps the
+    :class:`rich.progress.Progress` Live region animating while the
+    orchestrator runs (spinner + elapsed counter). Without the context
+    manager wrapping, the Live thread never starts and the user sees a
+    bare ``▶ ingest`` Panel with no movement.
 
-    Returns:
+    In JSON mode the context manager is a no-op (no Live to manage)
+    but writes the first-line envelope to stdout on entry.
+
+    Yields:
         A callback consumer, or ``None`` when the command is fully
         quiet (``--quiet`` + rich mode → suppress progress output).
     """
     if ctx.is_json:
         _begin_ndjson_stream(command=command)
-        return make_pipeline_ndjson_emitter(sys.stdout)
+        yield make_pipeline_ndjson_emitter(sys.stdout)
+        return
     if ctx.is_quiet:
-        return None
-    return make_pipeline_rich_renderer()
+        yield None
+        return
+    progress = make_pipeline_progress()
+    with progress:
+        yield make_pipeline_rich_renderer(progress)
 
 
 def _emit_phase_failed(
@@ -204,26 +220,28 @@ def pipeline_ingest(
         raw_root=raw_root,
         reference_root=reference_root,
     )
-    callback = _build_callback(ctx, command="pipeline.ingest")
-    try:
-        run_dir = ingest_impl(
-            vcf=vcf_path,
-            reference_dir=reference_dir,
-            derived_root=derived_root,
-            sample_id=resolved_sample_id,
-            bam=bam,
-            bed=bed,
-            reference_fasta=reference_fasta,
-            progress_callback=callback,
-        )
-    except FileNotFoundError as exc:
-        _emit_phase_failed(
-            callback, phase="ingest", error_type="precondition_error", message=str(exc)
-        )
-        raise PreconditionError(str(exc)) from exc
-    except (AmbiguousReferenceBuild, ValueError) as exc:
-        _emit_phase_failed(callback, phase="ingest", error_type="usage_error", message=str(exc))
-        raise UsageError(str(exc)) from exc
+    with _build_callback(ctx, command="pipeline.ingest") as callback:
+        try:
+            run_dir = ingest_impl(
+                vcf=vcf_path,
+                reference_dir=reference_dir,
+                derived_root=derived_root,
+                sample_id=resolved_sample_id,
+                bam=bam,
+                bed=bed,
+                reference_fasta=reference_fasta,
+                progress_callback=callback,
+            )
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="ingest", error_type="precondition_error", message=str(exc)
+            )
+            raise PreconditionError(str(exc)) from exc
+        except (AmbiguousReferenceBuild, ValueError) as exc:
+            _emit_phase_failed(
+                callback, phase="ingest", error_type="usage_error", message=str(exc)
+            )
+            raise UsageError(str(exc)) from exc
 
     if not ctx.is_json:
         _emit_run_dir(ctx, command="pipeline.ingest", run_dir=run_dir)
@@ -255,18 +273,18 @@ def pipeline_normalize(
     """Run bcftools norm; produce ``normalized.vcf.gz`` in the run dir."""
     ctx: AppContext = typer_ctx.obj
     resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
-    callback = _build_callback(ctx, command="pipeline.normalize")
-    try:
-        out = normalize_impl(
-            run_dir=resolved_dir,
-            reference_fasta=reference_fasta,
-            progress_callback=callback,
-        )
-    except FileNotFoundError as exc:
-        _emit_phase_failed(
-            callback, phase="normalize", error_type="precondition_error", message=str(exc)
-        )
-        raise PreconditionError(str(exc)) from exc
+    with _build_callback(ctx, command="pipeline.normalize") as callback:
+        try:
+            out = normalize_impl(
+                run_dir=resolved_dir,
+                reference_fasta=reference_fasta,
+                progress_callback=callback,
+            )
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="normalize", error_type="precondition_error", message=str(exc)
+            )
+            raise PreconditionError(str(exc)) from exc
 
     if not ctx.is_json:
         _emit_run_dir(ctx, command="pipeline.normalize", run_dir=out)
@@ -298,19 +316,19 @@ def pipeline_annotate(
     """Annotate ``normalized.vcf.gz`` via the chained annotation parent."""
     ctx: AppContext = typer_ctx.obj
     resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
-    callback = _build_callback(ctx, command="pipeline.annotate")
-    try:
-        out = annotate_impl(
-            run_dir=resolved_dir,
-            reference_dir=reference_dir,
-            clinvar_release=clinvar_release,
-            progress_callback=callback,
-        )
-    except FileNotFoundError as exc:
-        _emit_phase_failed(
-            callback, phase="annotate", error_type="precondition_error", message=str(exc)
-        )
-        raise PreconditionError(str(exc)) from exc
+    with _build_callback(ctx, command="pipeline.annotate") as callback:
+        try:
+            out = annotate_impl(
+                run_dir=resolved_dir,
+                reference_dir=reference_dir,
+                clinvar_release=clinvar_release,
+                progress_callback=callback,
+            )
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="annotate", error_type="precondition_error", message=str(exc)
+            )
+            raise PreconditionError(str(exc)) from exc
 
     if not ctx.is_json:
         _emit_run_dir(ctx, command="pipeline.annotate", run_dir=out)
@@ -331,14 +349,14 @@ def pipeline_materialize(
     """Rewrite the variants table from ``normalized.vcf.gz``."""
     ctx: AppContext = typer_ctx.obj
     resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
-    callback = _build_callback(ctx, command="pipeline.materialize")
-    try:
-        out = materialize_impl(run_dir=resolved_dir, progress_callback=callback)
-    except FileNotFoundError as exc:
-        _emit_phase_failed(
-            callback, phase="materialize", error_type="precondition_error", message=str(exc)
-        )
-        raise PreconditionError(str(exc)) from exc
+    with _build_callback(ctx, command="pipeline.materialize") as callback:
+        try:
+            out = materialize_impl(run_dir=resolved_dir, progress_callback=callback)
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="materialize", error_type="precondition_error", message=str(exc)
+            )
+            raise PreconditionError(str(exc)) from exc
 
     if not ctx.is_json:
         _emit_run_dir(ctx, command="pipeline.materialize", run_dir=out)
@@ -394,67 +412,71 @@ def pipeline_run(
         raw_root=raw_root,
         reference_root=reference_root,
     )
-    callback = _build_callback(ctx, command="pipeline.run")
     pipeline_start = time.monotonic()
 
-    try:
-        run_dir_path = ingest_impl(
-            vcf=vcf_path,
-            reference_dir=reference_dir,
-            derived_root=derived_root,
-            sample_id=resolved_sample_id,
-            bam=bam,
-            bed=bed,
-            reference_fasta=reference_fasta,
-            progress_callback=callback,
-        )
-    except FileNotFoundError as exc:
-        _emit_phase_failed(
-            callback, phase="ingest", error_type="precondition_error", message=str(exc)
-        )
-        raise PreconditionError(f"ingest failed: {exc}") from exc
-    except (AmbiguousReferenceBuild, ValueError) as exc:
-        _emit_phase_failed(callback, phase="ingest", error_type="usage_error", message=str(exc))
-        raise UsageError(f"ingest failed: {exc}") from exc
-
-    try:
-        normalize_impl(
-            run_dir=run_dir_path,
-            reference_fasta=reference_fasta,
-            progress_callback=callback,
-        )
-    except FileNotFoundError as exc:
-        _emit_phase_failed(
-            callback, phase="normalize", error_type="runtime_error", message=str(exc)
-        )
-        raise RuntimeFailure(f"normalize failed: {exc}") from exc
-
-    try:
-        annotate_impl(
-            run_dir=run_dir_path,
-            reference_dir=reference_root,
-            clinvar_release=clinvar_release,
-            progress_callback=callback,
-        )
-    except FileNotFoundError as exc:
-        _emit_phase_failed(callback, phase="annotate", error_type="runtime_error", message=str(exc))
-        raise RuntimeFailure(f"annotate failed: {exc}") from exc
-
-    try:
-        materialize_impl(run_dir=run_dir_path, progress_callback=callback)
-    except FileNotFoundError as exc:
-        _emit_phase_failed(
-            callback, phase="materialize", error_type="runtime_error", message=str(exc)
-        )
-        raise RuntimeFailure(f"materialize failed: {exc}") from exc
-
-    if callback is not None:
-        callback(
-            PipelineComplete(
-                run_dir=str(run_dir_path),
-                duration_sec=time.monotonic() - pipeline_start,
+    with _build_callback(ctx, command="pipeline.run") as callback:
+        try:
+            run_dir_path = ingest_impl(
+                vcf=vcf_path,
+                reference_dir=reference_dir,
+                derived_root=derived_root,
+                sample_id=resolved_sample_id,
+                bam=bam,
+                bed=bed,
+                reference_fasta=reference_fasta,
+                progress_callback=callback,
             )
-        )
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="ingest", error_type="precondition_error", message=str(exc)
+            )
+            raise PreconditionError(f"ingest failed: {exc}") from exc
+        except (AmbiguousReferenceBuild, ValueError) as exc:
+            _emit_phase_failed(
+                callback, phase="ingest", error_type="usage_error", message=str(exc)
+            )
+            raise UsageError(f"ingest failed: {exc}") from exc
+
+        try:
+            normalize_impl(
+                run_dir=run_dir_path,
+                reference_fasta=reference_fasta,
+                progress_callback=callback,
+            )
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="normalize", error_type="runtime_error", message=str(exc)
+            )
+            raise RuntimeFailure(f"normalize failed: {exc}") from exc
+
+        try:
+            annotate_impl(
+                run_dir=run_dir_path,
+                reference_dir=reference_root,
+                clinvar_release=clinvar_release,
+                progress_callback=callback,
+            )
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="annotate", error_type="runtime_error", message=str(exc)
+            )
+            raise RuntimeFailure(f"annotate failed: {exc}") from exc
+
+        try:
+            materialize_impl(run_dir=run_dir_path, progress_callback=callback)
+        except FileNotFoundError as exc:
+            _emit_phase_failed(
+                callback, phase="materialize", error_type="runtime_error", message=str(exc)
+            )
+            raise RuntimeFailure(f"materialize failed: {exc}") from exc
+
+        if callback is not None:
+            callback(
+                PipelineComplete(
+                    run_dir=str(run_dir_path),
+                    duration_sec=time.monotonic() - pipeline_start,
+                )
+            )
 
     if not ctx.is_json:
         _emit_run_dir(ctx, command="pipeline.run", run_dir=run_dir_path)

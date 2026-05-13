@@ -134,6 +134,99 @@ def bcftools_index_tbi(*, vcf: Path, derived_dir: Path) -> Path:
     return out
 
 
+def bcftools_view_region(*, input_vcf: Path, region: str, output_vcf: Path) -> None:
+    """Extract records on ``region`` (e.g. ``"chr1"``) into ``output_vcf``.
+
+    Used by the per-chrom sharding path in ``annotate_vcfanno`` so each
+    shard's vcfanno invocation can target only the matching gnomAD-exomes
+    per-chrom file instead of all 24, eliminating the 24× redundant
+    tabix seek that the whole-input-with-24-blocks shape incurs.
+
+    Args:
+        input_vcf: bgzipped + tabix-indexed VCF.
+        region: a chromosome name (``chr1``, ``chrX``, …) or a
+            tabix-style range (``chr1:1000-2000``); passed straight to
+            ``bcftools view --regions``.
+        output_vcf: target bgzipped VCF; parent dir created if missing.
+    """
+    output_vcf.parent.mkdir(parents=True, exist_ok=True)
+    bcftools_run(
+        [
+            "view",
+            "--regions",
+            region,
+            "-Oz",
+            "-o",
+            str(output_vcf),
+            str(input_vcf),
+        ]
+    )
+
+
+def bcftools_view_regions_file(
+    *,
+    input_vcf: Path,
+    regions_file: Path,
+    output_vcf: Path,
+) -> None:
+    """Extract records on every region listed in ``regions_file`` into ``output_vcf``.
+
+    Wrapper around ``bcftools view --regions-file``. The file contains
+    one ``CHROM`` or ``CHROM:START-END`` per line. Used by the
+    annotate-vcfanno catch-all shard for non-canonical contigs: a typical
+    GRCh38 consumer-genomics VCF has 1,500+ decoy / alt / unplaced
+    contigs that we don't want to process as 1,500 individual vcfanno
+    shards (each vcfanno startup is multi-second on a real-scale
+    reference layout). Grouping them all into one shard via a regions
+    file keeps the total subprocess overhead bounded.
+
+    Args:
+        input_vcf: bgzipped + tabix-indexed VCF.
+        regions_file: pre-written file, one region per line.
+        output_vcf: target bgzipped VCF; parent dir created if missing.
+    """
+    output_vcf.parent.mkdir(parents=True, exist_ok=True)
+    bcftools_run(
+        [
+            "view",
+            "--regions-file",
+            str(regions_file),
+            "-Oz",
+            "-o",
+            str(output_vcf),
+            str(input_vcf),
+        ]
+    )
+
+
+def bcftools_concat(*, inputs: Sequence[Path], output_vcf: Path, naive: bool = False) -> None:
+    """Concat ``inputs`` (assumed in coordinate order) into ``output_vcf``.
+
+    ``naive=True`` passes ``--naive`` to bcftools, which skips
+    decompress/recompress and only stitches BGZF blocks. Much faster
+    (~seconds vs ~minutes on the per-chrom annotated shards), but
+    requires identical headers + sample columns + INFO declarations
+    across every input. The per-chrom sharding path in
+    ``annotate_vcfanno`` always includes every annotation block in every
+    shard's vcfanno config (using a gnomAD-exomes fallback file for
+    chroms without a per-chrom counterpart), so headers stay uniform and
+    naive concat is safe there.
+
+    Args:
+        inputs: ordered tuple of bgzipped VCFs.
+        output_vcf: target bgzipped VCF; parent dir created if missing.
+        naive: when True, use ``bcftools concat --naive``.
+    """
+    if not inputs:
+        raise ValueError("bcftools_concat: at least one input is required")
+    output_vcf.parent.mkdir(parents=True, exist_ok=True)
+    args = ["concat"]
+    if naive:
+        args.append("--naive")
+    args.extend(["-Oz", "-o", str(output_vcf), *(str(p) for p in inputs)])
+    bcftools_run(args)
+
+
 def bcftools_annotate_clinvar(
     *,
     input_vcf: Path,
@@ -195,8 +288,11 @@ __all__ = [
     "BcftoolsError",
     "VersionInfo",
     "bcftools_annotate_clinvar",
+    "bcftools_concat",
     "bcftools_index_tbi",
     "bcftools_run",
     "bcftools_version",
+    "bcftools_view_region",
+    "bcftools_view_regions_file",
     "parse_version_output",
 ]

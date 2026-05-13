@@ -160,6 +160,32 @@ class PhaseComplete(_ProgressEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class PhaseMessage(_ProgressEvent):
+    """A beat-by-beat status update emitted from inside a running phase.
+
+    Emitted by long-running orchestrators between :class:`PhaseStart`
+    and :class:`PhaseComplete` so the user (rich mode) or NDJSON
+    consumer sees what the phase is doing right now — "staging dbsnp",
+    "[3/24] chr3 vcfanno running", "concatenating shards". Cosmetic:
+    phase semantics don't depend on whether or how many of these the
+    orchestrator emits.
+
+    Args:
+        phase: Parent phase name (``"ingest"`` / ``"annotate"`` / …).
+            Must match the ``phase`` of the surrounding
+            :class:`PhaseStart` / :class:`PhaseComplete` pair so the
+            renderer can attribute the message to the right task row.
+        message: Short user-facing description of the current beat.
+            Phase prefix should NOT be included — the renderer adds
+            it.
+    """
+
+    phase: str
+    message: str
+    _event_type: ClassVar[str] = "phase_message"
+
+
+@dataclass(frozen=True, slots=True)
 class PhaseFailed(_ProgressEvent):
     """A pipeline stage failed.
 
@@ -190,6 +216,38 @@ class PipelineComplete(_ProgressEvent):
     _event_type: ClassVar[str] = "pipeline_complete"
 
 
+def emit_beat(
+    callback: Any,
+    *,
+    phase: str,
+    message: str,
+    logger: Any = None,
+) -> None:
+    """Log + emit a :class:`PhaseMessage` beat in one call.
+
+    Long-running orchestrators sprinkle this between heavy steps so the
+    rich-mode user gets sub-phase visibility (printed above the live
+    progress region) and the NDJSON consumer gets per-beat events.
+    The same string also lands in the structured log via ``logger.info``
+    when one is provided — that path is what populates the forensic log
+    file the operator inspects when something goes wrong.
+
+    Args:
+        callback: The orchestrator's ``progress_callback`` (or
+            ``None``). Tolerates ``None`` so the helper is safe to call
+            from code paths that have no callback wired (tests, library
+            consumers).
+        phase: Parent phase name; passed into the :class:`PhaseMessage`.
+        message: Beat description (without a phase prefix).
+        logger: Optional :class:`logging.Logger`; when given, the beat
+            is also written to it at INFO level.
+    """
+    if logger is not None:
+        logger.info("%s: %s", phase, message)
+    if callback is not None:
+        callback(PhaseMessage(phase=phase, message=message))
+
+
 __all__ = [
     "FileComplete",
     "FileFailed",
@@ -197,6 +255,8 @@ __all__ = [
     "FileStart",
     "PhaseComplete",
     "PhaseFailed",
+    "PhaseMessage",
     "PhaseStart",
     "PipelineComplete",
+    "emit_beat",
 ]

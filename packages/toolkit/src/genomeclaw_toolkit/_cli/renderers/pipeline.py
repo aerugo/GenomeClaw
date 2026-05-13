@@ -4,7 +4,13 @@ Two factories — :func:`make_pipeline_rich_renderer` and
 :func:`make_pipeline_ndjson_emitter` — return event-consumer callables
 that the command hands to each orchestrator's ``progress_callback``.
 
-Rich mode renders one :class:`rich.panel.Panel` per phase boundary;
+Rich mode renders a live :class:`rich.progress.Progress` instance with
+one indeterminate task per phase: each phase gets a spinner + colored
+name + an elapsed-time counter that updates while the orchestrator
+runs. When the phase finishes the task converts to a "✓ done in X" row
+and the next phase's task spins up below it. ``PipelineComplete`` adds
+a final footer Panel.
+
 JSON mode writes compact NDJSON to a sink. Both consume the same
 :class:`~genomeclaw_toolkit.prep._events._ProgressEvent` stream — the
 factory you pick determines the surface, not the contract.
@@ -19,15 +25,23 @@ emitter returned here.
 from __future__ import annotations
 
 import json
+import threading
 from typing import TYPE_CHECKING
 
 from rich.panel import Panel
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.text import Text
 
 from genomeclaw_toolkit._cli.console import get_console
 from genomeclaw_toolkit.prep._events import (
     PhaseComplete,
     PhaseFailed,
+    PhaseMessage,
     PhaseStart,
     PipelineComplete,
 )
@@ -35,6 +49,8 @@ from genomeclaw_toolkit.prep._events import (
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import TextIO
+
+    from rich.progress import TaskID
 
     from genomeclaw_toolkit.prep._events import _ProgressEvent
 
@@ -59,59 +75,98 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h{minutes:02d}m{seconds_int:02d}s"
 
 
-def make_pipeline_rich_renderer() -> Callable[[_ProgressEvent], None]:
-    """Build a ``progress_callback`` that renders rich Panels per phase.
+def make_pipeline_progress() -> Progress:
+    """Construct the rich :class:`Progress` used by pipeline commands.
 
-    Each :class:`PhaseStart` emits a header-style Panel; each
-    :class:`PhaseComplete` emits a completion Panel with duration;
-    :class:`PhaseFailed` flips the colour to red. :class:`PipelineComplete`
-    closes with a summary footer.
+    One task per phase, all indeterminate (no total — the orchestrators
+    don't expose row counts at this layer). The spinner + elapsed
+    counter give the user continuous "still alive" feedback even when
+    the orchestrator is between events (e.g. the multi-minute sha256
+    of a multi-GB source VCF during ingest, or the vcfanno run during
+    annotate).
+    """
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold]{task.description}[/bold]"),
+        TimeElapsedColumn(),
+        console=get_console(),
+        transient=False,
+        expand=False,
+    )
+
+
+def make_pipeline_rich_renderer(
+    progress: Progress,
+) -> Callable[[_ProgressEvent], None]:
+    """Build a ``progress_callback`` that drives a live ``Progress`` panel.
+
+    ``PhaseStart`` adds an indeterminate task (spinner + elapsed timer)
+    that keeps animating while the orchestrator works. ``PhaseComplete``
+    flips that row to ``✓ {phase} — Xm Ys`` and stops the spinner.
+    ``PhaseFailed`` flips it red. ``PipelineComplete`` emits a final
+    summary Panel below the progress region.
+
+    Args:
+        progress: An active :class:`Progress` (already entered via
+            ``with progress:``).
 
     Returns:
-        A callable accepting any :class:`_ProgressEvent` subclass. Events
-        outside the pipeline-stage hierarchy are silently ignored — this
-        renderer is scoped to phase + pipeline events.
+        A callable accepting any :class:`_ProgressEvent` subclass.
+        Events outside the pipeline-stage hierarchy are silently
+        ignored — this renderer is scoped to phase + pipeline events.
     """
     console = get_console()
+    task_ids: dict[str, TaskID] = {}
 
     def _on_event(event: _ProgressEvent) -> None:
         if isinstance(event, PhaseStart):
             style = _PHASE_STYLE.get(event.phase, "white")
-            console.print(
-                Panel(
-                    Text(f"▶ {event.phase}", style=f"bold {style}"),
-                    title_align="left",
-                    border_style=style,
-                    expand=False,
-                )
+            task_id = progress.add_task(
+                f"[{style}]▶ {event.phase}[/{style}]",
+                total=None,  # indeterminate — spinner + elapsed only
+            )
+            task_ids[event.phase] = task_id
+            return
+        if isinstance(event, PhaseMessage):
+            # Beat messages from inside a running phase. Print above the
+            # live progress region via the Progress's own console — rich
+            # serialises this so the spinner stays smooth and the beat
+            # line scrolls in beneath previously-emitted output. Style
+            # the prefix in the same per-phase colour as the task row so
+            # the user can scan-link beats to their owning phase even
+            # when phases overlap in the future.
+            style = _PHASE_STYLE.get(event.phase, "white")
+            progress.console.print(
+                f"  [dim {style}]\u21b3 {event.phase}:[/dim {style}] {event.message}",
+                highlight=False,
             )
             return
         if isinstance(event, PhaseComplete):
             style = _PHASE_STYLE.get(event.phase, "white")
-            console.print(
-                Panel(
-                    Text(
-                        f"✓ {event.phase} — {_format_duration(event.duration_sec)}",
-                        style=f"bold {style}",
+            tid = task_ids.get(event.phase)
+            if tid is not None:
+                progress.update(
+                    tid,
+                    description=(
+                        f"[{style}]✓ {event.phase}"
+                        f"[/{style}] · {_format_duration(event.duration_sec)}"
                     ),
-                    title_align="left",
-                    border_style=style,
-                    expand=False,
+                    completed=1,
+                    total=1,
                 )
-            )
+                progress.stop_task(tid)
             return
         if isinstance(event, PhaseFailed):
-            console.print(
-                Panel(
-                    Text(
-                        f"✗ {event.phase} — {event.error_type}: {event.message}",
-                        style="bold red",
+            tid = task_ids.get(event.phase)
+            if tid is not None:
+                progress.update(
+                    tid,
+                    description=(
+                        f"[red]✗ {event.phase}[/red] · "
+                        f"{event.error_type}: {event.message}"
                     ),
-                    title_align="left",
-                    border_style="red",
-                    expand=False,
                 )
-            )
+                progress.stop_task(tid)
             return
         if isinstance(event, PipelineComplete):
             console.print(
@@ -139,17 +194,27 @@ def make_pipeline_ndjson_emitter(sink: TextIO) -> Callable[[_ProgressEvent], Non
 
     Returns:
         A callable accepting any :class:`_ProgressEvent` subclass.
+
+    Thread safety: annotate-vcfanno runs per-chrom vcfanno shards in
+    parallel via a :class:`~concurrent.futures.ThreadPoolExecutor`, so
+    ``emit_beat`` may be called concurrently from multiple worker
+    threads. The lock here guarantees one event lands as one whole line
+    on the sink; without it, two writers could interleave bytes mid-
+    object and corrupt the NDJSON stream.
     """
+    write_lock = threading.Lock()
 
     def _on_event(event: _ProgressEvent) -> None:
-        sink.write(json.dumps(event.to_json_dict(), separators=(",", ":"), ensure_ascii=False))
-        sink.write("\n")
-        sink.flush()
+        line = json.dumps(event.to_json_dict(), separators=(",", ":"), ensure_ascii=False) + "\n"
+        with write_lock:
+            sink.write(line)
+            sink.flush()
 
     return _on_event
 
 
 __all__ = [
     "make_pipeline_ndjson_emitter",
+    "make_pipeline_progress",
     "make_pipeline_rich_renderer",
 ]
