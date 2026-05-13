@@ -49,6 +49,21 @@ _VARIANT_DOMAIN_COLUMNS: tuple[tuple[str, str, bool], ...] = (
     ("clinvar_id", "TEXT", True),
     ("clinvar_classification", "TEXT", True),
     ("clinvar_review_status", "TEXT", True),
+    # vcfanno overlay outputs (Phase 4E / 4C.4 closure). dbSNP's RS is
+    # an integer rsid in the source (e.g. ``1261322339``); stored as
+    # TEXT so downstream consumers can format with the conventional
+    # ``rs`` prefix without losing leading-zero / future-format
+    # flexibility. gnomAD allele frequencies are REAL in [0.0, 1.0];
+    # gnomad_af_popmax_pop is the population label that owns the
+    # popmax value (``afr``, ``amr``, ``eas``, ``nfe``, ``sas``).
+    ("dbsnp_rsid", "TEXT", True),
+    ("gnomad_af_popmax", "REAL", True),
+    ("gnomad_af_popmax_pop", "TEXT", True),
+    ("gnomad_af_afr", "REAL", True),
+    ("gnomad_af_amr", "REAL", True),
+    ("gnomad_af_eas", "REAL", True),
+    ("gnomad_af_nfe", "REAL", True),
+    ("gnomad_af_sas", "REAL", True),
 )
 
 _VARIANTS_DDL = """
@@ -66,6 +81,15 @@ CREATE TABLE variants (
     clinvar_id              TEXT,
     clinvar_classification  TEXT,
     clinvar_review_status   TEXT,
+    -- vcfanno overlay outputs (Phase 4E / 4C.4 closure)
+    dbsnp_rsid              TEXT,
+    gnomad_af_popmax        REAL,
+    gnomad_af_popmax_pop    TEXT,
+    gnomad_af_afr           REAL,
+    gnomad_af_amr           REAL,
+    gnomad_af_eas           REAL,
+    gnomad_af_nfe           REAL,
+    gnomad_af_sas           REAL,
     -- Provenance (the canonical seven; INV-R001)
     source_path     TEXT NOT NULL,
     source_sha256   TEXT NOT NULL,

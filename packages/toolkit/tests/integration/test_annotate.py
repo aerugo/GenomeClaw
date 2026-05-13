@@ -280,6 +280,15 @@ def test_materialize_after_annotate_populates_clinvar_columns(
         non_annotated_count = conn.execute(
             "SELECT COUNT(*) FROM variants WHERE clinvar_classification IS NULL"
         ).fetchone()
+        # Phase 4E surface: dbSNP rsids + gnomAD population AFs land
+        # in their own v0.2 columns. The synthetic fixture's chr1:1000
+        # variant has data for every source — assert each new column
+        # is populated for that record.
+        row_chr1_1000 = conn.execute(
+            "SELECT dbsnp_rsid, gnomad_af_popmax, gnomad_af_popmax_pop, "
+            "       gnomad_af_afr, gnomad_af_amr, gnomad_af_eas, gnomad_af_nfe, gnomad_af_sas "
+            "FROM variants WHERE chrom = 'chr1' AND pos = 1000"
+        ).fetchone()
     finally:
         conn.close()
 
@@ -288,6 +297,26 @@ def test_materialize_after_annotate_populates_clinvar_columns(
     # At least one row should remain unannotated (non-matching).
     assert non_annotated_count is not None
     assert non_annotated_count[0] >= 1
+    # Phase 4E columns populated for the all-three-sources row.
+    assert row_chr1_1000 is not None, "expected chr1:1000 row to exist"
+    (
+        dbsnp_rsid,
+        af_popmax,
+        af_popmax_pop,
+        af_afr,
+        af_amr,
+        af_eas,
+        af_nfe,
+        af_sas,
+    ) = row_chr1_1000
+    assert dbsnp_rsid == "rs1", dbsnp_rsid
+    assert af_popmax == pytest.approx(0.0123)
+    assert af_popmax_pop == "nfe"
+    assert af_afr == pytest.approx(0.001)
+    assert af_amr == pytest.approx(0.005)
+    assert af_eas == pytest.approx(0.0001)
+    assert af_nfe == pytest.approx(0.0123)
+    assert af_sas == pytest.approx(0.003)
 
 
 @pytest.mark.needs_bio

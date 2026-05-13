@@ -184,10 +184,26 @@ def materialize(
     # materialize call.
     _reset_variants_table(store_path)
 
-    # When the annotated VCF is present, pull the ClinVar INFO fields
-    # into v0.2 columns; otherwise these columns stay NULL.
+    # When the annotated VCF is present, pull the vcfanno-produced
+    # INFO fields into v0.2 columns; otherwise these columns stay NULL.
+    # ClinVar fields come from the `vcfanno` clinvar block; the
+    # ``gnomad_af_*`` + ``dbsnp_rsid`` fields come from the
+    # gnomAD-exomes per-chrom block + the (cached, renamed) dbSNP block
+    # respectively. Every INFO field listed here MUST have a matching
+    # nullable column in store.py's ``_VARIANT_DOMAIN_COLUMNS``.
     info_fields: tuple[str, ...] = (
-        ("clinvar_classification", "clinvar_review_status")
+        (
+            "clinvar_classification",
+            "clinvar_review_status",
+            "dbsnp_rsid",
+            "gnomad_af_popmax",
+            "gnomad_af_popmax_pop",
+            "gnomad_af_afr",
+            "gnomad_af_amr",
+            "gnomad_af_eas",
+            "gnomad_af_nfe",
+            "gnomad_af_sas",
+        )
         if materialize_input_kind == "annotated"
         else ()
     )
