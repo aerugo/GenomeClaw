@@ -1,10 +1,18 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.7
-**Last Updated**: 2026-05-12
+**Version**: 1.11
+**Last Updated**: 2026-05-17
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.11 (2026-05-17)** — adds `INV-A003` (Agent-Curated Compute Provenance) and revises `INV-C001` to v1.7 with the **PRS-decline pattern** as a peer to the existing hard-genes decline. The PRS-decline pattern (four criteria: top-decile RR < ~1.5×; no independent replication; ancestry-calibration failure for this user; no biologically-grounded polygenic basis) is the methodological gate that prevents the agent from computing confident-looking percentiles for traits with no meaningful evidence base. `INV-A003` covers agent-triggered host-side compute more broadly: choice rationale + alternatives considered must be persisted both as a column on the derived-store row and as a memory note; the decline pattern is documented in the agent system prompt with the two-named-reasons rule. Both changes ride on the MVP Q8 v1.6 amendment (agent-driven PRS computation replaces the fixed-three-trait static panel; see [docs/reports/agent-driven-prs-computation.md](../reports/agent-driven-prs-computation.md)).
+
+**v1.10 (2026-05-15)** — revises `INV-A002` to v1.7: clarifies that the synthesis-reasoning floor is the **model's ceiling**, not the literal string `"max"`. OpenClaw validates the `thinking` parameter per-model + silently rejects unsupported values. For the canonical default model `openai/gpt-5.5` the ceiling is `xhigh` (the supported set is `off, minimal, low, medium, high, xhigh`); `max` is rejected. Slices 1-4 of the agent-research-and-synthesis plan baked `max` and the gate fell through. Slice 5 fixes the bake to `xhigh` + adds a per-model validation gate. See [docs/plans/active/agent-research-and-synthesis/work-notes.md](../plans/completed/agent-research-and-synthesis/work-notes.md).
+
+**v1.9 (2026-05-15)** — revises `INV-P001` to v1.7: distinguishes **native OpenAI `web_search`** (part of the agent provider's egress envelope; on by default when the agent is OpenAI) from **managed `web_search` providers** (Brave / Tavily / etc.; a separate named egress destination; opt-in). Confirms `web_fetch` remains a third named egress destination outside the OpenAI Responses API contract and ships disabled. The sandbox image's baked config matches: `tools.web.search.enabled: true` + no `tools.web.search.provider` pinned + `tools.web.fetch.enabled: false`. See [docs/plans/active/agent-research-and-synthesis/](../plans/active/agent-research-and-synthesis/).
+
+**v1.8 (2026-05-15)** — adds `INV-A` (Agent Cognition & Memory) category with `INV-A001` (Memory Provenance) + `INV-A002` (Synthesis Reasoning Floor); revises `INV-C001` v1.6 to replace `reference/curated_notes/` with the agent-memory + reasoned-research pattern; clarifies `INV-P001` for the third user-configured named egress destination (web search / managed research). See [docs/plans/active/agent-research-and-synthesis/](../plans/active/agent-research-and-synthesis/).
 
 If a rule is not in this document, it is not yet a project invariant. Convert hard rules into invariants here before treating them as enforceable.
 
@@ -31,6 +39,7 @@ If a rule is not in this document, it is not yet a project invariant. Convert ha
 | `INV-P` | Privacy & Sensitivity Boundaries | Local-first defaults, egress controls, secret separation |
 | `INV-R` | Rebuildability & Provenance | Deterministic rebuilds, schema/tool versioning |
 | `INV-C` | Communication & Clinical Boundary | Research vs. clinical framing, uncertainty handling |
+| `INV-A` | Agent Cognition & Memory | Reasoning effort floors, memory note provenance, research-and-synthesis discipline |
 
 Numbers are assigned in order of introduction within a category and never reused.
 
@@ -158,12 +167,26 @@ Numbers are assigned in order of introduction within a category and never reused
 
 ## INV-P001: Privacy Is the Default Operating Mode
 
-**Rule**: User genomic data and derived phenotype-linked data are sensitive by default. They must not leave the local trusted environment **except** via the user-configured NemoClaw agent boundary (governed by `INV-P002`) or via an explicit, per-operation opt-in.
+**Rule**: User genomic data and derived phenotype-linked data are sensitive by default. They must not leave the local trusted environment **except** via a small set of **user-configured, named egress destinations**, each governed by `INV-P002`'s minimal-sufficient-payload contract.
+
+**Named egress destinations** *(v1.7, revised 2026-05-15 to distinguish native-vs-managed `web_search` after the option-B decision)*:
+
+1. **The NemoClaw agent provider** (e.g., OpenAI gpt-5.5, Claude Opus, Gemini) — active when the user has configured the agent. Receives tool-call results (minimal-sufficient per `INV-P002`). **Native provider-side tools** are part of this destination's envelope, not separate destinations — see (1a).
+
+   - **(1a) Native `web_search` on the agent provider's API** *(v1.7, new)*. When the agent provider is OpenAI Responses-API and `tools.web.search.enabled: true` + `tools.web.search.provider` unset, OpenAI's hosted `web_search` tool auto-activates. Per the OpenClaw web-search docs, this is "provider-owned behavior in the bundled OpenAI plugin and only applies to native OpenAI API traffic." Topic-term queries from this path go to OpenAI under the agent's existing API key — the **same** egress destination the user already configured for the agent. It is **not** a new named egress destination; the topic-only payload rule still applies. The sandbox image ships with this on by default so the agent's research-and-synthesis protocol works out-of-the-box for the canonical OpenAI deployment.
+
+2. **The host-side `genomeclaw-service`** — the local HTTP surface the plugin reads (`127.0.0.1:8643` on the host machine). Not technically remote, but listed for clarity.
+
+3. **Managed `web_search` provider** (Brave, Tavily, Perplexity, Exa, Firecrawl, DuckDuckGo, SearXNG, etc., per the OpenClaw web-search provider list) — **off by default**; the user opts in by running `openclaw config set tools.web.search.provider <name>` + supplying the provider's API key. Receives **topic-term queries only** — **never user-identifying genomic payload**. When a managed provider is pinned, OpenClaw routes `web_search` calls there instead of through OpenAI's native path. Adding a managed provider IS the act of adding a new named egress destination.
+
+4. **`web_fetch`** *(v1.7, explicitly enumerated as a separate destination)* — issues outbound HTTP from the sandbox to arbitrary URLs. **NOT** part of the OpenAI Responses API contract. Off by default in the sandbox image (`tools.web.fetch.enabled: false`). The user enables it explicitly with `openclaw config set tools.web.fetch.enabled true` when their workflow requires it. Each fetched URL is itself effectively a target endpoint.
+
+Other remote integrations (alternative annotators, telemetry, crash reporting) are off by default and gated behind explicit per-operation opt-in.
 
 **Requirements**:
-- **Genomic source files** (FASTQ, BAM/CRAM, VCF/gVCF) **never leave the device**, regardless of agent or integration configuration.
-- The NemoClaw agent provider (e.g., Claude Opus, Gemini) is the only remote destination active by default for tool-call results, and is governed by `INV-P002`.
-- Other remote integrations (literature lookups, alternative annotators, telemetry) are off by default and gated behind a per-operation, per-target opt-in.
+- **Genomic source files** (FASTQ, BAM/CRAM, VCF/gVCF) **never leave the device**, regardless of any configured egress destination.
+- The `web_search` query payload contains only topic-term strings; it never contains the user's variants, rsids, genotypes, gene-by-gene exploration history, or sample identifiers. **This binds both the native OpenAI path AND any managed provider path** — the native-vs-managed distinction does not relax the topic-only rule.
+- Native OpenAI `web_search` is treated as part of the agent-provider envelope only because the user has already consented to OpenAI egress by configuring the OpenAI provider. If the user switches to a non-OpenAI agent provider (Claude, Gemini), they have not consented to OpenAI search and the native-OpenAI path does not apply.
 - Secrets, tokens, and credentials live outside `data/` and are never committed.
 - Logs, traces, and crash dumps must not contain raw variants, sample identifiers, or phenotype-linked content unless the user enabled verbose local logging.
 - Redaction or summarization happens *before* any payload constructed for an external service is materialized.
@@ -174,11 +197,16 @@ Numbers are assigned in order of introduction within a category and never reused
 - Logging, telemetry, and error reporting in both packages.
 - Host config and environment-variable handling; secrets must live outside `data/` and outside any committed config.
 - Any caching layer that might serialize sensitive content.
+- The sandbox image's baked `openclaw.json` — the v1.7 contract is enforced at build time, not at runtime configuration.
 
 **How to verify**:
-- Privacy-default tests: with default config, simulate a full assistant flow and assert no outbound call carries genomic source files, and no outbound call goes to an endpoint other than the configured agent provider or the configured host service.
+- **Default-config baked-image gate**: `test_invP001_sandbox_web_egress_contract` (in [packages/toolkit/tests/invariants/](../../packages/toolkit/tests/invariants/test_invP001_sandbox_web_egress_contract.py)) reads the built sandbox image's `/sandbox/.openclaw/openclaw.json` and asserts (a) `tools.web.search.enabled: true`, (b) `tools.web.search.provider` absent, (c) `tools.web.fetch.enabled: false`. A regression flipping any of these gets caught at the `needs_sandbox` sweep on every image rebuild.
+- **Default-config behavioural test**: with the v1.7 sandbox config, simulate a research-and-synthesis turn and assert (a) the `web_search` query payload contains only topic-term strings, (b) it does not contain any rsid, gene symbol from the user's variants, sample id, or genotype string, (c) the response is routed back into the agent envelope via the same minimal-sufficient surface. **No `web_fetch` call happens in the default config.**
+- **Managed-provider opt-in test**: with a pinned managed `tools.web.search.provider`, assert (a) the request egresses to the managed provider's API host (not OpenAI), (b) the topic-only payload rule still binds.
+- **`web_fetch` opt-in test**: with `tools.web.fetch.enabled: true`, assert the request egresses only to the URL the agent named + the URL itself does not contain user-identifying data.
 - Unit tests on redaction utilities.
 - Lint check / type guard around an `egress_safe(...)` boundary type so unredacted payloads cannot reach external clients.
+- **Agent-prompt content gate**: `test_invP001_system_prompt_teaches_native_vs_managed_web_search` + `test_invP001_system_prompt_documents_web_fetch_disabled_default` (in [packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py)) verify the prompt teaches the v1.7 distinction so the agent reasons correctly about its tool surface.
 
 ---
 
@@ -248,7 +276,17 @@ Numbers are assigned in order of introduction within a category and never reused
   - **`lifestyle`** (e.g., caffeine metabolism via `CYP1A2`, lactase persistence via `LCT`, muscle-fiber composition via `ACTN3`, circadian preference, alcohol metabolism via `ALDH2`/`ADH1B`) — no escalation marker; agent may give **direct lifestyle advice with calibrated evidence framing**; clinician-deferral is *not* the default response. Recommendations are framed as falsifiable experiments rather than guidelines.
   - **`mixed`** (a finding with both a lifestyle dimension and a clinical-actionability angle) — carries both lifestyle framing and an escalation marker; the agent disambiguates the two angles in its response.
 - Lifestyle advice must still cite evidence and **calibrate uncertainty explicitly**. The evidence base for lifestyle findings is generally weaker than for ClinVar-grade pathogenicity calls; the agent acknowledges this when relevant. Lifestyle findings include an `evidence_quality` field (e.g., `meta-analysis`, `replicated-rct`, `observational`, `mechanistic-only`) distinct from ClinVar's review-status stars.
-- **Curated lifestyle calibration via `reference/curated_notes/`** *(v1.5; per [MVP spec Q9](../plans/active/mvp/spec.md))*: lifestyle findings may cite a `gene_note:<gene>` evidence reference resolving to a host-side, user-authored markdown note under `reference/curated_notes/<gene>.md`. Companion topic notes resolve under `reference/curated_notes/topics/<topic>.md` (e.g., `topic:hard-genes` per Q7). The note carries the project owner's calibrated framing of the variant's effect, evidence quality, and any disclosure language. The structured `evidence_quality` field above remains in the schema for future-proofing but is **not the primary calibration surface** in v0; the agent composes lifestyle responses from the user's variant call plus the curated note's framing, in the user's voice. This pattern is uniquely well-suited to single-user systems (the user is the curator; the agent is the reader) and uniquely poorly-suited to multi-user systems.
+- **PRS-decline pattern** *(v1.7, added 2026-05-17 per MVP Q8 v1.6 + [agent-driven PRS report](../reports/agent-driven-prs-computation.md))*: when the agent considers computing a PRS for a trait, it must first evaluate whether the PRS literature is mature enough to produce a meaningful result. **Decline gracefully** with two named reasons if any of the following hold: (a) top-decile relative risk < ~1.5× (discriminative power too low for the percentile to materially shift the user's prior); (b) no independent replication of the best available scorefile (single-lab PRSs in the published literature have repeatedly failed to replicate externally); (c) ancestry-calibration failure for this user (the `calibration_warning` would dominate the meaningful signal); (d) no biologically-grounded polygenic basis (heritability-only scorefiles produce percentiles that have no honest per-individual interpretation). The decline is *reasoned* — the agent runs the research step first; *not* hardcoded refusal. Peer to the existing hard-genes decline pattern (PER3 / CLOCK / VNTRs / paralogs / MT genome). Enforced by `INV-A003` (provenance) + the prompt-content gate + a `live_llm` decline behavioural test.
+- **Lifestyle calibration via agent research-and-synthesis** *(v1.6; supersedes v1.5; per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*: lifestyle findings cite evidence references of two new agent-side kinds — `memory:<file>#<anchor>` (a prior research synthesis the agent persisted to its workspace memory) and `web:<url>` (a current online source the agent retrieved during this turn). The agent composes lifestyle responses by reasoned research over (the model's training knowledge + current online sources via OpenClaw `web_search` + prior memory notes via `memory_search`), grounded in the user's specific variant call from the GenomeClaw host service. The synthesis happens at the maximum reasoning level the configured model supports — see `INV-A002`. The pre-authored `reference/curated_notes/<gene>.md` mechanism from v1.5 is **retired**.
+- **Memory-validation requirement on every `memory:<id>` citation** *(v1.6, added 2026-05-15 to close a hallucination-propagation gap)*: when a synthesis turn cites a `memory:<id>` reference, the agent must apply reasoning at the `INV-A002` synthesis-turn floor to **validate** the cited memory note. Validation has three independent checks:
+  1. **Conclusion ↔ source grounding** — does the memory note's stated conclusion actually follow from the primary sources the memory note cites? Or has the conclusion overreached its sources during prior synthesis?
+  2. **Source quality** — are the cited primary sources sufficient (peer-reviewed, multi-source, free of obvious bias)? Has critical context been omitted?
+  3. **Freshness** — is the memory note past its recorded freshness date, AND is the topic one where evidence has plausibly evolved (e.g., monthly-updated databases like ClinVar; ongoing meta-analyses)?
+
+  **If any check fails, the agent must update the memory note** via the supersession mechanism in `INV-A001` (write a corrected/superseding note recording the gap found + the corrected synthesis + the validation reasoning) **before composing the user-facing reply**. The reply must reflect the updated synthesis, not the original. The reply must also cite the updated memory note, and the validation step must appear in the execution trace + the memory provenance record.
+
+  Failure modes prevented: (a) "stale-memory amplification" — the agent recalls an old synthesis that was right when written but is now out of date, and treats it as currently authoritative; (b) "self-grounding" — the agent's prior conclusion that overreached its sources becomes the citation for the next session's prose, with the original source weakness now invisible; (c) "memory-of-memory chains" — repeated paraphrase across sessions drifts the synthesis away from the primary sources, with each link looking grounded but the chain rooted in a fabrication.
+
 - Clinical findings use research/educational framing, never diagnostic phrasing.
 - Uncertainty is expressed structurally (categorical confidence levels and evidence-quality fields), not buried in prose.
 - Default report copy and prompt templates are reviewed for **over-claim *and* over-deferral** before merge — punting every lifestyle question to a clinician is its own failure mode.
@@ -258,15 +296,17 @@ Numbers are assigned in order of introduction within a category and never reused
 - Plugin tool descriptions (the `description` strings registered via `registerTool` in `packages/nemoclaw-plugin/src/`) — these flow into the agent's tool catalog and shape its framing.
 - The finding schema in `packages/toolkit/src/genomeclaw_toolkit/schemas/` where `category`, `clinical_escalation`, and `evidence_quality` are structural fields.
 - Agent prompt templates rendered by the user's NemoClaw stack (out-of-repo but in-scope for review).
-- The `reference/curated_notes/<gene>.md` and `reference/curated_notes/topics/<topic>.md` files *(v1.5; per [MVP spec Q9](../plans/active/mvp/spec.md))*. Editing a curated note is a user-facing-copy change. The privacy-safety-reviewer agent reviews curated-note diffs before merge.
+- The agent's workspace memory under `~/.openclaw/workspace/<agent>/{MEMORY.md, memory/YYYY-MM-DD.md}` *(v1.6; per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*. Memory notes are user-facing-copy as they accumulate; they live in the sandbox (not the repo) and are inspectable by the user via the agent's `memory_get` tool or by reading the workspace directly. Privacy-safety review applies to the **agent system prompt** that shapes the research-and-synthesis protocol, not to every individual memory note.
 
 **How to verify**:
 - Lint / snapshot tests on host service report responses and on plugin tool descriptions asserting absence of disallowed phrases for `clinical-actionable` findings (configurable list).
 - Schema tests asserting that `clinical_escalation` is set on findings whose category is `clinical-actionable` and unset on `lifestyle` and `clinical-non-actionable`.
 - Schema tests asserting `evidence_quality` is populated on `lifestyle` findings.
 - Snapshot tests on lifestyle-category responses asserting that the response provides **direct guidance plus an evidence-quality caveat** — i.e., it does not punt to a clinician for what is a lifestyle question.
-- Snapshot tests on lifestyle-category responses asserting that the agent cites a `gene_note:<gene>` evidence reference and that the response prose tracks the curated note's framing — no new claims introduced by the agent that aren't in the note. Failure modes: agent over-extending the note ("the note doesn't say that"), agent ignoring the note (over-deferral or generic clinical-deferral on a lifestyle question). *(v1.5)*
-- Manual privacy-safety-reviewer agent pass before user-facing copy changes (including curated-note diffs).
+- Snapshot tests on lifestyle-category responses asserting that the agent cites at least one `memory:<id>` or `web:<url>` evidence reference, and that the response prose tracks the cited synthesis — no new claims introduced by the agent that aren't grounded in the cited sources. Failure modes: agent over-extending its memory ("the note doesn't say that"), agent fabricating a citation, agent over-deferring on a lifestyle question. *(v1.6)*
+- **Memory-validation snapshot test** *(v1.6, added 2026-05-15)*: a fixture introduces a deliberately-weak memory note (conclusion overreaches its cited sources, OR the memory cites only other memory notes, OR the freshness date is past). When the agent recalls this note via `memory_search` and would otherwise cite it, the synthesis turn must (a) surface the gap in its reasoning trace (visible in `executionTrace`), (b) write a corrected / superseding memory note via the `INV-A001` supersession mechanism, (c) cite the updated note (not the original) in its reply, (d) reflect the corrected synthesis in the user-facing prose. Failure mode prevented: hallucination propagation across sessions via uncritically-recalled prior synthesis.
+- **Memory-grounding audit** *(v1.6, added 2026-05-15)*: after N accumulated sessions, every memory note's chain of citations terminates in at least one primary source — a web URL, PubMed ID, ClinVar ID, gene-database identifier, or other external authority. A memory note that cites only other memory notes is malformed per `INV-A001` and would have been rejected at write time; this audit confirms the chain stays clean over time.
+- Manual privacy-safety-reviewer agent pass on the agent system prompt + memory-note schema before merge.
 
 ---
 
@@ -295,6 +335,107 @@ Numbers are assigned in order of introduction within a category and never reused
 - `test_cli_refs_fetch.py::test_refs_fetch_json_emits_ndjson_event_stream` asserts the first-line envelope shape (`"stream": true`).
 - The `stdout_already_consumed` sentinel is exercised by every test that emits a payload then triggers an error — the error envelope must appear on stderr, not stdout.
 - `cli-output-schemas.md` documents the contract; PR reviewers cite this invariant when reviewing changes to the per-command schemas.
+
+---
+
+## INV-A001: Agent Memory Provenance
+
+**Rule** *(v1.8; per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*: when the agent persists a research synthesis to its workspace memory, the note must record enough provenance for a future agent session (or the user inspecting the workspace) to understand *what was learned, from where, at what reasoning level, and with what freshness*.
+
+**Requirements**:
+- Every memory note written by the research-and-synthesis pattern carries:
+  - the verbatim user question that triggered the research,
+  - the tool calls executed in the research phase (with each result's source attribution — URLs for web sources, ids for variant-keyed evidence, prior-note anchors for `memory:<id>` references),
+  - the reasoning effort levels used for the **research phase** and the **synthesis phase** separately,
+  - the synthesis verdict + a confidence note (e.g., *moderate evidence; heterogeneous studies*; *high-confidence call from variant + ClinVar review status*),
+  - a **freshness as of** date so future sessions can decide whether to re-research vs. recall,
+  - **at least one primary source citation** *(added 2026-05-15)* — a web URL, PubMed ID, ClinVar ID, PharmGKB id, gene-database identifier, or other external authority. A memory note that cites only other memory notes is malformed and the note-writer step must reject it.
+- **Supersession mechanism** *(added 2026-05-15 in tandem with `INV-C001` v1.6 memory-validation)*: a memory note may be **superseded** by a later note when validation (per `INV-C001` v1.6) surfaces a gap in the original. The superseding note records: a `supersedes: <prior-anchor>` field, the specific gap found in the prior note (e.g., *"conclusion that habituation makes ADORA2A effect negligible overreaches the cited 2019 paper which only showed partial habituation"*), and the corrected synthesis with updated reasoning. The prior note is not deleted — the supersession trail stays auditable.
+- Memory notes for conversational / recall turns (no health interpretation) are exempt from the structured-provenance requirement — they're free-form Markdown.
+- The memory-note skeleton + the agent system prompt that produces it are reviewed by the privacy-safety-reviewer agent before any change.
+
+**Where it applies**:
+- Agent system prompt (out-of-repo for now; tracked under [agent-research-and-synthesis Phase 2](../plans/active/agent-research-and-synthesis/phases/phase-1.md) and the follow-up phase-2.md).
+- Memory notes in the agent workspace: `~/.openclaw/workspace/<agent>/memory/YYYY-MM-DD.md` and `MEMORY.md`.
+
+**How to verify**:
+- A test fixture validates the memory-note skeleton parses correctly when the agent fills it in (deterministic format check).
+- **Primary-source-required gate** *(added 2026-05-15)*: a fixture memory note that cites only other memory notes (no external URL / PubMed / ClinVar / etc.) is rejected by the note-writer step. The note never lands on disk; the agent must run fresh research instead.
+- **Supersession-trail gate** *(added 2026-05-15)*: a fixture deliberately-weak memory note is followed by a synthesis turn that should validate it (per `INV-C001` v1.6). The test asserts the produced supersession note carries the `supersedes:` field, the gap description, and the corrected synthesis; the original note remains on disk for the audit trail.
+- Live-LLM snapshot tests over Stories 4 / 9 / 10 assert the memory note produced by the synthesis turn contains: the question, tool-call list, reasoning levels for both phases, source citations including at least one primary source, a freshness date.
+- Manual audit: `cat ~/.openclaw/workspace/<agent>/MEMORY.md` should be human-readable and contain no surprising claims that aren't provenanced. Every note's primary-source citation chain should resolve.
+
+---
+
+## INV-A002: Synthesis Reasoning Floor
+
+**Rule** *(v1.8; per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*: any **user-facing health-interpretation turn** must be composed at the maximum reasoning level the configured model supports. This is the bioinformatician-in-healthcare turn; lowering the reasoning effort here trades correctness for cost in a domain where the cost of an incorrect-sounding fluent answer is higher than the token cost of max-effort reasoning.
+
+**Definition — health-interpretation turn**:
+- Any reply that **interprets** the user's genomic data (variant, finding, gene-level summary, PRS) for clinical or lifestyle meaning, OR
+- Any reply that gives guidance the user might plausibly act on (medication choice, dose, lifestyle change, lab follow-up, clinician consultation).
+
+**Definition — non-interpretation turn (exempt from floor)**:
+- Recall confirmation ("what did we talk about last week?", "remind me of the caffeine plan").
+- Scheduling / commitments / conversational pacing.
+- Casual back-and-forth that doesn't reach into the user's genomic data interpretively.
+
+**Requirements**:
+- The agent self-classifies the turn type via its system prompt; the configured model honours the agent's per-message reasoning effort request via OpenClaw's `thinking` parameter.
+- For health-interpretation turns, the reasoning effort is the maximum the configured model supports — see the per-model ceiling table below. The string `"max"` is **NOT a universal alias** for the model's ceiling; OpenClaw's `thinking` parameter validates per-model and rejects values the model doesn't accept.
+- For non-interpretation turns, the reasoning effort is the agent's default (typically `adaptive` or `medium`); the floor does not over-apply.
+- The reasoning level used is recorded in the memory note's provenance per `INV-A001`.
+
+**Per-model thinking-level ceilings** *(v1.7, slice-5 finding 2026-05-15; OpenClaw v2026.4.24)*:
+
+| Model | Supported levels | Ceiling = synthesis floor |
+|---|---|---|
+| `openai/gpt-5.5` | `off, minimal, low, medium, high, xhigh` | **`xhigh`** |
+| `openai/o3-class` (o3, o4, codex-series) | adds `max` | `max` |
+
+The bug this gate closes: agent-research-and-synthesis slices 1-4 baked `agents.defaults.thinkingDefault: max` for an `openai/gpt-5.5` deployment. At config-set time, the schema accepts the value. At per-call dispatch time, OpenClaw's validation rejects it with *"Thinking level `max` is not supported for openai/gpt-5.5. Use one of: off, minimal, low, medium, high, xhigh."* — the call silently falls through to the model's default (probably `medium`). The synthesis floor was never actually enforced per-call for the four months of behavioural smokes — the smokes still produced calibrated answers because the model's *default* reasoning was good enough on the canonical questions, masking the bug. Slice 5 fixes the bake to `xhigh` (gpt-5.5's actual ceiling) and adds a baked-config gate that rejects `thinkingDefault` values the configured `agents.defaults.model` doesn't accept.
+
+When the user switches default model (e.g. to `openai/o3` for higher-stakes deployments), **both** `agents.defaults.model` AND `agents.defaults.thinkingDefault` must be updated together; the per-model gate enforces consistency.
+
+**Where it applies**:
+- The agent's system prompt + per-message `thinking` overrides.
+- OpenClaw's baked sandbox config (`agents.defaults.thinkingDefault`) — must be the configured model's ceiling.
+- Live-LLM snapshot tests over Stories 4 / 9 / 10.
+
+**How to verify**:
+- **Static baked-config gate**: [test_sandbox_thinking_default_supported.py](../../packages/toolkit/tests/invariants/test_sandbox_thinking_default_supported.py) (`needs_sandbox`) reads the baked openclaw.json + asserts `thinkingDefault` is (a) in the supported set for the configured model, and (b) at the model's ceiling. A future Dockerfile flip back to `max` (or a default-model switch without a floor update) gets caught.
+- **Behavioural per-call probe**: openclaw `--thinking <level>` validates the per-call level at dispatch time + errors loudly if invalid. A live-test probe at any unsupported level (e.g. `--thinking max` on gpt-5.5) surfaces `"Thinking level X is not supported for Y. Use one of: …"` — the message itself documents the valid set per model.
+- Live-LLM snapshot tests (Stories 4 / 9 / 10) verify the agent produces calibrated answers; under the v1.7 fix they run at the model's actual ceiling.
+- A negative gate: a manual probe asking *"what should I have for breakfast tomorrow?"* (non-interpretation, casual) should not elevate to the ceiling; if it does, the agent system prompt's classification rule is over-applying.
+
+---
+
+## INV-A003: Agent-Curated Compute Provenance
+
+**Rule** *(v1.11; per [agent-driven PRS report](../reports/agent-driven-prs-computation.md) + MVP Q8 v1.6)*: when the agent triggers a host-side compute on behalf of the user (e.g., PRS computation via `pgsc_calc`), the agent's **choice + rationale + alternatives considered** must be persisted alongside the compute output, both as a column on the derived-store row and as a memory note. The compute path must respect a per-compute-class **decline pattern** documented in the agent system prompt with the two-named-reasons rule.
+
+**Why this exists** — `INV-A003` extends `INV-A001` (Agent Memory Provenance) from research-and-synthesis turns to *agent-triggered compute* turns. The agent-driven PRS architecture (replacing the v1.5 fixed-three-trait static panel per Q8 v1.6) lets the agent decide which PGS Catalog scorefile to compute for the user's question; without `INV-A003`, that editorial decision becomes invisible — the user sees a percentile but not why this scorefile, what alternatives were considered, or whether the agent declined other candidates. The provenance lands at two layers (the row column for machine-readable audit; the memory note for the agent's own reasoning trail).
+
+**Requirements**:
+- **Choice rationale column**: every row in a derived-store table populated by an agent-triggered compute carries an `agent_choice_rationale` (TEXT) column + an `agent_requested_for_question` (TEXT) column. The first records the agent's reasoning for picking this specific compute target (PGS Catalog ID, scorefile, etc.) including alternatives considered + why this one over them. The second records the verbatim user question that triggered the compute. Both columns are not-null; an empty string is invalid.
+- **Memory-note pairing**: every agent-triggered compute is also recorded as a memory note per `INV-A001`'s schema (Question, Tool calls, Sources retrieved, Synthesis, Calibration, Recommendation framing, Citations, Freshness, ≥1 primary source). The memory note's title or body cross-references the derived-store row's primary key so the audit trail is bidirectional.
+- **Decline-pattern enforcement**: the agent system prompt documents a decline pattern for each compute class, with **two named reasons** required when declining (modelled on the existing hard-genes decline pattern under `INV-C001`). The decline criteria for PRS specifically are in `INV-C001` v1.7. Future compute classes (e.g., agent-triggered re-annotation, agent-triggered ancestry inference) define their own decline criteria as they land.
+- **Decline-note persistence**: when the agent declines a compute, the decline + the two named reasons are themselves recorded as a memory note (same `INV-A001` schema, with `compute_decision: decline` as a section). Future sessions hit the decline note before re-deciding, with INV-C001 v1.6 memory-validation re-checking whether the literature has matured enough to reverse the decline.
+- **Supersession on compute**: when a later compute supersedes an earlier one (e.g., a newer PGS scorefile lands; the agent recomputes), the prior row's `superseded_by` field points at the newer row's primary key (mirrors `INV-A001`'s supersession pattern for memory notes). The prior row stays on disk for the audit trail.
+
+**Where it applies**:
+- Derived-store wrappers under `packages/toolkit/src/genomeclaw_toolkit/prep/` that emit rows triggered by agent compute requests (currently: `pgs.py` for PRS; future: any other agent-triggered compute).
+- The host-service compute-request endpoint + status-polling endpoint (currently planned: `POST /v1/pgs/compute` + `GET /v1/pgs/compute/{task_id}`; pattern generalizes).
+- The agent system prompt at [packages/nemoclaw-plugin/sandbox/agent-system-prompt.md](../../packages/nemoclaw-plugin/sandbox/agent-system-prompt.md) — decline criteria + the two-named-reasons rule.
+- The memory-note schema at [packages/toolkit/src/genomeclaw_toolkit/memory/note_validator.py](../../packages/toolkit/src/genomeclaw_toolkit/memory/note_validator.py) — extension to handle `compute_decision` notes.
+
+**How to verify**:
+- **Schema column gate**: a unit test on the `pgs_scores` table (and any future agent-triggered-compute table) asserts the two provenance columns exist + are NOT NULL + are populated with non-empty strings on every row.
+- **Memory-note cross-reference gate**: an integration test asserts that for every row in `pgs_scores`, a memory note exists referencing the row's primary key + recording the agent's choice rationale.
+- **Decline-pattern prompt-content gate**: a test on the agent system prompt asserts the PRS-decline pattern enumerates the four criteria + the two-named-reasons rule + at least one worked-example trait.
+- **Behavioural `live_llm` decline gate**: ask the agent about a known-immature trait (e.g. creativity PRS); assert (a) the agent does NOT invoke `genomeclaw_pgs_compute`, (b) the reply names two specific decline reasons, (c) the trace shows the agent did the research step before declining (reasoned decline, not hardcoded refusal), (d) a decline-shaped memory note lands on disk with `compute_decision: decline`.
+- **Behavioural `live_llm` compute-with-provenance gate**: a successful PRS compute (e.g. Story 10 CAD) produces a `pgs_scores` row whose `agent_choice_rationale` enumerates ≥1 alternative scorefile + states why this one over them; the matching memory note is well-formed per `INV-A001`.
+- **Supersession gate**: pre-stage an outdated PRS computed row + ask a question that triggers re-evaluation; assert the agent (a) writes a new row with `superseded_by` set on the prior, (b) writes a memory note recording the gap, (c) the prior row stays on disk for audit.
 
 ---
 
@@ -329,3 +470,6 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 | INV-R001 | Derived Assistant Stores Must Stay Rebuildable | Rebuildability |
 | INV-C001 | Separate Clinical Advice from Lifestyle and Research Assistance | Clinical Boundary |
 | INV-C002 | CLI Output Contract Stability | Communication |
+| INV-A001 | Agent Memory Provenance | Agent Cognition |
+| INV-A002 | Synthesis Reasoning Floor | Agent Cognition |
+| INV-A003 | Agent-Curated Compute Provenance | Agent Cognition |

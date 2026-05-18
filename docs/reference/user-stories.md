@@ -587,18 +587,23 @@ Suppose the user is heterozygous (A/C; the relevant *MTHFR* polymorphism).
 
 > **User**: my sleep has been bad lately. anything in my genome about caffeine metabolism?
 
-> **Agent**: Yes — there's one well-studied gene for that, *CYP1A2*. Let me check.
+> **Agent**: Yes — there's one well-studied gene for that, *CYP1A2*. Let me check what I already know about you on this, then refresh the literature.
 
-**Tool calls**:
+**Tool calls** *(updated 2026-05-15 per [INVARIANTS v1.8](INVARIANTS.md) INV-C001 v1.6 + INV-A001 + INV-A002; agent-research-and-synthesis pattern)*:
 
-- `genomeclaw_variant key=rs762551` — to surface the user's *CYP1A2* genotype.
-- `genomeclaw_evidence ref="gene_note:CYP1A2"` — to retrieve the curated note (per [MVP spec Q9](../plans/active/mvp/spec.md) / [INVARIANTS v1.5](INVARIANTS.md) `INV-C001`). The agent composes its response from the user's variant call plus the curated note's framing, in the project owner's voice.
+The agent runs a structured **research phase** at moderate reasoning effort followed by a **synthesis phase** at the maximum reasoning level the configured model supports (`INV-A002`):
 
-Suppose the user is `C/C` at rs762551 (slow-metabolizer phenotype). The curated note (`reference/curated_notes/cyp1a2.md`) carries the project owner's calibrated take: "AA = fast, CC = slow, AC heterozygote = intermediate but with high variance"; "smoking and oral contraceptives induce/inhibit CYP1A2 more than genotype does"; "for caffeine + sleep: noon cutoff for slow metabolizers is a reasonable 2-week experiment"; "evidence quality: moderate. Don't oversell."
+- `memory_search "CYP1A2 caffeine sleep"` — looks for any prior synthesis on this topic in the agent's workspace memory. **First time asked** → empty result.
+- `genomeclaw_variant key=rs762551` — surfaces the user's *CYP1A2* genotype from the host service (the authoritative source for what's in this user's genome).
+- `web_search query="CYP1A2 rs762551 caffeine half-life slow metabolizer 2026 meta-analysis"` — reasoned web research combining (a) the model's training knowledge (PharmGKB CYP1A2 page memorized through training cutoff), (b) current literature retrieved via OpenAI's native `web_search` tool, with (c) extended reasoning at `thinking: high` to triangulate effect sizes + modulators + areas of disagreement across sources.
 
-> **Agent**: You're ***CYP1A2*** **C/C at rs762551** — that puts you in the **slow-metabolizer** group. The honest framing here (from the curated note for this gene): "AA = fast, CC = slow, AC heterozygote = intermediate but with high variance. Effect size moderate at best."
+Suppose the user is `C/C` at rs762551 (slow-metabolizer phenotype). The research phase identifies the calibrated facts the agent will synthesise from: AA = fast / CC = slow / AC = intermediate with high variance; smoking induces CYP1A2 more than genotype does (PharmGKB); oral contraceptives inhibit ~40% (review); caffeine half-life slow vs fast averages 7-8 h vs 4-5 h with substantial individual variation; effect sizes heterogeneous across studies (recent meta-analysis flagged).
+
+The agent then enters the **synthesis turn** — `thinking: max` per `INV-A002` because this is a health-interpretation turn — and composes the user-facing reply. Before replying, the agent writes a structured memory note to `~/.openclaw/workspace/<agent>/memory/2026-MM-DD.md` per `INV-A001` so the next session doesn't re-research from zero.
+
+> **Agent**: You're ***CYP1A2*** **C/C at rs762551** — that puts you in the **slow-metabolizer** group. The honest framing here, synthesised from PharmGKB + a recent meta-analysis I just pulled (see [pubmed:PMID-EXAMPLE]): AA = fast, CC = slow, AC heterozygote = intermediate but with high variance. Effect size moderate at best.
 >
-> One important caveat from the same note: **smoking and oral contraceptives induce/inhibit CYP1A2 more than genotype does.** If either applies to you, the genotype is the smaller signal in the equation. Caffeine half-life in slow metabolizers averages 7–8 hours versus 4–5 in fast metabolizers, with substantial individual variation.
+> One important caveat from the same literature: **smoking and oral contraceptives induce/inhibit CYP1A2 more than genotype does.** If either applies to you, the genotype is the smaller signal in the equation. Caffeine half-life in slow metabolizers averages 7–8 hours versus 4–5 in fast metabolizers, with substantial individual variation.
 >
 > What that means in practice (lifestyle, not clinical):
 >
@@ -610,7 +615,7 @@ Suppose the user is `C/C` at rs762551 (slow-metabolizer phenotype). The curated 
 >
 > If sleep stays bad after the caffeine trial *and* a couple of basic sleep-hygiene moves, that's worth bringing to a doctor — but as a sleep complaint, not a *CYP1A2* question.
 >
-> Want me to also check for *ADORA2A* (caffeine sensitivity beyond metabolism)? That's in the curated set too. *PER3* and *CLOCK* (chronotype) aren't in the curated set, and I'd rather not speculate from the genotype alone — happy to explain why if you're curious.
+> Want me to also check for *ADORA2A* (caffeine sensitivity beyond metabolism)? *PER3* and *CLOCK* (chronotype) I'd rather not speculate from the genotype alone — happy to explain why if you're curious.
 
 **The user replies**:
 
@@ -618,29 +623,54 @@ Suppose the user is `C/C` at rs762551 (slow-metabolizer phenotype). The curated 
 
 **Tool calls**:
 
-- `genomeclaw_variant key=rs5751876` — *ADORA2A* genotype lookup.
-- `genomeclaw_evidence ref="gene_note:ADORA2A"` — curated note retrieval.
+- `memory_search "ADORA2A caffeine sensitivity"` — empty (first time).
+- `genomeclaw_variant key=rs5751876` — *ADORA2A* genotype lookup from the host service.
+- `web_search query="ADORA2A rs5751876 caffeine sensitivity anxiety sleep habituation"` — reasoned research turn.
 
-Suppose the user is heterozygous T/C at rs5751876. The *ADORA2A* curated note frames the T allele as predisposing to caffeine-induced anxiety / sleep disruption in low-habit consumers, with a small effect size and habituation as a major modulator.
+Suppose the user is heterozygous T/C at rs5751876. Synthesis turn at `thinking: max`: T allele predisposes to caffeine-induced anxiety / sleep disruption in low-habit consumers; small effect size; habituation modulates strongly.
 
-> **Agent**: ***ADORA2A*** **rs5751876 T/C** — heterozygote at the SNP that modulates caffeine sensitivity *independent* of metabolism speed. From the curated note: T allele predisposes to caffeine-induced anxiety and sleep disruption in low-habit consumers; small effect size; modulated by habituation (so heavy daily users get less of it).
+> **Agent**: ***ADORA2A*** **rs5751876 T/C** — heterozygote at the SNP that modulates caffeine sensitivity *independent* of metabolism speed. T allele predisposes to caffeine-induced anxiety and sleep disruption in low-habit consumers; small effect size; modulated by habituation (so heavy daily users get less of it).
 >
 > This is meaningful for you given the *CYP1A2* finding above: you're not just clearing caffeine slowly, you're also slightly more sleep-sensitive to it independent of clearance. **Doubles the case for the noon-cutoff experiment**.
 >
 > So the experiment proposal is sharper than I'd give it without the *ADORA2A* finding: try a **strict noon caffeine cutoff for two weeks**, keep alcohol and screen-time consistent so they don't confound, and check whether sleep-onset latency shortens. If it does, you've found a contributor; if it doesn't, look elsewhere.
 >
-> On *PER3* and *CLOCK* (chronotype): two reasons I'd rather skip them. **First**, the literature on chronotype-by-genotype has had repeated non-replications across independent cohorts; the effect sizes that show up in single studies often don't survive replication. **Second**, *PER3* in particular is a VNTR (variable number tandem repeat), and short-read 30× WGS is unreliable at calling VNTRs cleanly — even if I gave you a genotype call, I wouldn't be confident in it. The honest answer is that chronotype is currently better assessed by the [MEQ questionnaire](https://en.wikipedia.org/wiki/Morningness%E2%80%93Eveningness_Questionnaire) or by tracking your own sleep-wake patterns for two weeks. Genotype isn't going to add signal here. (Same reasoning is captured in the project's "hard genes" curated note, `topic:hard-genes`, if you want to see the systematic-blind-spot list — *BRCA1* exon 11 from before, plus *CYP21A2*, *SMN1*, *PMS2*, the HLA region, etc.)
+> On *PER3* and *CLOCK* (chronotype): two reasons I'd rather skip them. **First**, the literature on chronotype-by-genotype has had repeated non-replications across independent cohorts; the effect sizes that show up in single studies often don't survive replication. **Second**, *PER3* in particular is a VNTR (variable number tandem repeat), and short-read 30× WGS is unreliable at calling VNTRs cleanly — even if I gave you a genotype call, I wouldn't be confident in it. The honest answer is that chronotype is currently better assessed by the [MEQ questionnaire](https://en.wikipedia.org/wiki/Morningness%E2%80%93Eveningness_Questionnaire) or by tracking your own sleep-wake patterns for two weeks. Genotype isn't going to add signal here.
 
-**Notable**: the agent (a) gave **direct lifestyle advice** without recommending a clinician for the lifestyle topic, (b) anchored its calibration in the curated note's voice ("don't oversell", "smoking matters more than genotype"), (c) framed the recommendation as a **2-week experiment with a falsifiable outcome**, (d) named precisely when this *would* become a clinician question (persistent sleep issues after lifestyle interventions), (e) **gracefully declined** the PER3 / CLOCK question with two specific reasons (non-replication + unreliable VNTR genotyping on short-read WGS), without making something up. This is the lifestyle track of `INV-C001` v1.5 working: curated-notes-driven calibration; the project owner's voice and judgment showing through; over-deferral and over-claim both avoided.
+**Before sending the reply**, the agent writes a structured memory note per `INV-A001`:
+
+```markdown
+## 2026-MM-DD — CYP1A2 + ADORA2A caffeine + sleep
+
+**Question**: sleep has been bad; anything in my genome about caffeine?
+
+**Research turns** (reasoning=high, model=openai/gpt-5.5):
+- memory_search → empty (first time)
+- genomeclaw_variant key=rs762551 → C/C (slow metabolizer)
+- genomeclaw_variant key=rs5751876 → T/C (heterozygote)
+- web_search "CYP1A2 caffeine half-life slow metabolizer 2026" → 3 sources
+- web_search "ADORA2A caffeine sensitivity habituation" → 2 sources
+
+**Synthesis turn** (reasoning=max, model=openai/gpt-5.5):
+- CYP1A2: AA/AC/CC distinction holds; effect moderate; smoking + OCPs dominate
+- ADORA2A: small effect; doubles with CYP1A2 slow status; habituation modulates
+- Recommendation: strict noon caffeine cutoff, 2-week experiment, falsifiable
+- Escalation trigger: persistent sleep issues after the trial → sleep complaint, not CYP1A2
+
+**Citations**: [3 URLs for CYP1A2, 2 URLs for ADORA2A]
+**Freshness**: 2026-MM-DD. Re-research if asked after 6 months OR if user requests update.
+```
+
+**Notable**: the agent (a) gave **direct lifestyle advice** without recommending a clinician for the lifestyle topic, (b) anchored its calibration in **its own reasoned synthesis** of the model's training knowledge + current web sources at maximum reasoning effort (`INV-A002` — bioinformatician-in-healthcare synthesis turn), not in a pre-authored markdown file, (c) framed the recommendation as a **2-week experiment with a falsifiable outcome**, (d) named precisely when this *would* become a clinician question (persistent sleep issues after lifestyle interventions), (e) **gracefully declined** the PER3 / CLOCK question with two specific reasons (non-replication + unreliable VNTR genotyping on short-read WGS), without making something up, (f) **wrote a structured memory note** (`INV-A001`) so a future session asking about caffeine + sleep recalls this synthesis without re-research. This is the lifestyle track of `INV-C001` v1.6 working: research-and-synthesis-driven calibration; the agent's accumulated reasoning showing through; over-deferral and over-claim both avoided.
 
 **Surfaced gaps**:
 
 - ~~The host service `/v1/findings` needs to support `category=lifestyle` filtering. The finding schema's `category` field needs values: `clinical-actionable | clinical-non-actionable | lifestyle | mixed`~~ ✅ Resolved (formalized in `INV-C001` v1.4).
-- ~~Lifestyle findings need an **`evidence_quality`** field — distinct from ClinVar's review-status stars~~ ✅ Resolved (formalized in `INV-C001` v1.4 schema; field is preserved for future-proofing per [MVP spec Q9](../plans/active/mvp/spec.md) but is not the primary lifestyle calibration surface — that's now `gene_note:<gene>` curated notes).
+- ~~Lifestyle findings need an **`evidence_quality`** field — distinct from ClinVar's review-status stars~~ ✅ Resolved (`INV-C001` v1.4 schema; preserved for future-proofing).
 - ~~The plugin's `genomeclaw_findings` description should mention that `category=` accepts `lifestyle`~~ ✅ Resolved.
-- ~~The agent's "want me to also check for *PER3* / *ADORA2A*?" pattern implies the agent knows which genes co-cluster with a topic.~~ ✅ Resolved at MVP spec Q4: typed-array `genes: string[]`. *PER3* and *CLOCK* are now **dropped from the lifestyle track entirely** per [MVP spec Q9](../plans/active/mvp/spec.md); the agent declines questions about them gracefully.
-- ~~The "experiment template" pattern (a 2-week caffeine trial with falsifiability conditions) is a recurring artifact in the agent's prose generation.~~ ✅ Resolved at MVP spec Q3 — report assembly is at the agent layer; experiment framing comes from the curated note, not from a host-service template.
-- ✅ Resolved by the curated-notes pivot (Q9): the agent's voice tracks the curated note's voice. Snapshot tests on this story (per `INVARIANTS` v1.5 INV-C001 "How to verify") assert the response cites `gene_note:CYP1A2` / `gene_note:ADORA2A` and that the prose tracks the note's framing without over-extending or ignoring it.
+- ~~The agent's "want me to also check for *PER3* / *ADORA2A*?" pattern implies the agent knows which genes co-cluster with a topic.~~ ✅ Resolved at MVP spec Q4: typed-array `genes: string[]`. *PER3* and *CLOCK* are out by reasoning, not by curation policy — the agent explains why on each ask.
+- ~~The "experiment template" pattern (a 2-week caffeine trial with falsifiability conditions) is a recurring artifact in the agent's prose generation.~~ ✅ Resolved at MVP spec Q3 — report assembly is at the agent layer; experiment framing comes from the agent's max-reasoning synthesis, not from a host-service template.
+- ✅ Resolved by the agent-research-and-synthesis pivot *(v1.6, 2026-05-15; per [agent-research-and-synthesis plan](../plans/active/agent-research-and-synthesis/spec.md))*: the agent's voice on lifestyle topics emerges from accumulated reasoned research over training knowledge + web sources + memory; snapshot tests on this story assert (a) `memory_search` is called first, (b) the synthesis turn runs at `thinking: max` per `INV-A002`, (c) the memory note schema per `INV-A001` is filled in correctly, (d) `web_search` is called when memory is empty + skipped when memory has a fresh prior note.
 
 ---
 
@@ -654,11 +684,18 @@ Suppose the user is heterozygous T/C at rs5751876. The *ADORA2A* curated note fr
 
 > **Agent**: There is — but read the framing carefully. Pulling.
 
-**Tool calls**:
+**Tool calls** *(v1.6 per [MVP spec Q8 v1.6](../plans/active/mvp/spec.md) + [agent-driven PRS report](../reports/agent-driven-prs-computation.md))*:
 
-- `genomeclaw_pgs trait="CAD"` — PRS for coronary artery disease (per [MVP spec Q8](../plans/active/mvp/spec.md)). Returns `{percentile_in_user_ancestry, raw_score, source_pgs_id, study_population, calibration_warning}`.
+- `memory_search "CAD risk"` → 0 hits (first time the user has asked).
+- `genomeclaw_pgs_list` → 0 PRSs computed yet for this user.
+- `web_search` + `web_fetch` on PGS Catalog browse + recent CAD-PRS replication literature — the agent reads metadata for several candidate scorefiles (PGS000018, PGS003725, PGS004696 et al.) and reasons about which is right for *this* user's question + likely ancestry.
+- Synthesis at `xhigh` (`INV-A002`): picks PGS000018 — the canonical CARDIoGRAMplusC4D + UK Biobank PRS with the most mature cross-ancestry calibration story. Considered PGS004696 (better Eu discrimination, less cross-ancestry validation) and rejected it; considered PGS003725 (essentially the prior version of PGS000018) and rejected it as superseded.
+- `genomeclaw_pgs_compute` with `pgs_id="PGS000018"`, `trait_label="coronary artery disease (CARDIoGRAMplusC4D + UK Biobank)"`, the choice rationale verbatim, and the user's question verbatim. Returns `task_id="t-abc123"` (status `running`). The compute runs host-side; the agent's choice rationale + alternatives considered land on the `pgs_scores` row as `agent_choice_rationale` per `INV-A003`.
+- The agent surfaces an in-flight message to the user: *"I'm computing your CAD PRS using PGS000018 — the canonical CARDIoGRAMplusC4D + UK Biobank score with the best cross-ancestry calibration metadata. I considered PGS004696 (better Eu discrimination, less cross-ancestry calibration) and went with PGS000018. Compute takes ~5 min; I'll come back when it lands."*
+- `genomeclaw_pgs_compute_status` polled until `done` (or the agent cuts the turn and resumes on the next message).
+- `genomeclaw_pgs_get` with `pgs_id="PGS000018"` → `{pgs_id: "PGS000018", trait_label: "coronary artery disease (CARDIoGRAMplusC4D + UK Biobank)", percentile_in_user_ancestry: 87, raw_score: 0.42, source_pgs_id: "PGS000018", study_population: "European-ancestry meta-analysis (UK Biobank + CARDIoGRAMplusC4D)", calibration_warning: null, agent_choice_rationale: "<persisted per INV-A003>", requested_for_question: "my dad had a heart attack at 58. is there anything in my genome about cad risk?"}`.
 
-Suppose the host service returns `{percentile_in_user_ancestry: 87, raw_score: 0.42, source_pgs_id: "PGS000018", study_population: "European-ancestry meta-analysis (UK Biobank + CARDIoGRAMplusC4D)", calibration_warning: null}`.
+(The earlier `genomeclaw_pgs(trait="CAD")` one-shot lookup tool from the v1.5 design is retired per Q8 v1.6 — the static-panel framing recapitulated the v1.5 curated_notes mistake in PRS form. The agent picking the right PGS per question, with provenance, is the v1.6 replacement.)
 
 > **Agent**: Your CAD polygenic risk score puts you at the **87th percentile** in your ancestry-matched reference population — so above-average genetic risk, but interpret the number with care.
 >
@@ -689,7 +726,7 @@ Suppose the host service returns `{percentile_in_user_ancestry: 87, raw_score: 0
 
 - The agent's "father had a heart attack at 58" is **third-party phenotype data**. It's used contextually in the response but **not persisted into the user's record** (per `INV-P001` and Story 3's mother-variant pattern). OpenClaw memory may carry the family-history fact across sessions; GenomeClaw's derived store does not.
 - The agent's instinct to integrate PRS with self-reported family history is correct *and* fragile — if the curated reasoning isn't anchored in a snapshot test, the agent could drift toward over-claiming "you're high risk" instead of "your prior is shifted." The MVP Phase 6 snapshot tests on this story (assembled from `/v1/findings` + `/v1/pgs/CAD` + `/v1/health`) assert the absence of clinical-decision phrasing on the agent's PRS responses.
-- A user who repeatedly asks for new traits ("what about prostate? T2D? colorectal?") motivates Q10's "additional PRS traits" trigger — adding a trait is a one-line `pgsc_calc` config change; the project doesn't pre-build the panel.
+- ~~A user who repeatedly asks for new traits ("what about prostate? T2D? colorectal?") motivates Q10's "additional PRS traits" trigger — adding a trait is a one-line `pgsc_calc` config change; the project doesn't pre-build the panel.~~ ✅ Resolved at [MVP spec Q8 v1.6](../plans/active/mvp/spec.md) + [agent-driven PRS report](../reports/agent-driven-prs-computation.md): there is no pre-built panel. The long-tail of trait questions ("what about prostate? T2D? colorectal? asthma? ADHD?") is the *default* path under Q8 v1.6 — the agent picks a PGS Catalog ID per question, persists the choice rationale per `INV-A003`, declines via the `INV-C001` v1.7 PRS-decline pattern when literature is too immature. The Q10 "additional PRS traits" trigger is retired; there is no panel to extend.
 
 ---
 

@@ -23,12 +23,14 @@ Until the MVP lands, the project's claims (privacy-default, host/sandbox split, 
 - [ ] **AC2**: The host service `genomeclaw-service` listens on `127.0.0.1:8643` and serves the v0 endpoints documented in [architecture.md](../../reference/architecture.md): `/v1/health`, `/v1/findings`, `/v1/findings/{id}`, `/v1/variants`, `/v1/variants/{key}`, `/v1/evidence/{ref}`, `/v1/provenance/{run-id}`, **`/v1/gene/{symbol}`** (per Q7), **`/v1/pgs/{trait}`** (per Q8). (Per Q3 decision: no `/v1/report` endpoint in the MVP.)
 - [ ] **AC3**: A sandbox image built from `packages/nemoclaw-plugin/sandbox/Dockerfile` and onboarded via `nemoclaw onboard --from <Dockerfile>` registers the **six** plugin tools (`genomeclaw_status`, `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`, **`genomeclaw_gene`**, **`genomeclaw_pgs`**) and successfully reaches the host service via `host.openshell.internal`.
 - [ ] **AC4**: The agent (in the project owner's NemoClaw sandbox, OpenAI gpt-5.4 over Telegram) can answer "any actionable findings?" with structured response carrying `clinical_escalation` markers and evidence references where appropriate. PGx-flavored sub-questions resolve against the Cyrius diplotype + PharmCAT outside-call path (per Q6).
-- [ ] **AC5**: The agent can answer "what does my genome say about caffeine?" by retrieving `genomeclaw_evidence(ref="gene_note:CYP1A2")` and composing **direct** lifestyle guidance from the user's variant call plus the curated note's framing (per Q9). No clinician-deferral default (`INV-C001` lifestyle track).
-- [ ] **AC6**: Default-config integration tests confirm no outbound call goes anywhere other than the configured agent endpoint and the configured host service. The PGS Catalog fetch (per Q8) is host-side, opt-in, and not exercised by default-config tests.
+- [ ] **AC5** *(revised 2026-05-15; supersedes the Q9 curated-notes version)*: The agent can answer "what does my genome say about caffeine?" using the **research-and-synthesis pattern** *(per [agent-research-and-synthesis spec](../agent-research-and-synthesis/spec.md), [INVARIANTS v1.8](../../reference/INVARIANTS.md) `INV-C001` v1.6 + `INV-A001` + `INV-A002`)*: (a) `memory_search` for prior synthesis on the topic, (b) `genomeclaw_variant` for the user's diagnostic-SNP genotype, (c) reasoned research over the model's training knowledge + current online sources via `web_search`, (d) **synthesis at the maximum reasoning level the configured model supports** (`INV-A002` — bioinformatician-in-healthcare turn), (e) **a structured memory note written before the reply** (`INV-A001`), (f) **direct** lifestyle guidance — no clinician-deferral default.
+- [ ] **AC6** *(revised 2026-05-15)*: Default-config integration tests confirm `tools.web.search.enabled` is **`false`** by default in the sandbox image's openclaw.json and that no outbound call goes anywhere other than the configured agent endpoint and the configured host service. Opt-in tests with `tools.web.search.enabled: true` confirm the web_search query payload contains only topic-term strings — never rsids, gene symbols from the user's variants, sample ids, or genotype strings. The PGS Catalog fetch (per Q8) is host-side, opt-in, and not exercised by default-config tests.
 - [ ] **AC7**: The pipeline is **deterministic**: a fresh ingest of the same VCF + same reference + same tool versions produces a byte-equivalent derived store.
 - [ ] **AC8**: A fresh `genomeclaw-prep ingest` populates the **`coverage_qc` table** under `/mnt/genomeclaw/derived/<run-id>/` with **one row per gene in the genome** (gene-level mean coverage from `mosdepth` against a comprehensive gene BED — e.g., the MANE Select transcript set; the per-gene layer is **uncurated by design**, so `genomeclaw_gene` and `/v1/gene/{symbol}` serve any gene the agent asks about). **Per-exon** mean coverage is materialized only for a **curated subset of clinically important genes** (ACMG SF + PharmCAT pharmacogenes + the Q9 lifestyle shortlist), feeding the `low_coverage_exons` field on `/v1/gene/{symbol}`. `mean_depth` is a non-negative real on every row; the seven canonical provenance columns are populated on every row (per Q7).
-- [ ] **AC9**: A `pgsc_calc` invocation populates the **`pgs_scores` table** with rows for the three initial traits (CAD, T2D, breast or prostate cancer); each row carries `percentile_in_user_ancestry`, `raw_score`, `source_pgs_id`, `study_population`, `calibration_warning`, and the seven canonical provenance columns (per Q8).
-- [ ] **AC10**: The host service evidence resolver accepts `gene_note:<gene>` and `topic:hard-genes` reference forms and returns the corresponding markdown content from `reference/curated_notes/` (per Q9).
+- [ ] **AC9** *(revised 2026-05-17; supersedes the v1.5 fixed-three-trait formulation per Q8 v1.6 + [agent-driven PRS report](../../../reports/agent-driven-prs-computation.md))*: PRS is **agent-driven, host-computed, memory-cached**. There is **no pre-staged trait panel**. An agent-triggered `genomeclaw_pgs_compute` invocation (the agent picked a PGS Catalog ID after reasoning at `INV-A002` ceiling over PGS Catalog metadata + recent literature) drives a host-side `pgsc_calc` run + populates one row in the **`pgs_scores` table** keyed by PGS Catalog ID. Each row carries: `percentile_in_user_ancestry`, `raw_score`, `source_pgs_id`, `study_population`, `calibration_warning`, **`agent_choice_rationale`** (per `INV-A003` — the agent's reasoning for picking this scorefile + alternatives considered), **`requested_for_question`** (the verbatim user question that triggered the compute), and the seven canonical provenance columns. The compute is async + bounded by a host-side concurrency cap (1 in-flight) + a kill-switch (`genomeclaw config set pgs.compute_enabled false` revokes the path entirely). The agent **declines** to compute when the literature is too immature (per the `INV-C001` v1.7 PRS-decline pattern — two named reasons from the four-criteria set); the decline is itself persisted as a memory note for future-session reuse. The host-service surface is four endpoints — `/v1/pgs/computed` (list), `/v1/pgs/computed/{pgs_id}` (get), `POST /v1/pgs/compute` (request), `/v1/pgs/compute/{task_id}` (status) — replacing the v1.5 single `/v1/pgs/{trait}` endpoint.
+- [ ] **AC10** *(revised 2026-05-15; supersedes the Q9 curated-notes resolver)*: The host service evidence resolver accepts **variant-keyed reference kinds only**: `clinvar:<id>`, `pgs_catalog:<id>`, `pharmgkb:<id>`. The `gene_note:<gene>` and `topic:<topic>` kinds previously documented under Q9 are **retired** *(per [INVARIANTS v1.8](../../reference/INVARIANTS.md) `INV-C001` v1.6 + the [agent-research-and-synthesis plan](../agent-research-and-synthesis/spec.md))*; lifestyle calibration now flows through agent memory + reasoned research, not host-side curated markdown. Agent-side citation forms (`memory:<file>#<anchor>` and `web:<url>`) are sandbox-workspace concerns; the host service does not resolve them.
+- [ ] **AC13** *(new, 2026-05-15)*: A second session asking the same lifestyle question (e.g., a follow-up about caffeine + sleep a week later) shows `memory_search` hits the prior synthesis without a fresh `web_search` call — unless the user explicitly asks for an update or the memory note is past its freshness date.
+- [ ] **AC14** *(new, 2026-05-15)*: A health-interpretation turn (any reply that interprets the user's genomic data or gives guidance the user might plausibly act on) is composed at the maximum reasoning level the configured model supports. Verified by inspection of `executionTrace.thinking` in live-LLM snapshot tests over Stories 4 / 9 / 10. Non-interpretation turns (recall, scheduling, casual back-and-forth) are exempt; the floor does not over-apply.
 - [ ] **AC11**: A fresh ingest invokes **Cyrius** against the BAM/CRAM and writes the resulting CYP2D6 diplotype as `derived/<run-id>/cyp2d6_diplotype.json`; the diplotype is consumed by PharmCAT's outside-call interface in the `annotate` step (per Q6).
 - [ ] **AC12**: A fresh ingest invokes **`bcftools stats`** against the input VCF and writes the summary into `manifest.json` under `qc.bcftools_stats`; **`mosdepth`** is invoked against the BAM/CRAM read-only (BAM SHA256 unchanged post-run, `INV-D001`).
 
@@ -57,18 +59,18 @@ None. The MVP exercises the existing invariants; it does not propose new ones.
 - gnomAD v4 with per-population allele frequencies (downloaded by `genomeclaw-prep fetch --source gnomad`; per Q5).
 - dbSNP build 156 (downloaded by `genomeclaw-prep fetch --source dbsnp`).
 - GRCh38 reference.
-- VEP cache + LOFTEE + AlphaMissense + SpliceAI data files (host-installed; per Q5).
+- VEP cache + LOFTEE + AlphaMissense data files (host-installed; per Q5; SpliceAI dropped 2026-05-13 per Q5 amendment).
+- **gnomAD constraint metrics (`gnomad-constraint` v4.1)** — per-transcript LOEUF / pLI scores; used at materialize time to populate `gene_loeuf` from the canonical-transcript gene symbol VEP extracts (added 2026-05-13).
 - PGS Catalog scoring weights for the three initial traits (downloaded host-side by `pgsc_calc` on user invocation; per Q8).
 
 ### Derived Outputs
-- DuckDB derived store under `/mnt/genomeclaw/derived/<run-id>/variants.duckdb` with the canonical `variants` table plus annotation columns from Q5 (MANE Select HGVSc/HGVSp, AlphaMissense score+class, SpliceAI max delta, LOFTEE flag, gnomAD per-ancestry AFs, gene LOEUF).
+- DuckDB derived store under `/mnt/genomeclaw/derived/<run-id>/variants.duckdb` with the canonical `variants` table plus annotation columns from Q5 (MANE Select HGVSc/HGVSp, AlphaMissense score+class, LOFTEE flag, gnomAD per-ancestry AFs, gene LOEUF). (SpliceAI max delta dropped 2026-05-13.)
 - **`coverage_qc` table** in the derived store with per-gene mean coverage from `mosdepth` (per Q7).
 - **`pgs_scores` table** in the derived store with rows for the three initial traits (per Q8).
 - **`cyp2d6_diplotype.json`** per run with the Cyrius diplotype call (per Q6).
 - `manifest.json` and `provenance.json` per run; `manifest.json` includes a `qc.bcftools_stats` block (per Q5/Phase 2).
 - A `CURRENT` symlink at `/mnt/genomeclaw/derived/CURRENT` pointing at the active run.
-- `reference/curated_notes/<gene>.md` files (host-side reference data, user-curated; per Q9).
-- `reference/curated_notes/topics/hard-genes.md` (host-side reference data, user-curated; per Q7/Q9).
+- ~~`reference/curated_notes/<gene>.md` files~~ — **retired in v1.6** (per [Q9 revised](#q9--lifestyle-calibration-via-referencecurated_notes-via-agent-research-and-synthesis); lifestyle calibration moves to agent memory + reasoned research per [agent-research-and-synthesis plan](../agent-research-and-synthesis/spec.md)).
 
 ### Schema / Migration Impact
 - Schema **v0.1** defined in `packages/toolkit/src/genomeclaw_toolkit/schemas/` (Phase 2/3 deliverable).
@@ -78,19 +80,19 @@ None. The MVP exercises the existing invariants; it does not propose new ones.
 ### Pipeline / Workflow Impact
 - New host CLI: `genomeclaw-prep` with subcommands `fetch`, `ingest`, `normalize`, `annotate`, `materialize`, plus Phase-6-owned subcommands for Cyrius (`cyp2d6-call`) and `pgsc_calc` (`pgs-compute`).
 - `ingest` invokes `bcftools stats` (summary into manifest) and `mosdepth` (writes `coverage_qc`) per Q7 and Phase 2 deliverables 5/6.
-- `annotate` runs **VEP + LOFTEE + AlphaMissense + SpliceAI + vcfanno** (per Q5), pinning **MANE Select** as the reporting transcript; HGVSc/HGVSp emitted server-side.
+- `annotate` runs **VEP + LOFTEE + AlphaMissense + vcfanno** (per Q5; SpliceAI dropped 2026-05-13), pinning **MANE Select** as the reporting transcript; HGVSc/HGVSp emitted server-side. `gene_loeuf` is populated at materialize time from gnomAD constraint v4.1.
 - New host service: `genomeclaw-service` (FastAPI, Uvicorn) with the endpoint set from AC2.
 
 ### Agent / UX Impact
 - **Six** plugin tools (per Q7/Q8) become callable agent tools after `nemoclaw onboard --from packages/nemoclaw-plugin/sandbox/Dockerfile`: `genomeclaw_status`, `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`, `genomeclaw_gene`, `genomeclaw_pgs`.
 - The user can ask clinical, PGx, lifestyle, and PRS questions over Telegram.
-- Lifestyle question handling reads from `genomeclaw_evidence(ref="gene_note:<gene>")` and composes responses from the user's variant + the curated note's framing (per Q9).
+- Lifestyle question handling follows the **agent research-and-synthesis pattern** *(v1.6; per [agent-research-and-synthesis plan](../agent-research-and-synthesis/spec.md))*: `memory_search` → `genomeclaw_variant` → reasoned `web_search` + training-knowledge research → synthesis at the configured model's maximum reasoning (`INV-A002`) → structured memory note (`INV-A001`) → reply with verbatim citations.
 - Coverage-aware false-reassurance prevention: the agent reads `mean_coverage` and `low_coverage_exons` from `genomeclaw_gene` and includes them naturally in negative answers (per Q7).
 
 ### External Dependencies
-- Host: `samtools`, `bcftools` (incl. `bcftools stats`), `tabix`, `bgzip`, `bedtools`, **`mosdepth`** (per Q7), **VEP + LOFTEE + AlphaMissense + SpliceAI + vcfanno** (per Q5), **Cyrius** (per Q6), **`pgsc_calc`** Nextflow pipeline (per Q8), **PharmCAT** (per Q6 outside-call interface).
+- Host: `samtools`, `bcftools` (incl. `bcftools stats`), `tabix`, `bgzip`, `bedtools`, **`mosdepth`** (per Q7), **VEP + LOFTEE + AlphaMissense + vcfanno** (per Q5; SpliceAI dropped 2026-05-13), **Cyrius** (per Q6), **`pgsc_calc`** Nextflow pipeline (per Q8), **PharmCAT** (per Q6 outside-call interface).
 - Host Python deps: `cyvcf2`, `pysam`, `duckdb`, `fastapi`, `uvicorn`, `pydantic`.
-- Annotation + scoring data files (downloaded; never bundled): VEP cache, LOFTEE data, AlphaMissense data, SpliceAI data, ClinVar, gnomAD v4, dbSNP, PGS Catalog scoring weights for the three initial traits.
+- Annotation + scoring data files (downloaded; never bundled): VEP cache, LOFTEE data, AlphaMissense data, **gnomAD constraint v4.1** (per-transcript LOEUF / pLI), ClinVar, gnomAD v4 exomes, dbSNP, PGS Catalog scoring weights for the three initial traits. (SpliceAI data dropped 2026-05-13.)
 - **Superseded by Q5**: SnpEff + SnpSift. The host can have them installed for ad-hoc use; they are no longer the default annotation path.
 
 ## Privacy & Safety Considerations
@@ -100,8 +102,8 @@ None. The MVP exercises the existing invariants; it does not propose new ones.
 - **Redaction surface**: host service responses are minimal-sufficient by construction; the plugin re-shapes; OpenShell L7 policy is the runtime floor. The two new tools (`genomeclaw_gene`, `genomeclaw_pgs`) inherit `output_class: summary` (`INV-P002`); their response shapes are enumerated in Q7/Q8 and never include raw PGS variant lists or per-variant coverage dumps.
 - **Clinical escalation**: ACMG SF and PharmCAT actionable findings carry `clinical_escalation` markers. PGx findings sourced from the Cyrius + PharmCAT outside-call path (per Q6) flow through this same pathway. The initial MVP finding set is conservative — fewer than 5 categories — to keep manual review tractable.
 - **PRS findings classification**: PRS findings (per Q8) carry `category: clinical-non-actionable` (population-level percentile estimates, not pathogenic variant calls); they do **not** carry a `clinical_escalation` marker. The `calibration_warning` string makes ancestry-normalization explicit when the user's continuous-ancestry estimate falls in a region with sparse training data.
-- **Lifestyle / clinical separation**: lifestyle findings (Phase 6) are calibrated via `reference/curated_notes/<gene>.md` (per Q9; `INV-C001` v1.5 in Phase 2 of the [POC pipeline recommendations plan](../../completed/poc-pipeline-recommendations/development-plan.md)). Each lifestyle finding cites a `gene_note:<gene>` evidence reference; over-deferral and over-claim both fail snapshot tests. The structured `evidence_quality` field is preserved in the schema for future-proofing.
-- **Editing curated notes is a user-facing-copy change**, reviewed by the `privacy-safety-reviewer` agent before merge per `INV-C001` v1.5.
+- **Lifestyle / clinical separation** *(v1.6)*: lifestyle findings (Phase 6) are calibrated via the **agent research-and-synthesis pattern** (per [agent-research-and-synthesis plan](../agent-research-and-synthesis/spec.md), `INV-C001` v1.6 + `INV-A001` + `INV-A002` in [INVARIANTS.md v1.8](../../reference/INVARIANTS.md)). Each lifestyle finding cites a `memory:<id>` or `web:<url>` evidence reference; over-deferral and over-claim both fail snapshot tests. The structured `evidence_quality` field is preserved in the schema for future-proofing.
+- **Agent system prompt is the user-facing-copy surface** *(v1.6)*: the prompt teaching the research-and-synthesis protocol + memory-note schema is what the `privacy-safety-reviewer` agent reviews. Memory notes themselves accumulate inside the sandbox and are user-inspectable via `memory_get`; they are not reviewed per-note.
 
 ## Out of Scope
 
@@ -115,8 +117,8 @@ The following are explicitly *not* part of the MVP. They live in later horizons.
 - Multi-genome / family support.
 - Imputation.
 - Reanalysis-diff endpoint.
-- ~~A complete lifestyle finding catalog. The MVP ships **one** lifestyle finding category: caffeine metabolism via *CYP1A2*. Lactase persistence, *ACTN3*, alcohol metabolism, chronotype, etc. are deferred to Horizon 6 follow-ups.~~ **Updated by Q9.** The MVP ships **seven** lifestyle finding categories (LCT, CYP1A2, ADORA2A, ALDH2, ADH1B, APOE, MTHFR) via curated markdown notes under `reference/curated_notes/`, plus the `topic:hard-genes` companion note. Lifestyle calibration is driven by these notes, not by structured `evidence_quality` taxonomies.
-- **PER3, CLOCK, and ACTN3 are dropped from the lifestyle track entirely** (per Q9). They fail the curated-notes bar — repeated non-replication (PER3, CLOCK), unreliable VNTR genotyping on short-read 30× WGS (PER3), or elite-cohort effects that don't transfer to recreational performance (ACTN3). They are **not deferred to a later horizon**; they are out of the project's scope as currently designed.
+- ~~A complete lifestyle finding catalog. The MVP ships **one** lifestyle finding category: caffeine metabolism via *CYP1A2*.~~ ~~**Updated by Q9.** The MVP ships **seven** lifestyle finding categories...~~ **Updated by Q9-revised (v1.6, 2026-05-15)**: there is no pre-defined lifestyle gene shortlist. The MVP ships the **agent research-and-synthesis pattern** which handles lifestyle questions for any gene the user asks about, via memory + reasoned research at max reasoning. The long-tail of gene questions ("anything about ABCG2 + uric acid?") works through the same path as the canonical ones.
+- **PER3, CLOCK, and ACTN3 stay out of the lifestyle track** *(v1.6: still out, but on different grounds)* — the agent declines on each ask with specific reasons (repeated non-replication, unreliable VNTR genotyping on short-read WGS, elite-cohort effects not transferring), not on a curation-list basis. The decline is part of the synthesis at max reasoning.
 - HLA typing (T1K), structural-variant calling (Manta), repeat expansions (ExpansionHunter), mt-aware mtDNA calling (mity), population-specific reference panels, automated ACMG/AMP rule classifiers (InterVar, Genebe), schema-enforced citation stripping, tool-use forcing, deterministic server-rendered findings cards, phrasing templates for high-risk categories, eval harness with synthetic test cases, additional PRS traits beyond the initial three, quarterly automated reanalysis, and additional vcfanno sources (OMIM, ClinGen Gene-Disease Validity, dbNSFP, MaxEntScan, UTRannotator) — all **deferred under Q10's defer-by-default discipline**, each with a specific trigger condition.
 
 ## Dependencies
@@ -216,17 +218,29 @@ The host-service URL pattern for arrays is **repeated query parameters** (`/v1/f
 
 ---
 
-### Q5 — Annotator stack: VEP + LOFTEE + AlphaMissense + SpliceAI + vcfanno (supersedes Q1)
+### Q5 — Annotator stack: VEP + LOFTEE + AlphaMissense + vcfanno + gnomAD constraint (supersedes Q1)
 
-**Decided**: 2026-05-08.
+**Decided**: 2026-05-08. **Amended 2026-05-13** — SpliceAI dropped from the default stack; gnomAD constraint v4.1 added as the canonical source for `gene_loeuf`. See "Amendment 2026-05-13" below.
 
 **Decision**: ship the MVP with **VEP** as the variant annotator, augmented with **LOFTEE** (predicted-LoF confidence filter), **AlphaMissense** (missense pathogenicity), and **SpliceAI** (splice-altering variant predictor). **MANE Select** is the default reporting transcript; HGVSc and HGVSp are emitted server-side, never constructed by the LLM. **vcfanno** stamps tabix-indexed annotations onto the VCF for ClinVar (latest release) and gnomAD v4 (with per-population AFs). Q1's SnpEff + SnpSift stack is superseded.
 
 **Rationale**: independent benchmarks comparing SnpEff, VEP, and ANNOVAR on curated truth sets show LoF-prediction concordance falling to 65–44% when transcript sets differ between tools, and standardized testing finds SnpEff incorrectly downgrades ~67% of pathogenic / likely-pathogenic variants. For an agent that emits clinical-track findings with `clinical_escalation` markers, this rate of disagreement with the clinical-grade reference standard is unsafe (`INV-C001`). VEP + LOFTEE + AlphaMissense + SpliceAI is the smallest stack that closes the gap; vcfanno fills in ClinVar + gnomAD without requiring SnpSift's ad-hoc joins. LOFTEE's 2023 curation study found ~67% of "high-confidence" heterozygous predicted-LoF variants in dominant disease genes were not actually LoF after manual review — i.e., LOFTEE is the *floor* on LoF filtering, not the ceiling.
 
-**Schema additions** (land in Phase 4): zygosity, depth (DP), allele balance, FILTER, ClinVar classification + review status, gnomAD popmax + per-ancestry AFs, gene LOEUF, MANE Select HGVSc and HGVSp, AlphaMissense score + class, SpliceAI max delta, LOFTEE high-confidence flag.
+**Schema additions** (land in Phase 4): zygosity, depth (DP), allele balance, FILTER, ClinVar classification + review status, gnomAD popmax + per-ancestry AFs, gene LOEUF, MANE Select HGVSc and HGVSp, AlphaMissense score + class, ~~SpliceAI max delta~~ *(dropped 2026-05-13)*, LOFTEE high-confidence flag.
 
 **Out of scope for Q5**: dbNSFP (REVEL / CADD / PrimateAI), MaxEntScan, UTRannotator, automated ACMG/AMP rule classifiers (InterVar, Genebe). These are deferred under Q10's defer-by-default discipline.
+
+#### Amendment 2026-05-13 — SpliceAI dropped; gnomAD constraint added
+
+**What changed**: SpliceAI is removed from the default Phase-4D annotation stack. gnomAD constraint v4.1 (per-transcript LOEUF / pLI) is added as a small (~1–2 MB TSV) fetch source consumed at materialize time to populate `gene_loeuf`.
+
+**Why**: a researcher-confirmed-defaults review (commit fd835fb, 2026-05-13) found SpliceAI's ~50 GB dataset footprint and per-variant scoring cost are disproportionate to the MVP's tool surface — none of the six v0 plugin tools surface splice-impact predictions directly, and ACMG-relevant splice variants are already covered indirectly via ClinVar pathogenic / likely-pathogenic classifications. Dropping SpliceAI eliminates ~50 GB of reference storage and shaves an estimated 30–60 min off the 4D real-data smoke wall time without losing a tool-surfaced capability. gnomAD constraint is the source the original Q5 plan vaguely referred to as "dedicated LOEUF source"; making it explicit closes that ambiguity.
+
+**Schema impact**: the planned `spliceai_max_delta` column does NOT land. The planned `gene_loeuf` column lands as documented but is populated via a materialize-time join against gnomAD constraint, not from VEP's `--af_gnomadg` flag.
+
+**Trigger to revisit**: a user-stated need for splice-impact reasoning that ClinVar alone can't satisfy — e.g., a VUS in a splice region where the question is "could this be splice-altering?" At that point SpliceAI returns as a deferred-feature add per Q10's defer-by-default discipline.
+
+**Affected files (this revision)**: [development-plan.md](development-plan.md) §"Key Design Decisions" #3 + §"Schema / Provenance Impact"; [phases/phase-4.md](phases/phase-4.md) throughout sub-phase 4D; [phases/phase-4-completion.md](phases/phase-4-completion.md) §W5.
 
 **Revisit when**:
 - Phase 4 fixture timings on the project owner's VCF exceed the personal-host budget (~30 min/genome target). Mitigation candidate: drop AlphaMissense data files to a smaller subset, or pre-filter against gnomAD AF before running plugins.
@@ -274,7 +288,7 @@ The host-service URL pattern for arrays is **repeated query parameters** (`/v1/f
 - `genomeclaw_gene` — `Type.Object({ gene: Type.String({ minLength: 1 }) })` (single-record lookup; scalar param).
 - `output_class: summary` (`INV-P002` default; minimal-sufficient response shape enumerated above).
 
-**Companion: `topic:hard-genes` evidence reference**. A markdown note `reference/curated_notes/topics/hard-genes.md` listing the systematically poorly-resolved genes with one-paragraph caveats. Resolved by `genomeclaw_evidence(ref="topic:hard-genes")`. The agent reaches for this when the gene is on the hard-genes list.
+**Companion: agent reasoning about hard-genes** *(revised v1.6)*. The systematic-blind-spot caveat (PMS2, GBA, CYP21A2, SMN1, etc.) lives in the agent's accumulated research memory + the model's training knowledge, not in a pre-authored `reference/curated_notes/topics/hard-genes.md` file. The agent reaches for this caveat naturally when a query touches a known-hard gene; the calibration emerges from the agent's research-and-synthesis pattern (`INV-C001` v1.6 + `INV-A002`). A `topic:hard-genes` evidence-resolver path is no longer planned.
 
 **Revisit when**:
 - The user repeatedly asks coverage-related follow-ups that `mean_coverage` alone can't answer (revisit: per-exon coverage table, per-region mappability scores).
@@ -288,9 +302,39 @@ The host-service URL pattern for arrays is **repeated query parameters** (`/v1/f
 
 ---
 
-### Q8 — PRS panel via pgsc_calc + genomeclaw_pgs (6th tool)
+### Q8 — PRS via pgsc_calc — ~~fixed three-trait panel + `genomeclaw_pgs` (6th tool)~~ → agent-driven, four-tool surface, no pre-curated panel
 
-**Decided**: 2026-05-08.
+**Decided**: 2026-05-08. **Revised v1.6: 2026-05-17** *(supersedes the v1.5 fixed-panel design; per [agent-driven PRS report](../../../reports/agent-driven-prs-computation.md))*.
+
+#### v1.6 amendment (2026-05-17)
+
+**What changed and why**: the v1.5 design pre-picked three traits (CAD, T2D, breast or prostate) and mapped each to a single curator-chosen PGS Catalog scorefile, baked into a `reference/pgs_panel/<trait>.yaml`. A methodological review during the slice-E pre-implementation pass — and the project owner's direct callout — identified this as the curated_notes mistake in PRS form: the curator pre-decides which traits matter + which scorefiles are right, freezing the editorial layer against the long-tail of trait questions a user actually asks ("what about my asthma? ADHD? schizophrenia? prostate? Alzheimer's?"). The agent-research-and-synthesis plan retired the parallel curated_notes design for lifestyle calibration in v1.6; Q8 v1.6 makes the same move for PRS.
+
+**The new design** (per [agent-driven PRS report](../../../reports/agent-driven-prs-computation.md)):
+
+1. **PGS Catalog ID is the canonical key**, not curator-named trait. The `pgs_scores` table is keyed by `pgs_id` (e.g. `PGS000018`), not by `cad` / `t2d` / `prostate`. Multiple PGSs per trait are first-class.
+2. **Four host tools, not one**: `genomeclaw_pgs_list` / `genomeclaw_pgs_get` / `genomeclaw_pgs_compute` / `genomeclaw_pgs_compute_status`. The plugin tool count is 9 (was 6).
+3. **Agent-curated PGS choice as a memory + provenance contract**: the agent reasons at `INV-A002` ceiling over PGS Catalog metadata + recent literature + the user's likely ancestry; picks a scorefile; persists the rationale + alternatives considered + the verbatim user question both as columns on the `pgs_scores` row (per `INV-A003`) and as a memory note (per `INV-A001`).
+4. **Consent at INV-P001 install-time, not per-compute**: PGS Catalog egress is already an `INV-P001`-class destination the user opted into at install. No per-compute user-approval prompts. Runaway-compute risk is bounded by a concurrency cap (1 in-flight) + a kill-switch (`genomeclaw config set pgs.compute_enabled false` revokes the path entirely). A daily wall-clock budget was considered + rejected as overengineering for the single-user PoC; the concurrency cap + the natural per-compute time bound (~5 min for `pgsc_calc` on one PGS at 30× WGS) keep cumulative damage bounded without the budget mechanism. Add back later if a real failure surfaces.
+5. **PRS-decline pattern in the agent system prompt** *(per `INV-C001` v1.7)*: the agent declines to compute when the literature is too immature (top-decile RR < ~1.5×; no independent replication; ancestry-calibration failure for this user; no biologically-grounded polygenic basis). The decline is *reasoned* (the agent runs the research step first); names two specific reasons; is itself persisted as a memory note so future sessions hit the decline before re-deciding.
+6. **No pre-curated trait panel in code**: the "panel" is whatever the agent has chosen to compute for *this* user; it grows as a side-effect of use.
+
+**Why this is the right structural pivot**: long-horizon reasoning models (Claude 4.x at `xhigh`, GPT-5 at `xhigh`, o-series at `max`) make PGS selection a decision they're genuinely good at — multi-criteria, citation-bound, well-suited to the kind of metadata reasoning PGS Catalog supports. The compute layer needs orchestration discipline (cache, concurrency cap, kill-switch); the editorial layer needs reasoning, not curation.
+
+**What stays the same as v1.5**: `pgsc_calc` is still the compute engine. Continuous-ancestry calibration via `--run_ancestry` is mandatory. PRS findings still carry `category: clinical-non-actionable` + no `clinical_escalation` marker (per `INV-C001`). PGS Catalog is still the inbound egress destination, host-side, INV-P001-class opt-in. The compute still respects the personal-host resource envelope (16 GB RAM, 2 CPUs).
+
+**Deferred to a Slice E.4 (post-PoC)**: validation study of agent PGS-selection quality against expert-curated benchmarks for 8-12 canonical traits + a pre-compute consent turn analogous to clinical genetic-counseling pre-test discussion. The methodological review (recorded as a section in the report) identifies both as required before any deployment beyond the project owner.
+
+**Affected files (v1.6)**:
+- [INVARIANTS.md](../../../reference/INVARIANTS.md) v1.11 — adds `INV-A003` (Agent-Curated Compute Provenance); revises `INV-C001` to v1.7 with the PRS-decline pattern.
+- [grand-plan.md](../../../reference/grand-plan.md) — Theme G PRS bullet + Decisions Taken Q8 row revised; Q10 "additional PRS traits" deferred decision retired.
+- [architecture.md](../../../reference/architecture.md) — plugin tool table (6→9), 4 new PGS endpoints, `pgs_scores` table description, `pgs_compute_tasks.sqlite` added under `derived/<run-id>/`, INV-A003 row added to the invariant-traceability table.
+- [user-stories.md](../../../reference/user-stories.md) — Story 10 tool-call block rewritten; resolved-gap entry added for retired Q10 trigger.
+- This spec — AC9 rewritten above; Q8 v1.6 amendment block (this section).
+- [development-plan.md](development-plan.md) Phase 6 row + [phases/phase-6.md](phases/phase-6.md) Slice E description revised.
+- [phases/phase-6-slice-e.md](phases/phase-6-slice-e.md) marked **Status: Superseded** — the v2 plan replaces it.
+
+#### v1.5 (original, 2026-05-08; superseded by v1.6 — kept below for the historical record)
 
 **Decision**: add **`pgsc_calc`** (PGS Catalog Calculator, Nextflow) to compute polygenic risk scores for **three initial traits**: **coronary artery disease (CAD)**, **type 2 diabetes (T2D)**, and **breast cancer or prostate cancer** (project owner's choice; PRS313/BCAC for breast, PRS269 for prostate). All scores **ancestry-normalized** via `pgsc_calc --run_ancestry` (continuous-ancestry normalization against 1000G + HGDP; reporting raw percentiles without ancestry calibration produces systematically wrong numbers for non-European users). Materialize a **`pgs_scores` table** in the derived store. Add **`genomeclaw_pgs`** to the plugin tool surface (6th tool; tool count 5 → 6). The host service exposes a new endpoint **`GET /v1/pgs/{trait}`** returning `{percentile_in_user_ancestry, raw_score, source_pgs_id, study_population, calibration_warning}`.
 
@@ -317,44 +361,39 @@ The host-service URL pattern for arrays is **repeated query parameters** (`/v1/f
 
 ---
 
-### Q9 — Lifestyle calibration via reference/curated_notes/; gene shortlist (LCT, CYP1A2, ADORA2A, ALDH2, ADH1B, APOE, MTHFR)
+### Q9 — Lifestyle calibration ~~via reference/curated_notes/~~ via agent research-and-synthesis
 
-**Decided**: 2026-05-08.
+**Decided**: 2026-05-08 (v1.5 — curated notes).
+**Revised**: 2026-05-15 (v1.6 — agent research-and-synthesis). See [agent-research-and-synthesis plan](../agent-research-and-synthesis/spec.md).
 
-**Decision**: lifestyle calibration is driven by a host-side **`reference/curated_notes/`** directory of one-markdown-file-per-gene curated notes, retrieved by the agent via **`genomeclaw_evidence(ref="gene_note:<gene>")`**. The structured `evidence_quality` field on lifestyle findings (per `INV-C001` v1.4) is **preserved** in the schema for future-proofing but is **not the primary calibration surface** — the agent composes lifestyle responses from the user's variant call plus the note's framing, in the user's voice.
+**Original decision (v1.5; superseded)**: lifestyle calibration driven by a host-side `reference/curated_notes/<gene>.md` directory. Retired in v1.6 because the pattern (a) didn't leverage the frontier model's training knowledge, (b) didn't scale beyond the curator's pre-defined topic set, (c) didn't self-update with new literature.
 
-**Initial gene shortlist** (seven notes plus one topic note in MVP Phase 6):
-- **LCT/MCM6 rs4988235** (lactase persistence) — strong evidence; ancestry caveats (European persistence allele; non-European persistence variants are different — handle ancestry).
-- **CYP1A2 rs762551** (caffeine metabolism) — moderate evidence; don't dichotomize "fast vs slow" (continuous trait; smoking and OCP induce/inhibit more than genotype does).
-- **ADORA2A rs5751876** (caffeine sensitivity) — moderate evidence; T allele predisposes to caffeine-induced anxiety / sleep disruption in low-habit consumers; modulated by habituation.
-- **ALDH2 rs671** (alcohol flushing) — strong in East Asians; protective against alcohol dependence, dramatically increased esophageal cancer risk with drinking.
-- **ADH1B rs1229984** (alcohol metabolism) — strong; population frequency caveats (different phenotype mapping outside East Asia).
-- **APOE ε2/ε3/ε4** (rs429358 + rs7412) — strong (AD risk); the note IS the disclosure protocol (lifetime AD risk numbers, "no current preventive interventions" framing, "this is fraught — consider whether you want to know" cue).
-- **MTHFR C677T (rs1801133), A1298C (rs1801131)** — skeptical framing required; ACMG 2013 explicitly recommended against routine MTHFR testing; the note documents this so the agent has a consistent skeptical response when the user mentions a wellness-influencer claim.
+**Revised decision (v1.6)**: lifestyle calibration is driven by the **agent research-and-synthesis pattern** built on OpenClaw's first-class primitives:
+1. **Memory** (`memory_search` / `MEMORY.md` / `memory/YYYY-MM-DD.md`) — prior synthesis the agent persisted in its workspace; recalled before re-research.
+2. **Reasoned research** (`web_search` + the model's training knowledge under extended reasoning) — current online sources combined with the model's existing knowledge at moderate-to-high reasoning effort.
+3. **Synthesis at maximum reasoning** (`INV-A002`) — the bioinformatician-in-healthcare turn for any user-facing health interpretation.
+4. **Structured memory notes** (`INV-A001`) — persisted before reply so future sessions recall instead of re-researching.
 
-Plus **`reference/curated_notes/topics/hard-genes.md`** (resolved by `topic:hard-genes`) for the systematic-blind-spot caveat (PMS2, GBA, etc.) — companion to Q7's coverage-aware gene tool.
+The structured `evidence_quality` field on lifestyle findings (per `INV-C001` v1.4) is **preserved** in the schema for future-proofing but is **not the primary calibration surface** — the agent composes lifestyle responses from the user's variant call plus its reasoned synthesis.
 
-**Genes dropped from the lifestyle track** (see Out of Scope below):
-- **PER3 VNTR / CLOCK** (chronotype) — repeated non-replication; VNTRs unreliably called from short-read 30× WGS, so even the genotype call may be wrong.
-- **ACTN3 R577X** (athletic performance) — elite-cohort meta-analyses show OR ~1.27–1.40 for power vs endurance, but this does not transfer to recreational performance and does not produce useful individual-level prediction.
+**No pre-authored gene shortlist (v1.6)**. The seven-gene shortlist (LCT, CYP1A2, ADORA2A, ALDH2, ADH1B, APOE, MTHFR) + the `topics/hard-genes.md` companion note from v1.5 are **retired**. The agent's research-and-synthesis pattern handles the long-tail of gene questions through the same path — there's no curator-pre-defined topic set the system is constrained to. APOE's disclosure-protocol framing (lifetime AD risk numbers + "this is fraught" cue) becomes a property of the agent's accumulated reasoning + system prompt, not of a baked markdown file.
 
-**Rationale**: structured `evidence_quality` taxonomies, mandatory effect-size schema fields, and pre-built phrasing templates are over-engineering for a single-user system. The user is the curator; the agent is the reader. Curated notes carry the user's voice and judgment; the agent's responses inherit calibration without the project having to maintain a taxonomy. The user can edit notes over time as their thinking evolves. This pattern is uniquely well-suited to single-user systems and uniquely poorly-suited to multi-user systems — lean into it.
+**Genes dropped from the lifestyle track (unchanged from v1.5)** — but now the agent declines on each ask with specific reasons rather than refusing on a curation-list basis:
+- **PER3 VNTR / CLOCK** (chronotype) — repeated non-replication; VNTRs unreliably called from short-read 30× WGS.
+- **ACTN3 R577X** (athletic performance) — elite-cohort effect that doesn't transfer to recreational performance.
 
-**N-of-1 experiment framing**: defensible only for outcomes with within-individual variability and short washout windows (caffeine sleep latency, alcohol flushing, post-prandial glucose response). The agent's "try this for two weeks" suggestions are constrained accordingly; not used for training response, body composition, or long-horizon weight outcomes.
+**Rationale for the v1.6 revision**: the v1.5 pre-authored-notes pattern was a 100× capability mismatch with frontier models. GPT-5.5 has read every paper through its training cutoff; the curated-notes pattern actively suppressed that knowledge in favor of the project owner's pre-codification. v1.6 leverages: (a) the model's training knowledge as a default substrate, (b) current online sources via `web_search` for freshness, (c) extended reasoning at `max` for the synthesis step, (d) agent memory to avoid re-researching settled topics. The user is no longer the curator; the user is the **directional-feedback giver** ("be more conservative about RCT vs. observational evidence") whose feedback the agent persists to memory + applies on future synthesis turns.
 
-**`INV-C001` recognition**: INVARIANTS.md is bumped to v1.5 in Phase 2 of the [POC pipeline recommendations plan](../../completed/poc-pipeline-recommendations/development-plan.md), with `reference/curated_notes/` added to INV-C001's "Where it applies". Editing a curated note is a user-facing-copy change, reviewed by the privacy-safety-reviewer agent before merge.
+**N-of-1 experiment framing**: defensible only for outcomes with within-individual variability and short washout windows. Unchanged in v1.6 — the constraint lives in the agent's system prompt + synthesis discipline.
 
-**Revisit when**:
-- A new lifestyle gene meets the bar (strong evidence, well-replicated, individually-meaningful effect, callable on short-read 30× WGS) and the user wants to add it. Adding a note is a one-file change.
-- Usage shows the structured `evidence_quality` field is genuinely needed for some surface (e.g., a future report generator) — promote it back to primary.
-- The "every shipped lifestyle finding must have a corresponding curated note" rule earns its keep — promote to a candidate INV-C002 in a follow-up plan.
+**`INV-C001` recognition**: INVARIANTS.md bumped to **v1.8** on 2026-05-15 — INV-C001 to v1.6 (research-and-synthesis), plus two new invariants `INV-A001` (memory provenance) + `INV-A002` (synthesis reasoning floor). See [INVARIANTS.md](../../reference/INVARIANTS.md).
 
-**Affected files**:
-- [docs/reference/INVARIANTS.md](../../reference/INVARIANTS.md) INV-C001 v1.5 — updated in Phase 2 of the [POC pipeline recommendations plan](../../completed/poc-pipeline-recommendations/development-plan.md).
-- [docs/reference/architecture.md](../../reference/architecture.md) data layout, evidence resolver — updated in Phase 2.
-- [docs/reference/grand-plan.md](../../reference/grand-plan.md) Theme H — updated in Phase 3.
-- [docs/reference/user-stories.md](../../reference/user-stories.md) Story 9 — updated in Phase 3 (caffeine answer reads `gene_note:CYP1A2`; PER3/CLOCK follow-up gracefully declined).
-- [development-plan.md](development-plan.md) Phase 6 — updated in Phase 4 (curated-notes evidence resolver deliverable).
+**Affected files** (revised 2026-05-15):
+- [docs/reference/INVARIANTS.md](../../reference/INVARIANTS.md) — v1.8 sweep landed 2026-05-15.
+- [docs/reference/architecture.md](../../reference/architecture.md) — agent cognition layer section added 2026-05-15; data layout's `curated_notes/` removed.
+- [docs/reference/grand-plan.md](../../reference/grand-plan.md) Theme H — rewritten 2026-05-15.
+- [docs/reference/user-stories.md](../../reference/user-stories.md) Story 9 — rewritten 2026-05-15 as the canonical research-and-synthesis demo.
+- [development-plan.md](development-plan.md) Phase 6 — Slice C (7 curated gene notes) **superseded** by [agent-research-and-synthesis plan](../agent-research-and-synthesis/spec.md).
 
 ---
 

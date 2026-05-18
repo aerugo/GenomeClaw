@@ -79,7 +79,7 @@ flowchart TB
     end
 
     subgraph SBX["Sandbox — OpenShell pod (Landlock + seccomp + netns)"]
-        Agent["<b>OpenClaw agent + NemoClaw plugin</b><br/>(Node.js 22)<br/><br/>Tools registered (6):<br/>genomeclaw_status, genomeclaw_findings,<br/>genomeclaw_variant, genomeclaw_evidence,<br/>genomeclaw_gene, genomeclaw_pgs"]
+        Agent["<b>OpenClaw agent + NemoClaw plugin</b><br/>(Node.js 22)<br/><br/>Tools registered (9):<br/>genomeclaw_status, genomeclaw_findings,<br/>genomeclaw_variant, genomeclaw_evidence,<br/>genomeclaw_gene,<br/>genomeclaw_pgs_list, genomeclaw_pgs_get,<br/>genomeclaw_pgs_compute, genomeclaw_pgs_compute_status"]
         Plugin["<b>GenomeClaw plugin</b><br/>/sandbox/.openclaw/extensions/genomeclaw/"]
         Agent <-->|tool calls| Plugin
     end
@@ -131,11 +131,16 @@ flowchart TB
 - `GET /v1/findings/{id}` — single finding with bound evidence references.
 - `GET /v1/variants` — scoped variant query (summary class). Same `genes` / `rsids` repeated-query-parameter shape as `/v1/findings`.
 - `GET /v1/variants/{key}` — single variant lookup by canonical key (rsid or `chr-pos-ref-alt`).
-- `GET /v1/evidence/{ref}` — evidence record fetch.
-  - Recognized non-variant-keyed reference forms (per MVP spec Q9 / `INV-E001`): `gene_note:<gene>` (resolves to `reference/curated_notes/<gene>.md`), `topic:<topic>` (resolves to `reference/curated_notes/topics/<topic>.md`; e.g., `topic:hard-genes` per Q7 / Q9). Variant-keyed forms (ClinVar IDs, gnomAD records, PMIDs, internal record IDs) are unchanged.
+- `GET /v1/evidence/{ref}` — evidence record fetch. **Variant-keyed kinds only** *(v1.6; per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*: `clinvar:<id>` joins the variants table on `clinvar_id`; `pgs_catalog:<id>` joins the pgs_scores table; `pharmgkb:<id>` joins the PharmCAT outside-call output. The `gene_note:<gene>` and `topic:<topic>` kinds previously documented under MVP spec Q9 have been **retired** — lifestyle calibration now flows through the agent's research-and-synthesis pattern (memory + reasoned research at max reasoning), not via host-side curated markdown notes. Agent-side citation forms `memory:<file>#<anchor>` and `web:<url>` are agent-workspace concerns; the host service does not resolve them.
 - `GET /v1/provenance/{run-id}` — provenance envelope for a run.
 - `GET /v1/gene/{symbol}` — gene-level facts (per MVP spec Q7): `{top_user_variants, gene_loeuf, omim_disease, omim_inheritance, mean_coverage, low_coverage_exons}`. `mean_coverage` is a scalar (number, scaled to 1× depth); `low_coverage_exons` is a list of exon IDs whose mean depth fell below a configurable threshold (default 10×). Defaults to active run.
-- `GET /v1/pgs/{trait}` — PRS results (per MVP spec Q8): `{percentile_in_user_ancestry, raw_score, source_pgs_id, study_population, calibration_warning}`. `trait` is one of the three initial traits (CAD, T2D, breast or prostate cancer in v0). Defaults to active run.
+- **PRS endpoints** *(v1.6; per [MVP spec Q8 v1.6](../plans/active/mvp/spec.md) + [agent-driven PRS report](../reports/agent-driven-prs-computation.md))*. Four endpoints, keyed by PGS Catalog ID (not by curator-named trait):
+  - `GET /v1/pgs/computed` — list of all PRSs the agent has computed for this user. Each row: `{pgs_id, trait_label, percentile_in_user_ancestry, calibration_warning, freshness, agent_choice_rationale_preview}`.
+  - `GET /v1/pgs/computed/{pgs_id}` — single PRS in full: `{pgs_id, trait_label, percentile_in_user_ancestry, raw_score, source_pgs_id, study_population, calibration_warning, agent_choice_rationale, requested_for_question, superseded_by}`.
+  - `POST /v1/pgs/compute` — agent-triggered async compute. Body: `{pgs_id, trait_label, rationale, requested_for_question}`. Returns `{task_id, status}` where status is one of `queued | running`. Bounded by a host-side concurrency cap (1 in-flight). A kill-switch — `genomeclaw config set pgs.compute_enabled false` — revokes the path entirely; with the kill-switch active, returns `status=failed` immediately with error `compute_path_disabled`.
+  - `GET /v1/pgs/compute/{task_id}` — poll status: `queued | running | done | failed`. When `done`, the result is fetchable via `/v1/pgs/computed/{pgs_id}`.
+
+  Consent for PGS Catalog egress is one-time at install per `INV-P001` (not per-compute); the agent's choice rationale is persisted per `INV-A003`; the PRS-decline pattern in `INV-C001` v1.7 prevents computes against immature literature.
 
 (Per MVP spec Q3 — Decision Taken: there is no `/v1/report` endpoint. Report-shaped responses are assembled by the agent from `/v1/findings` + `/v1/health` + its training.)
 
@@ -146,16 +151,21 @@ flowchart TB
 **Lives**: inside OpenShell sandbox at `/sandbox/.openclaw/extensions/genomeclaw/`.
 **Implementation**: TypeScript, OpenClaw plugin SDK (`openclaw/plugin-sdk`), Node.js 22.
 **Responsibility**: registers agent-callable tools (per MVP spec Q2 — `registerTool` with TypeBox parameter schemas) and proxies them to the host service. Re-shapes responses to enforce the plugin-level part of `INV-P002`. Never reads files; never spawns bioinformatics subprocesses.
-**Tool surface** (six tools, per MVP spec Q3 / Q7 / Q8):
+**Tool surface** (nine tools, per MVP spec Q3 / Q7 / Q8 v1.6):
 
 | Tool | Parameters (TypeBox) | Endpoint | Output class |
 |------|----------------------|----------|--------------|
 | `genomeclaw_status` | `Type.Object({})` | `/v1/health` | `summary` |
 | `genomeclaw_findings` | `category` enum + `genes: string[]` + `drugs: string[]` + `limit` | `/v1/findings` | `summary` |
 | `genomeclaw_variant` | `key: string` | `/v1/variants/{key}` | `summary` |
-| `genomeclaw_evidence` | `ref: string` (variant-keyed or `gene_note:<gene>` / `topic:<topic>` per Q7 / Q9) | `/v1/evidence/{ref}` | `summary` |
+| `genomeclaw_evidence` | `ref: string` (variant-keyed kinds only: `clinvar:` / `pgs_catalog:` / `pharmgkb:`) | `/v1/evidence/{ref}` | `summary` |
 | `genomeclaw_gene` *(per Q7)* | `gene: string` | `/v1/gene/{symbol}` | `summary` |
-| `genomeclaw_pgs` *(per Q8)* | `trait: string` | `/v1/pgs/{trait}` | `summary` |
+| `genomeclaw_pgs_list` *(per Q8 v1.6)* | `Type.Object({})` | `/v1/pgs/computed` | `summary` |
+| `genomeclaw_pgs_get` *(per Q8 v1.6)* | `pgs_id: string` | `/v1/pgs/computed/{pgs_id}` | `summary` |
+| `genomeclaw_pgs_compute` *(per Q8 v1.6)* | `pgs_id: string` + `trait_label: string` + `rationale: string` *(minLength 50)* + `requested_for_question: string` | `POST /v1/pgs/compute` | `summary` |
+| `genomeclaw_pgs_compute_status` *(per Q8 v1.6)* | `task_id: string` | `/v1/pgs/compute/{task_id}` | `summary` |
+
+The four PRS tools replace the single `genomeclaw_pgs(trait)` tool from the v1.5 design (retired per Q8 v1.6 — the static-panel framing recapitulated the v1.5 curated_notes mistake in PRS form; see [agent-driven PRS report](../reports/agent-driven-prs-computation.md)). PRS computation is **agent-triggered async**: the agent decides which PGS Catalog scorefile to compute (reasoning at the model's ceiling per `INV-A002`), persists the choice rationale per `INV-A003`, and either polls `_compute_status` until done or surfaces an in-flight message and resumes on the next turn. The decline pattern in `INV-C001` v1.7 prevents computes against immature literature.
 
 **Configuration**: read from `api.pluginConfig`, sourced from `plugins.entries.genomeclaw.config.*` in the sandbox's `openclaw.json`. Mutable post-install via host-side `nemoclaw <sandbox> config set --key plugins.entries.genomeclaw.config.<dotpath> --value '...' --restart`.
 
@@ -164,6 +174,59 @@ flowchart TB
 **Lives**: `packages/nemoclaw-plugin/policy-preset.yaml`, intended to be merged into NemoClaw's blueprint at onboard time alongside other presets.
 **Modeled on**: [`nemoclaw-blueprint/policies/presets/local-inference.yaml`](https://github.com/NVIDIA/NemoClaw/blob/main/nemoclaw-blueprint/policies/presets/local-inference.yaml) — the canonical "sandbox reaches host service" pattern.
 **Responsibility**: tells the OpenShell L7 proxy that the plugin's Node binary may reach `host.openshell.internal:8643` for specific GET paths only. Includes the `allowed_ips:` RFC 1918 allowlist required to bypass OpenShell's SSRF guard for private host-gateway addresses.
+
+### 5. Agent cognition layer — research, memory, synthesis *(v1.6+)*
+
+**Lives**: inside the OpenShell sandbox, owned by OpenClaw + the configured agent. Not GenomeClaw code per se — but the GenomeClaw architecture depends on it being correctly configured.
+
+**Three OpenClaw built-in primitives** the agent uses, beyond the GenomeClaw plugin tools:
+
+| Primitive | OpenClaw plugin / mechanism | Egress | Default |
+|-----------|------------------------------|--------|---------|
+| **Memory** | `memory-core` (bundled) — `memory_search`, `memory_get` over `MEMORY.md` + `memory/YYYY-MM-DD.md` in the agent workspace | none (in-sandbox) | enabled |
+| **Reasoned research** | `web_search` (bundled managed tool; provider-pluggable) + provider-native variants (e.g. OpenAI Responses `web_search`) — combines model training knowledge with current online sources via extended reasoning | new named egress destination per `INV-P001` | **disabled** (user opts in via `tools.web.search.enabled: true` + provider config) |
+| **Extended reasoning effort** | Per-message `thinking` parameter on the agent's inference calls (model-supported levels: `off | minimal | low | medium | high | xhigh | adaptive | max`) | n/a | agent default |
+
+**The research-and-synthesis pattern** *(per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ User question arrives                                                    │
+└───────────────────────────────┬─────────────────────────────────────────┘
+                                │
+        ┌───────────────────────▼─────────────────────────┐
+        │ Four inputs the agent can draw from              │
+        │                                                  │
+        │   ① Model training knowledge   (vast; cheap)     │
+        │   ② Online sources             (current; web)    │
+        │   ③ Memory                     (prior synthesis) │
+        │   ④ GenomeClaw host service    (user's genome)   │
+        └───────────────────────┬─────────────────────────┘
+                                │
+         ┌──────────────────────┴──────────────────────┐
+         │                                             │
+         ▼                                             ▼
+  ┌───────────────────────┐               ┌──────────────────────────┐
+  │ Research phase        │               │ Synthesis phase           │
+  │                       │               │                           │
+  │ reasoning: medium/high│               │ reasoning: MAX            │
+  │ tools: memory_search, │               │   (per INV-A002 for       │
+  │        web_search,    │  ───────────► │    health-interpretation  │
+  │        genomeclaw_*   │               │    turns only)            │
+  │                       │               │                           │
+  │ goal: gather widely   │               │ "Simulate being a         │
+  │                       │               │  bioinformatician in      │
+  │                       │               │  healthcare."             │
+  └───────────────────────┘               └──────────────────────────┘
+                                                       │
+                                                       ▼
+                              ┌──────────────────────────────────────┐
+                              │ Memory note (per INV-A001)            │
+                              │ + user-facing reply                    │
+                              └──────────────────────────────────────┘
+```
+
+Lifestyle calibration — the project owner's calibrated stance on what each gene means in practice — is **not** pre-codified in a static markdown file. It emerges from the agent's research + the user's directional feedback, persisted in the agent's workspace memory, refreshed when stale. The previous v1.5 design (`reference/curated_notes/<gene>.md` with `gene_note:<gene>` evidence references) is retired in v1.6.
 
 ---
 
@@ -178,21 +241,23 @@ flowchart TB
 │   ├── gnomad/                          (per Q5 — gnomAD v4 with per-population AFs)
 │   ├── dbsnp/
 │   ├── vep_cache/                       (per Q5 — VEP + LOFTEE + AlphaMissense + SpliceAI data files)
-│   ├── pgs_catalog/                     (per Q8 — PGS Catalog scoring weights for the three initial traits)
-│   └── curated_notes/                   (per Q9 — host-side, user-authored markdown notes)
-│       ├── lct.md
-│       ├── cyp1a2.md
-│       ├── adora2a.md
-│       ├── aldh2.md
-│       ├── adh1b.md
-│       ├── apoe.md
-│       ├── mthfr.md
-│       └── topics/
-│           └── hard-genes.md            (per Q7 — systematic short-read-WGS blind-spot caveat)
+│   └── pgs_catalog/                     (per Q8 — PGS Catalog scoring weights for the three initial traits)
+│       (Note: a `reference/curated_notes/` subtree was documented in earlier
+│        drafts per MVP spec Q9, including a `topics/hard-genes.md` companion
+│        note. As of v1.6 lifestyle calibration + the hard-genes blind-spot
+│        framing live in the AGENT'S WORKSPACE MEMORY inside the sandbox,
+│        NOT on the host filesystem. See:
+│          docs/plans/active/agent-research-and-synthesis/spec.md
+│          INVARIANTS.md § INV-C001 v1.6, INV-A001, INV-A002.)
 ├── derived/     (RW; pipeline writes <run-id>/ here — authoritative)
 │   └── <run-id>/
 │       ├── manifest.json                (run identity, schema version, tool versions, qc.bcftools_stats per Q5)
-│       ├── variants.duckdb              (canonical variants table + Q5 annotation columns + coverage_qc + pgs_scores tables)
+│       ├── variants.duckdb              (canonical variants table + Q5 annotation columns + coverage_qc + pgs_scores tables;
+│       │                                 pgs_scores is keyed by PGS Catalog ID per Q8 v1.6 — not by curator-named trait;
+│       │                                 carries agent_choice_rationale + requested_for_question columns per INV-A003)
+│       ├── pgs_compute_tasks.sqlite     (per Q8 v1.6 — small SQLite holding queued | running | done | failed status for
+│       │                                 in-flight + completed agent-triggered pgs_compute requests; concurrency cap (1
+│       │                                 in-flight) enforced from this table; kill-switch via `pgs.compute_enabled` config)
 │       ├── cyp2d6_diplotype.json        (per Q6 — Cyrius diplotype, consumed by PharmCAT outside-call)
 │       ├── annotations/
 │       ├── evidence/
@@ -296,7 +361,7 @@ Three paths cross trust boundaries:
 
 1. **Inference** (sandbox → cloud): plugin/agent → `https://inference.local/...` → OpenShell L7 proxy → OpenAI (or other configured provider). API keys never enter the sandbox; they're injected at the proxy.
 2. **Host service** (sandbox → host): plugin → `http://host.openshell.internal:8643/v1/...` → Docker bridge → host's `127.0.0.1:8643`. Whitelisted by the GenomeClaw policy preset.
-3. **PGS Catalog scoring weights fetch** (host → catalog): `pgsc_calc fetch-weights` → `https://www.pgscatalog.org/...` (HTTPS). Host-side, deliberate, opt-in only — the user invokes the subcommand once per added trait (per MVP spec Q8). **No genomic data traverses this boundary; only PGS scoring weights flow inbound.** Same discipline as `genomeclaw refs fetch --source clinvar`. The sandbox has no path to this egress; the policy preset does not need to allow it.
+3. **PGS Catalog scoring weights fetch** (host → catalog) *(v1.6, per Q8 v1.6)*: `pgsc_calc fetch-weights` → `https://www.pgscatalog.org/...` (HTTPS). Host-side; INV-P001 install-time consent; no per-fetch user approval. **Triggered indirectly by the agent**: each `genomeclaw_pgs_compute` request the agent makes (after the agent picked a PGS Catalog ID per `INV-A003`) drives a host-side `pgsc_calc` invocation which fetches the scoring weights for that ID and caches them under `<reference_root>/pgs_catalog/PGS<id>/`. Bounded by a host-side concurrency cap (1 in-flight `pgsc_calc` at a time) + a kill-switch (`genomeclaw config set pgs.compute_enabled false`). **No genomic data traverses this boundary; only PGS scoring weights flow inbound.** Same egress destination class as `genomeclaw refs fetch --source clinvar`. The sandbox has no path to this egress; the policy preset does not need to allow it.
 
 `host.openshell.internal` resolves to the Docker host (`172.17.0.1` or equivalent). Confirmed live in a NemoClaw sandbox:
 
@@ -347,11 +412,14 @@ The policy preset is selected during `nemoclaw onboard` (interactive) or applied
 | `INV-D001` | Raw artifacts are bind-mounted `:ro` at every container entry by [`bin/genomeclaw`](../../bin/genomeclaw); the in-container `preflight` module asserts `assert_raw_readonly()` on every orchestrator entry. Pipeline writes to a separate derived path. |
 | `INV-D002` | Raw artifacts have no path into the sandbox at all — neither bind mount nor HTTP route. |
 | `INV-D003` | Heavy intermediates target `/mnt/genomeclaw/scratch` (host-side `_scratch/`), structurally separated from `/mnt/genomeclaw/derived`. Three enforcement layers: (1) the shim refuses to start when `GENOMECLAW_SCRATCH_DIR` nests under `GENOMECLAW_DERIVED_DIR`; (2) `shard_scratch(...)` and `atomic_promote(...)` are the only sanctioned APIs orchestrators use to allocate scratch and promote artifacts; (3) `assert_derived_writable` and `assert_scratch_writable` run at every orchestrator entry. |
-| `INV-E001` | The host service binds every emitted finding/observation to an evidence reference; the plugin forwards the reference verbatim. The evidence resolver accepts variant-keyed references (ClinVar IDs, gnomAD records, PMIDs, internal record IDs) **and** non-variant-keyed references: `gene_note:<gene>` (resolves to `reference/curated_notes/<gene>.md` per MVP spec Q9) and `topic:<topic>` (resolves to `reference/curated_notes/topics/<topic>.md`; e.g., `topic:hard-genes` per Q7). |
-| `INV-P001` | Genomic source files never traverse any boundary; only minimal-sufficient JSON crosses to the agent. The PGS Catalog fetch path (per Q8) is host-side, deliberate, opt-in; only scoring weights flow inbound, never genomic data. |
-| `INV-P002` | Three enforcement layers: host service shaping, plugin re-shaping, OpenShell policy + SSRF guard. **Six** plugin tools (per Q7 / Q8) each carry an `output_class` declaration; default is `summary`, which is what `genomeclaw_gene` and `genomeclaw_pgs` ship with. The plugin's binary is policy-denied any host or port other than the configured host service. |
-| `INV-R001` | Derived stores carry provenance columns (run-id, source paths/hashes, tool versions). The host service exposes `/v1/provenance/{run-id}` so the agent can cite provenance. New derived tables `coverage_qc` (per Q7), `pgs_scores` (per Q8), and `cyp2d6_diplotype.json` (per Q6) inherit the seven canonical provenance columns. |
-| `INV-C001` | Report tools render clinical-escalation markers from finding records; the host service's finding schema includes the marker as a structural field. Lifestyle findings cite a `gene_note:<gene>` evidence reference (per Q9); editing a curated note is a user-facing-copy change reviewed by the privacy-safety-reviewer agent per `INV-C001` v1.5. PRS findings (per Q8) carry `category: clinical-non-actionable` and no `clinical_escalation` marker; the `calibration_warning` string makes ancestry-normalization explicit. |
+| `INV-E001` | The host service binds every emitted finding/observation to an evidence reference; the plugin forwards the reference verbatim. The evidence resolver accepts **variant-keyed kinds only** *(v1.6)*: `clinvar:<id>`, `pgs_catalog:<id>`, `pharmgkb:<id>`. Agent-side citation forms `memory:<file>#<anchor>` and `web:<url>` are resolved inside the sandbox by the agent's memory + research tools, not by the host service. |
+| `INV-P001` | Genomic source files never traverse any boundary; only minimal-sufficient JSON crosses to the agent. **Three** named user-configured egress destinations *(v1.6)*: the agent provider, the host service, and an optional web_search provider for the agent's research-and-synthesis pattern (off by default; opt-in via `tools.web.search.enabled: true`). The PGS Catalog fetch path is host-side, deliberate, opt-in. The web_search query payload contains only topic-term strings — never user-identifying genomic data. |
+| `INV-P002` | Three enforcement layers: host service shaping, plugin re-shaping, OpenShell policy + SSRF guard. **Nine** plugin tools (per Q7 / Q8 v1.6) each carry an `output_class` declaration; default is `summary`, which is what `genomeclaw_gene` and the four `genomeclaw_pgs_*` tools ship with. The plugin's binary is policy-denied any host or port other than the configured host service. |
+| `INV-R001` | Derived stores carry provenance columns (run-id, source paths/hashes, tool versions). The host service exposes `/v1/provenance/{run-id}` so the agent can cite provenance. New derived tables `coverage_qc` (per Q7), `pgs_scores` (per Q8 v1.6 — keyed by PGS Catalog ID, with `agent_choice_rationale` + `requested_for_question` columns per `INV-A003`), and `cyp2d6_diplotype.json` (per Q6) inherit the seven canonical provenance columns. |
+| `INV-C001` *(v1.7)* | Report tools render clinical-escalation markers from finding records; the host service's finding schema includes the marker as a structural field. **Lifestyle calibration flows through agent research-and-synthesis**, not host-side curated notes: lifestyle findings cite `memory:<id>` (prior agent synthesis) or `web:<url>` (current online source); the agent composes responses at the maximum reasoning level the configured model supports (`INV-A002`). PRS findings (per Q8 v1.6) carry `category: clinical-non-actionable` and no `clinical_escalation` marker; the `calibration_warning` string makes ancestry-normalization explicit. **PRS-decline pattern** *(v1.7)*: the agent declines a `pgs_compute` request with two named reasons when the literature is too immature (top-decile RR < ~1.5× / no independent replication / ancestry-calibration failure / no biologically-grounded polygenic basis) — peer to the existing hard-genes decline pattern. |
+| `INV-A003` *(v1.11)* | Every row in a derived-store table populated by agent-triggered compute (currently: `pgs_scores`; future: any other agent-triggered compute table) carries `agent_choice_rationale` + `requested_for_question` columns; every such compute is paired with a memory note carrying the agent's reasoning trail. Decline-pattern enforcement: the agent system prompt documents the per-compute-class decline criteria + the two-named-reasons rule; declines are themselves persisted as memory notes. Verified by schema column-existence gate + prompt-content gate + a `live_llm` decline behavioural test. |
+| `INV-A001` *(v1.8)* | Every memory note written by the agent's research-and-synthesis pattern records: the question, tool calls + result sources, reasoning levels for both research and synthesis phases, the synthesis verdict + confidence, and a freshness date. Inspectable via the agent's `memory_get` tool or by reading the workspace directly. |
+| `INV-A002` *(v1.8)* | Health-interpretation turns compose at the maximum reasoning level the configured model supports. The agent self-classifies the turn type via its system prompt; conversational / recall turns are exempt. Verified by inspection of `executionTrace.thinking` in live-LLM snapshot tests. |
 
 ---
 

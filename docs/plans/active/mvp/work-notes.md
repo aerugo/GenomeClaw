@@ -760,7 +760,7 @@ Dropped imports: `_bcftools.bcftools_annotate_clinvar`, `_bcftools.bcftools_inde
 3. CLI stderr output buried the actual fatal line in 10k+ lines of expected-but-noisy `bix.go:251` warnings.
 
 **Decisions taken (2026-05-12)**:
-- Authored [phase-4c4-annotation-correctness.md](phases/phase-4c4-annotation-correctness.md) — a tactical 7-work-item sub-plan covering fetcher integrity + resume + dbSNP rename + pre-flight validator + stderr discipline + W7 parity rerun.
+- Authored [phase-4c4-annotation-correctness.md](../../completed/phase-4c4-annotation-correctness.md) — a tactical 7-work-item sub-plan covering fetcher integrity + resume + dbSNP rename + pre-flight validator + stderr discipline + W7 parity rerun.
 - Authored [docs/plans/active/rich-cli/](../../active/rich-cli/) — initially a 6-phase plan migrating the entire CLI toolchain to Typer + rich + structured JSON output for AI agents; restructured 2026-05-12 to 8 phases after honest sizing of Phase 3 + the fat Phase 4.
 - **Project owner directed (2026-05-12): finish the rich-cli migration completely before resuming MVP**. The MVP plan goes on hold. The fetcher correctness fixes from 4C.4 (W1 + W1.5) **shipped in rich-cli Phase 3** (2026-05-12). The remaining 4C.4 work (W2–W7) waits for MVP resume after rich-cli Phase 8 closes — with W3 (re-fetch the 5 truncated gnomAD files) resumable after rich-cli Phase 4, since `refs fetch` becomes observable enough to run with confidence at that point.
 
@@ -772,10 +772,536 @@ Dropped imports: `_bcftools.bcftools_annotate_clinvar`, `_bcftools.bcftools_inde
 
 **Next Step on MVP resume** (after rich-cli Phase 8 closes — or partial resume after rich-cli Phase 4):
 1. **After rich-cli Phase 4 (refs fetch UX shipped)**: W3 (re-fetch 5 truncated files) using the new resume-capable + observable fetcher. This can happen partway through rich-cli without waiting for the full migration.
-2. **After rich-cli Phase 8 (full migration closed)**: Restart 4C.4 from W2 (doctor integrity sweep) through W7 per the [phase-4c4 plan](phases/phase-4c4-annotation-correctness.md). W1 + W1.5 already shipped in rich-cli Phase 3.
+2. **After rich-cli Phase 8 (full migration closed)**: Restart 4C.4 from W2 (doctor integrity sweep) through W7 per the [phase-4c4 plan](../../completed/phase-4c4-annotation-correctness.md). W1 + W1.5 already shipped in rich-cli Phase 3.
 3. On W7 parity-check pass: close Phase 4 of MVP; resume per the [development-plan.md § Phase Overview](development-plan.md#phase-overview) (Phase 5: host service).
 
-**Procedure updates pending after rich-cli closes**: every `bin/genomeclaw-prep <verb>` example in [phase-4-completion.md](phases/phase-4-completion.md) + [phase-4c4-annotation-correctness.md](phases/phase-4c4-annotation-correctness.md) gets rewritten to `bin/genomeclaw <group> <verb>` (handled as part of rich-cli Phase 8's repo-wide migration sweep).
+**Procedure updates pending after rich-cli closes**: every `bin/genomeclaw-prep <verb>` example in [phase-4-completion.md](phases/phase-4-completion.md) + [phase-4c4-annotation-correctness.md](../../completed/phase-4c4-annotation-correctness.md) gets rewritten to `bin/genomeclaw <group> <verb>` (handled as part of rich-cli Phase 8's repo-wide migration sweep).
+
+### 2026-05-13 — rich-cli closes; Phase 4C.4 W4+W7 ship; thorough plan revision; Phase 4D + 4E land; reference fetches complete
+
+**Retrofit note (authored 2026-05-15)**: this and the next two blocks reconstruct the 2026-05-13 → 2026-05-15 work from the per-plan + per-phase docs + commit history, since the live work-notes were not appended at session time.
+
+**Rich-cli plan closed.** All 8 phases (Typer + rich + structured NDJSON output + `genomeclaw <group> <verb>` form) shipped, including the absorbed phase-4c4 W1 (fetcher Content-Length + bgzip EOF verification) + W1.5 (stall detection + Range-resume + bounded retries) + W2-equivalent (`refs verify` integrity sweep). Plan moved to [docs/plans/completed/rich-cli/](../../completed/rich-cli/).
+
+**Phase 4C.4 W4 + W7 — landed in commit 1f58aeb (single session).**
+- **W4**: dbSNP RefSeq → UCSC chr-rename inside `annotate_vcfanno`. The Phase-4A overlay code never renamed dbSNP contigs (NCBI RefSeq accession contigs `NC_000001.11`); after the migration to vcfanno + restoration of dbSNP as an overlay source, the gap surfaced as 0 dbsnp_rsid annotations on the 2026-05-12 smoke. Fix: per-source rename pass alongside the existing ClinVar `1` → `chr1` rename, with a persistent rename cache at `_scratch/_cache/dbsnp/` so the cost is paid once.
+- **W7 (= phase-4-completion W4)**: real-data ClinVar parity check on the project owner's Nebula VCF. **Outcome: 42,885 / 42,885 ClinVar matches (+0.00% delta vs Phase-4A baseline), 1h59m end-to-end wall on consumer hardware.** Closes the parity gate that was the original Phase-4 closure precondition.
+- Also bundled in 1f58aeb: per-chrom shard pattern (eliminates ~120M `bix.go:251` chromosome-warning lines structurally — the 4C.4 W6 motivation), persistent dbSNP cache, persistent sha256 cache for overlay-source provenance hashing, beat-by-beat progress events, concurrent shard execution.
+
+**Thorough plan revision** (mid-session, 2026-05-13). The pre-existing Phase 4 plan was over-optimistic about closure proximity + carried stale claims. Revisions:
+1. **SpliceAI dropped** from spec Q5 — researcher confirmation that AlphaMissense is the better-calibrated missense-pathogenicity score for v0; SpliceAI's marginal value (alt-splicing predictions on a small minority of variants) didn't justify the ~50 GB reference fetch + 3 test cases. Spec amended; Phase 4D footprint shrinks accordingly.
+2. **Status truth-up across plans**: phase-4.md, phase-4-completion.md, and development-plan.md all updated to reflect actual code/test state vs. earlier optimistic claims. Each row in development-plan.md's Progress Tracking now matches what's actually shipped.
+3. **CLI rename sweep** completed: every `bin/genomeclaw-prep <verb>` example in active plan docs rewritten to `bin/genomeclaw <group> <verb>` per the rich-cli closure.
+
+**Phase 4D foundation — 1f67bbc.** `_vep.py` wrapper (VepConfig + VepPluginConfig + build_vep_flags + vep_run + vep_version) + `annotate_vep.py` orchestrator (resolves cache + plugin data, builds flags, runs VEP, atomic_promotes output, updates manifest + provenance) + Dockerfile stage 1a (VEP in its own micromamba env at `/opt/conda-vep` to dodge a samtools<1.0 conflict with toolkit's samtools=1.21) + stage 1b (LOFTEE + Ensembl/VEP_plugins git-cloned into `/opt/vep/.vep/Plugins/`). Wrapper unit tests in [test_vep_wrapper.py](../../../packages/toolkit/tests/unit/test_vep_wrapper.py).
+
+**Phase 4E schema + materialize-side coverage — 2fb3beb + fa72c51 + 4c72f5d.**
+- 2fb3beb: extended `_VARIANTS_DDL` + `_vcf.iter_variant_rows` + `materialize.info_fields` so all vcfanno overlay columns (clinvar_*, all nine gnomAD v4 population AFs, dbsnp_rsid) flow into a typed `variants` column.
+- fa72c51: VEP CSQ-string parser (`prep/_csq.py`) + Phase 4D schema additions (mane_select_transcript, hgvsc, hgvsp, consequence, loftee_lof, loftee_filter, alphamissense_score, alphamissense_class).
+- 4c72f5d: extended the gnomAD AF extraction to all nine population AFs (afr / amr / asj / eas / fin / mid / nfe / oth / sas) instead of just popmax.
+- Materialize-side coverage assertion lives in `test_annotate.py`'s 3-source assertion + the new `test_materialize_v02_columns.py`.
+
+**Reference fetches complete — dc1207e + a395521 + fd835fb.**
+- dc1207e: Phase 4D layouts in `refs fetch` — vep_cache (~21 GB tarball release-pinned to ensembl-114), AlphaMissense (~4 GB hg38 TSV + tabix), SpliceAI (~50 GB; subsequently dropped).
+- a395521: one-shot `refs fetch --all` with sensible defaults so the project owner can rehydrate a fresh reference layout in one command.
+- fd835fb: SpliceAI removed; researcher-confirmed defaults for AlphaMissense + LOFTEE + gnomad-constraint locked in.
+- All four sources (vep_cache, alphamissense, loftee v1.0, gnomad-constraint v4.1) ✅ fetched + verified intact via `refs verify` by EOD 2026-05-13.
+
+**State at end-of-day 2026-05-13**: every Phase-4 deliverable shipped as code + reference. The last open gate is the first end-to-end real-data VEP smoke (deferred to 2026-05-14 because the smoke is run-and-wait).
+
+### 2026-05-14 — first VEP smoke; Kingston colima incident; Bio::Perl shim; --fasta wiring; annotate-shard-resilience Phase A; host-mount-lifecycle three slices
+
+**Retrofit note (authored 2026-05-15)**: same caveat as the 2026-05-13 block.
+
+The first end-to-end real-data VEP smoke kicked off on the project owner's Nebula VCF + the now-complete reference layout. Cascaded into a multi-incident chain that took the full session to unwind. Each incident's fix is captured below; collectively they prove that the gap between synthetic-fixture greens and a real-data run on real hardware is exactly where production bugs live (the `tests/perf/` real-data smoke gate documented in [docs/plans/CLAUDE.md § TDD principles](../../CLAUDE.md) is the direct lesson-learned).
+
+**Incident 1 — Kingston colima mount blocked colima from booting.** The project owner had run `host setup` on a Kingston external drive at some prior session, then physically replaced it with a different drive without ever calling `host eject`. The stale Kingston mount entry in `~/.colima/_lima/colima/colima.yaml` pointed at a path that no longer existed; on next `colima start` the VM failed with a `mkdir … permission denied` error deep in lima's startup. Diagnosed by hand-editing colima.yaml.
+
+→ **Filed [host-mount-lifecycle plan](../../completed/host-mount-lifecycle/) and shipped all three slices same day.** (1) `setup/_preconditions.py` fail-fast with platform-aware install hints when colima/docker missing; (2) `_yaml_writer.remove_colima_mount` + `eject.py` so `host eject <drive>` removes the colima.yaml mount entry with backup; (3) `doctor.py::_collect_stale_colima_mounts` so `host doctor` flags stale mounts proactively. 24 new tests (10 unit + 14 integration). Plan moved to [docs/plans/completed/host-mount-lifecycle/](../../completed/host-mount-lifecycle/) by EOD.
+
+**Incident 2 — Bio::Perl missing in VEP env.** Smoke restarted; ~2h in, surfaced `Can't locate Bio/Perl.pm in @INC` warnings from LOFTEE's `LoF.pm` line 46 (`use Bio::Perl;`). Non-fatal warning so the run continued — but every variant's `loftee_lof` column ended up NULL.
+
+→ **Bioconda packaging quirk + empty-shim fix.** `perl-bioperl-core` 1.7.8 ships `BioPerl.pm` (a different module) but NOT `Bio/Perl.pm` — the convenience wrapper LoF.pm's `use` expects. Verified via grep that LoF.pm has the bare `use` but **no callsite** for any `Bio::Perl::foo()` function (exactly one hit in the entire plugin). Dockerfile stage 1a now installs `perl-bioperl` AND writes an empty `package Bio::Perl;` shim at `/opt/conda-vep/lib/perl5/site_perl/Bio/Perl.pm` to satisfy the `use`. Documented as the regression and pinned by [test_vep_loftee_plugin.py::test_lof_plugin_compiles_with_vep_perl_inside_image](../../../packages/toolkit/tests/integration/test_vep_loftee_plugin.py) so re-introducing the gap surfaces in milliseconds rather than after a 2h smoke.
+
+**Incident 3 — VEP `--hgvs` requires `--fasta` in offline mode.** Smoke restarted post-image-rebuild; ~1.5h in, VEP's `post_setup_checks` failed with `ERROR: Cannot generate HGVS coordinates (--hgvs and --hgvsg) in offline mode without a FASTA file`. The orchestrator was passing `--hgvs` unconditionally but not threading `--fasta`.
+
+→ **Wired `_resolve_reference_fasta(reference_dir)` into `annotate_vep`.** Resolves `reference/grch38/<release>/grch38.fa.gz`, threads it to `VepConfig.reference_fasta` → `--fasta <path>` in argv, records the path + sha256 in the `vep` provenance step. Three tests pin the contract: `test_build_vep_flags_emits_fasta_when_reference_fasta_set`, `test_annotate_vep_threads_reference_fasta_to_vep_config`, `test_invR001_annotate_vep_records_reference_fasta_in_provenance`. Added a fail-fast actionable error (`run \`genomeclaw refs fetch --source grch38\``) when the FASTA is missing.
+
+**Incident 4 — vcfanno EBADF + lost-shard outputs (annotate-shard-resilience Phase A).** Earlier in the smoke, before VEP ran, four-way concurrent vcfanno panicked at ~1h18m with `bix: error (re)opening clinvar.renamed.vcf.gz: bad file descriptor` followed by `panic: runtime error: index out of range [-1]` inside vcfanno's Go runtime. The 25 successfully-finished per-chrom shards' outputs were thrown away on `shard_scratch` cleanup; the orchestrator had to redo all of annotate from scratch on retry. Diagnosed as concurrent-FD pressure on virtiofs-mounted scratch (the cram-scratch-strategy plan's documented escalation tripwire).
+
+→ **Filed [annotate-shard-resilience plan](../annotate-shard-resilience/) (Phase A only shipped this session).** Split scratch into two physical tiers: (1) **persistent scratch** at `/mnt/genomeclaw/scratch/_cache/` on virtiofs (unchanged; for dbSNP rename + sha256 caches that need cross-run survival), and (2) **ephemeral scratch** at a container-local path (off virtiofs; `GENOMECLAW_EPHEMERAL_SCRATCH_DIR`) for the heavy transient artifacts that triggered the EBADF. `ephemeral_scratch_base()` reads the env var; orchestrators pass `base=ephemeral_scratch_base()` to `shard_scratch(...)` for VEP's intermediate VCF (the largest single transient at ~10–15 GB on real data) and the per-chrom vcfanno shards. INV-D003 contract pinned by `test_orchestrators_use_ephemeral_scratch.py` (3 needs_bio tests). Phase B (per-shard cache survives transient failures) + Phase C (`--skip-if-present` CLI) parked — promote when the next transient costs hours.
+
+**State at end-of-day 2026-05-14**: image rebuilt with `perl-bioperl` + Bio::Perl shim + scratch split; `--fasta` wired; smoke retried but didn't complete by EOD. Next session: resume the smoke against the patched image.
+
+### 2026-05-15 — second smoke success (4h08m58s); decoy-variant + LOFTEE follow-ups filed; Phase 4 close paperwork
+
+**Retrofit note (authored 2026-05-15 EOD)**: this block IS contemporaneous (today's session) — the 2026-05-13 + 2026-05-14 blocks above retrofit the gap.
+
+**Second VEP smoke succeeded.** End-to-end real-data run on the project owner's Nebula VCF: **4h08m58s wall** (ingest 1m42s + normalize 24.4s + annotate 4h03m31s + materialize 3m20s). Run dir: `/Volumes/Genome_Work/genomeclaw/derived/2026-05-14T20-37-49Z-579d3c/`. Annotate alone landed ~3.5 min over the strict per-phase 4h target but well under the 6h end-to-end close gate. ClinVar parity holds at 42,885/42,885 (+0.00%). v0.2 schema is anchored.
+
+**Two gaps surfaced in the smoke output**, both small:
+
+1. **`loftee_lof` / `loftee_filter` columns NULL on every row.** Diagnosed as a second silent compile-time failure in the same shape as the 2026-05-14 Bio::Perl gap: LoF.pm's `do "$plugin_dir/gerp_dist.pl"` at runtime tries to load LOFTEE's bigwig reader for GERP conservation scores, but `gerp_dist.pl` requires `Bio::DB::BigFile` (from `perl-bio-bigfile`), which wasn't installed in the VEP env. `perl -c LoF.pm` doesn't recurse into `do`-loaded files, so the gap hid behind a passing LoF.pm syntax check. Filed inline in [phase-4-completion.md § W5](phases/phase-4-completion.md) as a 30-min follow-up.
+2. **VEP silently dropped variants on decoy / random / alt contigs.** Per-row sanity-checking the 2026-05-15 run's variants table surfaced a row-count delta between `normalize` (~4.87M) and `materialize` (slightly less). Diagnosed as VEP filtering variants on contigs absent from its annotation cache (`chrUn_*_decoy`, `chrUn_*_alt`, `*_random`) — conventional + scientifically defensible behavior, but the orchestrator wasn't capturing the drop count anywhere, so the row-count delta was unauditable. Filed as [docs/plans/active/decoy-variant-provenance.md](../decoy-variant-provenance.md).
+
+**Decision: opinion-free provenance trail rather than upstream pre-filtering.** Pre-filtering decoy / random / alt variants at `normalize` (drop them before they reach annotate) was considered as an alternative for the decoy-variant gap. Rejected for v0: it imposes the opinion "you shouldn't have decoy variants in your table" that future users might disagree with — e.g., someone debugging mapping artifacts might want to see exactly which decoys their reads called variants against. The audit-trail approach is opinion-free: the table is what VEP could annotate; provenance records what VEP couldn't. Pre-filtering remains a future option behind a flag if the use case appears.
+
+**Phase 4 close-paperwork sweep (this session)**:
+
+1. **Decoy-variant provenance fix landed** per [decoy-variant-provenance.md](../decoy-variant-provenance.md). `_vep.py`: added `VepRunStats(skipped_variants, skipped_chroms)` dataclass + `_VEP_SKIPPED_VARIANT_RE` regex; `vep_run` now counts `WARNING: line N skipped (<contig> ...)` per-contig and returns the stats. `annotate_vep.py`: writes `vep_skipped_variants` + `vep_skipped_chroms` into the `vep` provenance step's `params` block. 5 new tests (3 unit + 2 integration); host suite 495 passed / 72 needs_bio skipped at close.
+2. **LOFTEE Dockerfile fix landed** per [phase-4-completion.md § W5](phases/phase-4-completion.md). Added `perl-bio-bigfile` to the VEP micromamba env in stage 1a; extended [test_vep_loftee_plugin.py](../../../packages/toolkit/tests/integration/test_vep_loftee_plugin.py) with `test_gerp_dist_helper_compiles_with_vep_perl_inside_image` so the missing-`Bio::DB::BigFile` regression surfaces via `perl -c gerp_dist.pl` rather than after a 4h smoke. Validation deferred to next image rebuild + smoke.
+3. **Progress Tracking refreshed** in [development-plan.md](development-plan.md): Phase 4D + Phase 4 (overall) flipped to Complete; 4h08m58s real-data outcome noted; Phase-4A row clarified as superseded by 4C.3.
+4. **Phase 4 Completion Criteria ticked** in [phase-4.md](phases/phase-4.md).
+5. **[phase-5.md skeleton authored](phases/phase-5.md)**: host service + plugin migration + sandbox image scope.
+6. **[phase-4c4-annotation-correctness.md moved to completed/](../../completed/)**: status "effectively closed" — W7 parity passed; W5 (pre-flight schema validator) + W6 (vcfanno stderr discipline; likely obsolete after the per-chrom shard pattern landed in 1f58aeb) both noted as parked but non-blocking.
+
+**State at end-of-day 2026-05-15**: Phase 4 closed. Two gates satisfied in this session: real-data smoke under the 6h end-to-end budget + all close-paperwork done. Phase 5 ready to start.
+
+### 2026-05-15 — Phase 5 kickoff (Slice A: `/v1/health` + service skeleton)
+
+**Context Reviewed** (per planning protocol):
+- Re-read [phase-5.md](phases/phase-5.md) Step 5.1 (12 RED tests planned). Decision: ship in incremental slices rather than all-12 at once. Slice A is the smallest meaningful end-to-end skeleton — proves CURRENT-symlink resolution + the privacy floor (minimal-sufficient JSON shape). Subsequent slices add `/v1/variants`, `/v1/gene/{symbol}`, `/v1/provenance/{run-id}`, plugin migration.
+- Re-read INV-D002 / INV-P001 / INV-P002 in [INVARIANTS.md](../../../reference/INVARIANTS.md). The host service is one of three runtime enforcement layers for INV-P002 ("Host service shaping") — every endpoint's response shape pins the minimal-sufficient contract.
+- Inspected current state: [service/](../../../../packages/toolkit/src/genomeclaw_toolkit/service/) is empty (`__init__.py` only); [schemas/](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/) has `manifest.py` + `provenance.py` + `coverage_qc.py` already; `resolve_current_run_dir` already exists at [run_id.py:48-70](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/run_id.py#L48-L70) — Slice A reuses it.
+- No `fastapi` / `uvicorn` / `httpx` in `pyproject.toml` deps yet; Slice A adds them.
+
+**Slice A scope**:
+- `service/store.py` — wraps `resolve_current_run_dir` + reads `manifest.json` to expose schema_version + run_id.
+- `service/app.py` — FastAPI app with lifespan (resolves CURRENT on startup) + `SIGHUP` handler (re-resolves) + `/v1/health` route.
+- `schemas/health.py` — Pydantic `HealthResponse` model (strict; minimal-sufficient).
+- `_cli/commands/host.py` — new `host service` command launching uvicorn at `127.0.0.1:8643`.
+- Tests: 4 covering 200 happy path + 503 missing CURRENT + payload shape (INV-P002) + schema-version-mismatch refusal.
+
+**Out of Slice A**: `/v1/variants`, `/v1/gene/{symbol}`, `/v1/provenance/{run-id}`, INV-D002 sandbox-image scan, INV-P001 default-egress test, plugin migration. All in subsequent slices.
+
+**Step A.1 — RED**: Wrote 6 tests in [test_service_health.py](../../../../packages/toolkit/tests/integration/test_service_health.py): happy path + missing-CURRENT 503 + schema-version-mismatch 503 + 3-way parametrized INV-P002 minimal-sufficient assertion (`raw_paths`, `manifest`, `provenance` must not appear in the response body). Initial run failed at collection with `ModuleNotFoundError: No module named 'fastapi'` — RED confirmed.
+
+**Step A.2 — GREEN**:
+- Added `fastapi>=0.115` + `uvicorn>=0.30` + `httpx>=0.27` to [pyproject.toml](../../../../packages/toolkit/pyproject.toml) deps. `uv sync` brought in starlette + anyio transitively (FastAPI 0.136.1, starlette 1.0.0, h11 0.16.0).
+- Created [schemas/health.py](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/health.py): `HealthResponse` (status='ok' + schema_version + current_run_id + sample_id) + `HealthErrorResponse` (status enum of `no_active_run` / `schema_version_mismatch` + detail). Both strict (`extra="forbid"`).
+- Created [service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py): `ActiveRun` frozen dataclass + `load_active_run(derived_root, expected_schema_version)` that wraps the existing `resolve_current_run_dir` from [run_id.py:48-70](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/run_id.py#L48-L70), reads the manifest, and raises typed `NoActiveRunError` / `SchemaVersionMismatchError` for the two degraded states.
+- Created [service/app.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/app.py): `build_app(derived_root)` factory. Resolves CURRENT once at construction (cached in `_ActiveRunCache`), installs a `SIGHUP` handler that re-resolves, registers `/v1/health` route. `docs_url=None` + `redoc_url=None` — INV-P002 doesn't surface auto-docs. Each test case gets its own app via fresh `build_app` calls.
+
+**Step A.3 — `host service` CLI**: added the command to [_cli/commands/host.py](../../../../packages/toolkit/src/genomeclaw_toolkit/_cli/commands/host.py): `genomeclaw host service [--derived-root P] [--host H] [--port N]`. Defaults: `127.0.0.1:8643` + `/mnt/genomeclaw/derived` (matches the existing CLI convention). Dropped a previously-considered `--reload` flag — uvicorn's reload mode needs an importable factory string and the slice doesn't need dev reload.
+
+**Step A.4 — REFACTOR**: ruff surfaced 6 items (4 after auto-fix). Moved `Path` imports under `if TYPE_CHECKING:` in service/app.py + service/store.py (use is annotation-only with `from __future__ import annotations`); rewrote the SIGHUP handler-install in `contextlib.suppress(ValueError)` form; added missing docstring to `SchemaVersionMismatchError.__init__`. Format passed.
+
+**Step A.5 — live smoke**: launched the service against a fake derived-root at `/tmp/gc-slice-a/derived/run-001/` (manifest hand-written; CURRENT symlinked). `curl http://127.0.0.1:18643/v1/health` returned `{"status":"ok","schema_version":"v0.2","current_run_id":"run-001","sample_id":"smoke"}`. Status codes correct: 200 on `/v1/health`, 404 on `/v1/health/extra`, 404 on `/docs` (auto-docs intentionally disabled).
+
+**Gate results**:
+- **Full host suite**: 501 passed / 73 needs_bio skipped (up from 495 / 73 at Phase 4 close — the +6 are the new Slice A tests).
+- Ruff + format: clean on all 5 new/touched files (`service/app.py`, `service/store.py`, `schemas/health.py`, `_cli/commands/host.py`, `tests/integration/test_service_health.py`).
+- CLI smoke: `genomeclaw host service --help` renders cleanly; live `/v1/health` round-trip works against a hand-staged manifest.
+
+**Decisions taken**:
+1. **App-factory per test, not module-singleton.** Each `build_app()` call gets its own cache. Module-globals would couple test cases via a shared `signal.signal` registration. Factory pattern fits the test discipline.
+2. **Auto-docs disabled (`docs_url=None`).** Phase 5's privacy-default surface area is "what's documented in the plan + nothing else"; auto-generated `/docs` + `/redoc` are accidental egress surfaces. Re-enable behind an explicit `--dev` flag later if developers ask for it.
+3. **SIGHUP installs on `build_app` call, not on uvicorn boot.** uvicorn's lifespan event would also work, but ties the test path to uvicorn (TestClient doesn't run lifespan by default). Installing on factory call keeps the test path simple; production uvicorn `run()` invocations still receive SIGHUP correctly because the same factory ran.
+4. **`/v1/health` returns 503, not 404, when CURRENT is missing.** 404 implies "route doesn't exist"; 503 implies "service is up but its dependency isn't ready". The CURRENT-missing case is the latter. Plugin will distinguish on status code without parsing the body.
+
+**Next slice (B)**: `/v1/variants` + `/v1/variants/{key}` against the active run's `variants.duckdb`. ~3 tests. Then Slice C (`/v1/gene/{symbol}` + `/v1/provenance/{run-id}`), then Slice D (plugin migration in TS), then Slice E (sandbox image + INV-D002 + live INV-P001).
+
+### 2026-05-15 — Phase 5 Slice B (`/v1/variants` + `/v1/variants/{key}`)
+
+**Slice B scope**: query-surface over the active run's `variants.duckdb`. Two routes — paginated list + single-variant lookup by `chrom-pos-ref-alt` key. Two new Pydantic models (`VariantSummary` for list-view; `VariantDetail` extends it for single-variant view). DB access goes through new helpers in `service/store.py`. All in one session.
+
+**Step B.1 — RED**: Wrote 8 tests in [test_service_variants.py](../../../../packages/toolkit/tests/integration/test_service_variants.py):
+- Pagination: `test_variants_list_returns_paginated_rows`, `test_variants_list_pagination_terminates_with_null_cursor` (next_offset null at end of stream).
+- Single-variant happy path + the two error paths: `test_variant_by_key_returns_single_row`, `test_variant_by_key_returns_404_for_unknown`, `test_variant_by_key_returns_400_for_malformed_key` (badly-formed keys are 400, not 404, so the agent distinguishes "wrong query" from "no match").
+- INV-P002 shape pins: `test_invP002_variants_list_excludes_bulk_population_afs` (9 per-population AFs forbidden in list rows; popmax + popmax_pop summarise them), `test_invP002_variant_detail_excludes_provenance_columns` (the 7 provenance columns belong at `/v1/provenance/{run-id}`, not inlined on every variant detail).
+- Degraded-state inheritance: `test_variants_list_returns_503_when_no_active_run` (no CURRENT → same 503 the health endpoint returns).
+
+Fixtures: tiny `_SAMPLE_VARIANTS` tuple (3 rows on chr1+chr2 covering pathogenic / benign / no-annotation cases), inserted via raw DuckDB SQL after `create_store()` initialises the schema. Avoids the streaming-CSV path of `write_variants` — overkill for fixture data. Initial run: 7 RED (routes don't exist) + 1 vacuously-passing (the detail-shape test queries a 404 path whose default body trivially lacks provenance keys — that test became meaningful at GREEN once the route returned a real body).
+
+**Step B.2 — GREEN**:
+- Created [schemas/variant.py](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/variant.py): `VariantSummary` (11 fields — identity + gene context + popmax-only frequency + single pathogenicity hint + alphamissense_score), `VariantDetail(VariantSummary)` (adds 14 fields for single-variant deep-dive: sample_id, genotype, qual, filter, clinvar_id, clinvar_review_status, dbsnp_rsid, MANE Select transcript, HGVSc, HGVSp, loftee_lof, loftee_filter, alphamissense_class, gene_loeuf), `VariantsListResponse` (rows + total + limit + offset + nullable next_offset), `VariantErrorResponse` (single `detail` field for 400/404/503).
+- Extended [service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py): `InvalidVariantKeyError` (new exception); `parse_variant_key(key)` → `(chrom, pos, ref, alt)` tuple, validating 4 parts + integer + positive pos + non-empty fields; `_SUMMARY_COLUMNS` + `_DETAIL_EXTRA_COLUMNS` constant tuples kept in sync with the Pydantic models; `_connect_readonly(store_path)` opens DuckDB with `read_only=True` (defense-in-depth on INV-D001); `query_variants(run_dir, limit, offset)` returns `(rows, total)` with stable `ORDER BY chrom, pos, ref, alt`; `query_variant_by_key(run_dir, key)` returns the full detail-row dict or None.
+- Extended [service/app.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/app.py): `_require_active_run()` helper that returns the cached `ActiveRun` or a 503 `JSONResponse` for the caller to bail with (collapses the degraded-state handling into one place). Two new routes: `/v1/variants?limit=N&offset=M` (limit bounded `[1, 100]`, default 25; offset `>= 0`, default 0; `next_offset` computed as `offset + len(rows)` when more rows exist, else null), `/v1/variants/{key}` (parses key, queries store, 400 on parse failure, 404 on no-match, 200 with `VariantDetail` body otherwise).
+
+**Step B.3 — REFACTOR**: ruff caught 1 import-order issue (auto-fixed); format auto-applied. Float precision: `gnomad_af_popmax = 0.001` stored as DuckDB `REAL` round-trips as 0.0010000000474974513. Test uses `pytest.approx`. Schema-level fix (DOUBLE instead of REAL) would be wider scope; deferred until a real-data interpretation issue surfaces.
+
+**Gate results**:
+- **Slice B tests**: 8/8 passing.
+- **Full host suite**: 509 passed / 73 needs_bio skipped (up from 501 at end of Slice A; +8 are the Slice B tests).
+- Ruff + format: clean on all 4 new/touched files (`schemas/variant.py`, `service/store.py`, `service/app.py`, `tests/integration/test_service_variants.py`).
+
+**Decisions taken**:
+1. **400 for malformed keys, 404 for not-found.** Per the test `test_variant_by_key_returns_400_for_malformed_key`: a key that doesn't decompose into `chrom-pos-ref-alt` is a usage error (caller's fault) — 400 signals "fix your input". 404 is reserved for "your input parses correctly but the row isn't in this run." This lets the plugin distinguish "agent built a bad key" from "agent asked about a variant the user doesn't have."
+2. **Hyphen as key separator is safe.** GRCh38 contig names use underscores (e.g. `chrUn_KI270742v1`); standard chromosomes are `chrN`. No hyphens. `key.split("-")` with `len(parts) == 4` is unambiguous. Documented in `parse_variant_key` docstring; if a future build adds non-standard contigs with hyphens, the contract pivots to URL-encoded separators.
+3. **Read-only DuckDB connection per request.** `duckdb.connect(str(path), read_only=True)` opens the file in read-only mode — defense-in-depth on INV-D001 (a query path that accidentally executes a `DROP TABLE` would be refused by the DB). DuckDB handles concurrent readers without locking; per-request connection lifetime is cheap. Connection pool is unnecessary at v0 scale; revisit if benchmarks surface latency.
+4. **Stable `ORDER BY chrom, pos, ref, alt` on the list endpoint.** DuckDB doesn't guarantee row order across reads without `ORDER BY`; pagination would skip or duplicate rows under concurrent writes. Even though `variants` is immutable per-run, the cost of a sort over ~5M rows is small enough (< 1s on the project owner's hardware per the 2026-05-15 smoke materialize time) to make the determinism guarantee unconditional.
+5. **Excluded the 9 per-population gnomAD AFs from `VariantSummary`, kept popmax + popmax_pop.** The per-population AFs are bulk-class fields by INV-P002: meaningful when the agent asks "what's the per-population breakdown for this variant?" but bloat for a list-of-many response. Popmax represents them at list granularity. A future `/v1/variants/{key}/populations` endpoint can expose the bulk view if a use case appears.
+6. **`VariantDetail` inherits `VariantSummary`** rather than re-listing all 11 base fields. Reduces drift risk: a new field added to the summary view automatically lands in the detail view. INV-P002 still holds because both models live in the schema module under explicit field control.
+
+**What this slice doesn't cover** (subsequent slices):
+- `/v1/gene/{symbol}` (Slice C): needs the `coverage_qc` table reader + per-gene aggregation.
+- `/v1/provenance/{run-id}` (Slice C): reads `provenance.json` from the active run; surfaces the `vep_skipped_*` fields from the Phase-4 close.
+- Plugin migration to `registerTool` (Slice D): TS-side work.
+- Sandbox image rebuild + `INV-D002` smoke test (Slice E): live verification.
+
+### 2026-05-15 — Phase 5 Slice C (`/v1/provenance/{run-id}` + `/v1/gene/{symbol}`)
+
+**Slice C scope**: bundled the last two read-only host-service endpoints into one slice — both shared the same test-fixture pattern (manifest + provenance.json + populated variants.duckdb + coverage_qc) and the same store-helper extension point. Closes the host-service half of Phase 5; the remaining work is plugin migration (TS) + sandbox image (Slices D + E).
+
+**Step C.1 — RED**: Wrote 8 tests in [test_service_provenance_and_gene.py](../../../../packages/toolkit/tests/integration/test_service_provenance_and_gene.py):
+- Provenance: `test_provenance_returns_full_step_trail_for_active_run` (top-level shape), `test_provenance_surfaces_vep_skip_breakdown` (pins the 2026-05-15 decoy-variant-provenance fields flow through unchanged), `test_provenance_returns_404_for_wrong_run_id` (single-run semantics).
+- Gene: `test_gene_endpoint_returns_aggregated_summary_for_curated_gene` (BRCA1 with 3 variants + coverage_qc row with low-coverage exons), `test_gene_endpoint_returns_summary_without_coverage_for_uncovered_gene` (variants exist, no coverage row → `mean_depth=null`, `low_coverage_exons=[]`), `test_gene_endpoint_returns_404_for_unknown_symbol`, `test_gene_endpoint_resolves_symbol_case_insensitively`, `test_invP002_gene_response_excludes_raw_variant_rows`.
+
+Fixture shape: 5-row variants table (BRCA1 ×3 + BRCA2 ×1 + decoy ×1 + a "variants-but-no-coverage" gene), 2 coverage_qc rows (BRCA1 with 2 low-coverage exons + BRCA2 with empty list), and a synthetic provenance.json mirroring the Phase 4D step structure with the new `vep_skipped_variants` (1234) + `vep_skipped_chroms` block.
+
+Initial run: 7 RED (404 — route doesn't exist) + 1 vacuous pass (the case-insensitive test passing on the 404 response coincidentally lacking a `gene` field).
+
+**Step C.2 — GREEN**:
+- Created [schemas/gene.py](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/gene.py): `GeneResponse` (gene + n_variants_in_gene + nullable mean_depth + low_coverage_exons + schema_version) + `GeneErrorResponse`. All strict.
+- Extended [service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py): `GeneAggregate` frozen dataclass; `query_gene(run_dir, symbol)` — case-insensitive symbol resolution (first variants.gene_symbol then coverage_qc.gene; returns canonical DB-stored casing in the result), variant count via `COUNT(*) WHERE gene_symbol = ?`, coverage join via `SELECT mean_depth, low_coverage_exons FROM coverage_qc WHERE gene = ?`. Returns `None` only when neither table matches; returns a `GeneAggregate` with `mean_depth=None` for the "variants exist, no coverage row" case. Plus `load_provenance(run_dir)` — straight JSON load, leaves validation to the route handler.
+- Extended [service/app.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/app.py): `/v1/provenance/{run_id}` route validates `run_id == active.run_id` (404 otherwise), loads JSON, validates through `Provenance.model_validate`, dumps via `mode="json"` so timestamps serialize as ISO-8601 strings. `/v1/gene/{symbol}` route calls `query_gene`, builds the response, threads the active run's schema_version into the response body so the agent can compare against `/v1/health`.
+
+Both routes share the `_require_active_run()` helper from Slice B.
+
+**Step C.3 — REFACTOR**: 1 format drift in `service/store.py` (auto-applied). Ruff clean.
+
+**Gate results**:
+- **Slice C tests**: 8/8 passing on first GREEN run.
+- **Full host suite**: 517 passed / 73 needs_bio skipped (up from 509 at end of Slice B; +8 are Slice C tests).
+- Ruff + format clean on all 3 new/touched files (`schemas/gene.py`, `service/store.py`, `service/app.py`, `tests/integration/test_service_provenance_and_gene.py`).
+
+**Decisions taken**:
+1. **Single-run provenance semantics for v0.** `/v1/provenance/{run_id}` only serves the active run; any other run-id returns 404 with a clear message. Historical-run support would require walking the derived/ tree + isolating each run's schema_version + handling concurrent reads against stale manifests — none of that pays back for v0 where users typically have one active run. Easy to extend later; the route already takes `{run_id}` as a parameter, so the contract doesn't change.
+2. **Case-insensitive gene symbol resolution returns canonical casing.** `GET /v1/gene/brca1` resolves to the BRCA1 row but returns `"gene": "BRCA1"` (the DB-stored value). The agent can pass user input in any case; the response is the authoritative form. HGNC symbol-casing convention (mostly uppercase) is preserved.
+3. **`mean_depth=null` is meaningful, not "missing".** A gene with variants but no `coverage_qc` row (the non-curated subset per spec AC8) returns 200 with `mean_depth=None`. The agent distinguishes this from a well-covered gene (real number) — null carries the message "we have variants for this gene but didn't materialise per-exon coverage for it." The alternative — 404 — would be wrong because the gene IS in the dataset.
+4. **Provenance validated through `Provenance.model_validate` on every request.** A malformed on-disk provenance.json surfaces as a Pydantic ValidationError → FastAPI 500 with a typed message, rather than passing arbitrary JSON to the agent. Cost is sub-millisecond on a ~10KB file; defensive against a future bug that writes malformed provenance.
+5. **`model_dump(mode="json")` for the provenance response.** Pydantic's default `model_dump()` returns native Python objects (including `datetime`); FastAPI's `JSONResponse` then double-serializes. `mode="json"` produces JSON-ready primitives (ISO-8601 timestamp strings) once. Saves a tier of serialization + ensures the response timestamps match the on-disk format exactly.
+
+**Host-service half of Phase 5: complete.** Four routes shipped end-to-end (`/v1/health`, `/v1/variants`, `/v1/variants/{key}`, `/v1/provenance/{run_id}`, `/v1/gene/{symbol}`). 22 new tests; 517 host pass / 73 needs_bio skipped at close. The plugin migration (Slice D, TS) + sandbox image rebuild (Slice E) close the remaining work.
+
+**Next slice (D — plugin migration)**: rewrite [packages/nemoclaw-plugin/src/index.ts](../../../../packages/nemoclaw-plugin/src/index.ts) per spec Q2. Drop `registerCommand` + `GENOMECLAW_JSON:` text encoding; register five tools via `registerTool` with TypeBox schemas; replace text encoding with `jsonResult` envelopes; add `@sinclair/typebox` dep. Subsequent slice (E) rebuilds the sandbox image + lands INV-D002 + live INV-P001 / INV-P002 tests.
+
+### 2026-05-15 — Phase 5 Slice D (plugin migration to `registerTool` + TypeBox + `jsonResult`)
+
+**Slice D scope**: rewrite [packages/nemoclaw-plugin/src/index.ts](../../../../packages/nemoclaw-plugin/src/index.ts) per [spec.md § Q2 + Q4](spec.md) — replace the v0 `registerCommand` + `GENOMECLAW_JSON:` text-encoding pattern with OpenClaw's published `registerTool` API, TypeBox parameter schemas, and `jsonResult` envelopes. Land vitest tests under a new `tests/` directory + a CI job that runs them. Add `genomeclaw_gene` as the 5th tool (per Q7).
+
+**Step D.0 — setup**: the plugin had never been built locally. `package.json` only declared TypeScript + vitest devDeps; no `node_modules`, no `dist`. The `openclaw/plugin-sdk` import is a NemoClaw-internal package not published to npm — the sandbox base image provides it at runtime. For local typecheck + vitest:
+- Created [types/openclaw-plugin-sdk.d.ts](../../../../packages/nemoclaw-plugin/types/openclaw-plugin-sdk.d.ts) — local stub declaring `OpenClawPluginApi`, `AgentTool<TParams, TDetails>`, `AgentToolResult`, `jsonResult(payload)`, `failedTextResult(text, details?)` — every surface `src/index.ts` uses. Mechanical: any drift between the stub and the real SDK surfaces as a type error.
+- Added `@sinclair/typebox` (real npm package, `^0.34.0`) as a `dependencies` entry + `@types/node` as a devDep.
+- Updated [tsconfig.json](../../../../packages/nemoclaw-plugin/tsconfig.json): `types: ["node"]`, `include: ["src/**/*.ts", "types/**/*.d.ts"]`, kept `rootDir: "src"` so build output stays at `dist/index.js` (matches `package.json` `main`).
+- Confirmed `npm install --no-audit --no-fund` succeeds (45 packages + 4 from the new deps).
+
+**Step D.1 — RED**: wrote [tests/index.test.ts](../../../../packages/nemoclaw-plugin/tests/index.test.ts) (16 cases under 4 describe blocks) + [tests/sdk-mock.ts](../../../../packages/nemoclaw-plugin/tests/sdk-mock.ts) (in-test mock of the SDK that mirrors the documented `jsonResult` / `failedTextResult` contract + a `Value.Check`-backed `invokeTool` helper that gates handlers behind TypeBox validation the same way the real SDK does):
+- **Registration shape (3 cases)**: 5 tools registered (exact name set); every tool declares `outputClass: "summary"` (INV-P002); every tool has a TypeBox `parameters` schema + non-empty description.
+- **TypeBox validation per spec Q4 (6 cases)**: status accepts `{}` + rejects extras; findings accepts `genes: string[]` + rejects empty arrays (`minItems: 1`) + rejects comma-separated string in place of array; variant requires non-empty `key`; evidence requires non-empty `ref`; gene requires non-empty `gene`.
+- **`jsonResult` envelope + HTTP routing (4 cases)**: status returns the envelope (`content[0].type === 'text'` + `details` carries the payload); variant routes the key into `/v1/variants/{key}`; findings serialises `genes: string[]` as repeated `genes=` query keys (FastAPI `list[str]` convention); gene routes to `/v1/gene/{symbol}`.
+- **Error handling (2 cases)**: HTTP non-2xx surfaces as `failedTextResult` envelope with the status code in the text; network failure surfaces the underlying error message.
+- **Config resolution (1 case)**: `hostService.baseUrl` from `pluginConfig` threads through to the fetched URL.
+
+Initial run: 16/16 failing with `TypeError: api.registerCommand is not a function` — the existing `index.ts` was still calling the v0 API. RED confirmed.
+
+**Step D.2 — GREEN**: rewrote [src/index.ts](../../../../packages/nemoclaw-plugin/src/index.ts) (~250 → ~270 lines):
+- Dropped `parseArgs`, `encodeResult`, `encodeError`, the `GENOMECLAW_JSON:` / `GENOMECLAW_ERROR:` markers, `rejectBulkAttempts`, the `outputClass: 'bulk'` config knob. Bulk-mode opt-in moves to a separate policy preset in Phase 6 if needed.
+- Imported `Type, type Static` from `@sinclair/typebox`; imported `failedTextResult, jsonResult, type AgentToolContext, type OpenClawPluginApi` from `openclaw/plugin-sdk` (value imports — needs real SDK at runtime, stub at build time).
+- Defined 5 TypeBox schemas (`StatusParams`, `FindingsParams`, `VariantParams`, `EvidenceParams`, `GeneParams`) at module scope. Findings schema uses `Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })` for `genes` + `drugs` per spec Q4; `category` uses `Type.Union([Type.Literal(...)...])` for the four documented values; `limit` uses `Type.Integer({ minimum: 1, maximum: 200 })`.
+- Centralised the success-vs-error envelope choice in a `safeCall(...)` helper: it wraps `callHostService(...)` in try/catch, returning `jsonResult(payload)` on success and `failedTextResult(msg, { path })` on failure. Every tool's `execute` body is now a 1–3 line function.
+- Reworked `callHostService(...)` to accept `Record<string, string | string[] | undefined>` for query params — `URLSearchParams.append` for array values (repeated keys), `set` for scalars; `undefined` values skipped.
+- Logger banner shrunk from a 7-line ASCII art block to a single `info(...)` call ("GenomeClaw plugin registered (5 tools): host=<url>").
+
+Tests: 16/16 passing on first run after the rewrite.
+
+**Step D.3 — policy preset**: added `/v1/gene/*` to the GET-allowlist in [policy-preset.yaml](../../../../packages/nemoclaw-plugin/policy-preset.yaml) with a comment pointing at the Slice C landing.
+
+**Step D.4 — verify**: `npm run typecheck` clean; `npm run test` 16/16 pass; `npm run build` produces `dist/index.js` + `dist/index.d.ts` + `dist/index.js.map`. Python toolkit suite still green (517 host pass / 73 needs_bio skipped — no regression).
+
+**Step D.5 — CI + Dockerfile + docs**:
+- Extended [.github/workflows/test.yml](../../../../.github/workflows/test.yml) with a new `plugin` job: Node 22 + `npm ci` + `npm run typecheck` + `npm run test` + `npm run build`. Caches `node_modules` against `package-lock.json`.
+- Updated [sandbox/Dockerfile](../../../../packages/nemoclaw-plugin/sandbox/Dockerfile) to `COPY types/` into the image — `tsc` needs the local stub of `openclaw/plugin-sdk` to compile inside the Docker build (the real SDK is provided by the sandbox base image at runtime, but tsc resolves modules at build time).
+- Restructured tests: moved `src/__tests__/` to a sibling `tests/` directory so the build output (`rootDir: "src"`) doesn't include test files in `dist/`.
+
+**Gate results**:
+- Plugin: 16/16 vitest tests pass; typecheck clean; build artifacts correct at `dist/index.js`.
+- Toolkit (regression check): 517 host pass / 73 needs_bio skipped — unchanged from end of Slice C.
+- CI: `plugin` job added with typecheck + test + build steps.
+
+**Decisions taken**:
+1. **Centralised `safeCall(...)` wrapper.** Every tool body collapses to one or two lines (build query params if needed; call safeCall). Without it each tool would re-implement the try/catch + envelope-choice. The rule-of-three applies — 5 tools, all identical except for path + query construction.
+2. **`outputClass: "summary"` on every tool, no `bulk` knob in plugin config.** The original code had a config switch for `outputClass`; rejected for the migration. INV-P002's enforcement layers are the policy preset (network floor) + the TypeBox schema (no `class=bulk` arg accepted) + the host service shape (minimal-sufficient). Three layers; the plugin config switch was redundant. If a future bulk endpoint ships it lands as a separate registered tool with `outputClass: "bulk"`, not as a config-flipped flavour of an existing tool.
+3. **Tests under `tests/`, not `src/__tests__/`.** The original convention `src/__tests__/` would have shipped test files in `dist/` (TypeScript root-directory inclusion). Moving to a sibling `tests/` directory keeps the build output focused on the production module + matches the Python toolkit's `tests/` convention.
+4. **Local SDK stub at `types/openclaw-plugin-sdk.d.ts`.** Alternative considered: declare `openclaw/plugin-sdk` types ambiently in `index.ts` (no separate file). Rejected: would lose the `import type { ... }` value-vs-type discipline + couple the stub to the production module. The separate `.d.ts` file is the documented contract; the production code imports from it the same way it would import from the real SDK once available.
+5. **CI job runs against vitest, not the real SDK.** The sandbox image build (Slice E) is the only place the real SDK lands. Local CI uses the mock + stub. The two layers cover different invariants: vitest verifies the registration + envelope shape; the sandbox-image smoke (next slice) verifies the SDK accepts the registration at all.
+
+**What this slice doesn't cover** (rolls into Slice E):
+- Sandbox image rebuild + `INV-D002` smoke test (binary inspection).
+- Live `INV-P001` default-egress probe (real plugin → real host service round-trip).
+- Live `INV-P002` policy probe (SSRF guard rejects un-allowlisted hosts).
+- The `LLM addresses returned fields by name` verification — only possible in the project owner's live sandbox.
+
+**Phase 5 status at end of Slice D**: ~80% complete by deliverable count. Host service: complete (5 routes, 22 tests). Plugin: complete (5 tools, 16 tests). Sandbox image + privacy invariants: pending (Slice E).
+
+### 2026-05-15 — Phase 5 Slice E (privacy invariant tests + sandbox-image gate)
+
+**Slice E scope**: land the three privacy-invariant tests Phase 5 has been building toward — `INV-P001` (default egress), `INV-P002` (policy preset shape + host service shape from Slices A–C), `INV-D002` (sandbox image carries no bio binaries). What's runnable locally lands here; live-sandbox verification (LLM round-trip + SSRF probe) requires the project owner's NemoClaw environment and lands as the Phase 5 closure step.
+
+**Step E.1 — INV-P002 policy-preset shape** ([test_invP002_policy_preset_shape.py](../../../../packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py)). 6 host-runnable tests parsing [policy-preset.yaml](../../../../packages/nemoclaw-plugin/policy-preset.yaml):
+- `test_invP002_policy_preset_targets_host_openshell_internal` — single endpoint at `host.openshell.internal:8643` with `enforcement: enforce`.
+- `test_invP002_policy_preset_carries_rfc1918_allowed_ips` — the three RFC 1918 ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) are in `allowed_ips:`. Without them, OpenShell's SSRF guard rejects `host.openshell.internal` resolution at runtime.
+- `test_invP002_policy_preset_allows_only_get_methods` — every rule's `method` is `GET`. The host service is read-only by construction; a POST/PUT/DELETE/PATCH allow rule would be a regression.
+- `test_invP002_policy_preset_path_set_matches_documented_surface` — every allowed path is in the documented v0 endpoint set (`/v1/health`, `/v1/findings`, `/v1/findings/*`, `/v1/variants`, `/v1/variants/*`, `/v1/evidence/*`, `/v1/provenance/*`, `/v1/gene/*`, `/v1/capabilities`). Asserts both directions — no accidental widening.
+- `test_invP002_policy_preset_includes_v1_gene_route` — pins the Slice C addition so a future restructure can't silently drop it.
+- `test_invP002_policy_preset_binaries_restricted_to_runtime` — `binaries:` allowlist includes `openclaw` + `node`; anything else can't originate the connection at the OpenShell egress layer.
+
+**Step E.2 — INV-P001 default-egress** ([test_invP001_plugin_default_egress.py](../../../../packages/toolkit/tests/privacy/test_invP001_plugin_default_egress.py)). 4 host-runnable tests parsing [openclaw.plugin.json](../../../../packages/nemoclaw-plugin/openclaw.plugin.json) + the plugin source:
+- `test_invP001_manifest_default_base_url_is_host_openshell_internal` — `configSchema.properties.hostService.baseUrl.default == "http://host.openshell.internal:8643"`. A user installing the plugin without overriding config lands on the documented destination, full stop.
+- `test_invP001_plugin_source_has_no_hardcoded_remote_destinations` — regex over [src/index.ts](../../../../packages/nemoclaw-plugin/src/index.ts): every `https?://` literal must equal the documented default. Catches a reviewer-missed telemetry / npm / error-reporting URL.
+- `test_invP001_plugin_source_uses_single_http_client_function` — exactly one `fetch(` call site in the plugin source. Defense-in-depth: a second call site would bypass the centralised URL-construction + timeout discipline.
+- `test_invP001_manifest_output_class_defaults_to_summary` — manifest's `outputClass.default == "summary"` + enum is `{summary, bulk}`. INV-P002 alignment at the manifest layer.
+
+**Step E.3 — INV-D002 sandbox-image** ([test_invD002_sandbox_image_no_bio_binaries.py](../../../../packages/toolkit/tests/invariants/test_invD002_sandbox_image_no_bio_binaries.py)). 11 parametrized cases (one per forbidden bio binary: `samtools`, `bcftools`, `bgzip`, `tabix`, `mosdepth`, `vcfanno`, `vep`, `cyrius`, `pharmcat`, `pgsc_calc`, `nextflow`). Each shells out `docker run --rm <image> sh -c 'command -v <binary>'` against the sandbox image; non-zero exit means the binary isn't on PATH, i.e. INV-D002 holds. Gated by:
+1. `GENOMECLAW_SANDBOX_IMAGE` env var must be set (the image tag to test against).
+2. `docker` must be on PATH.
+3. The image must be locally available (`docker image inspect` succeeds — no implicit network pull).
+
+All three gates skip cleanly when unmet rather than failing — local runs without a built sandbox skip the test; CI builds the image first and sets the env var. Added a new `needs_sandbox` pytest marker in [pyproject.toml](../../../../packages/toolkit/pyproject.toml).
+
+**Gate results**:
+- **Slice E tests**: 6 + 4 = 10 new host-runnable tests, all passing. 11 parametrized INV-D002 cases skip cleanly when no built sandbox image is available.
+- **Full host suite**: 527 passed / 84 skipped (up from 517 / 73 at end of Slice D; +10 host pass = INV-P001 + INV-P002 tests; +11 skipped = INV-D002 parametrized cases gated on the sandbox image).
+- Ruff + format clean.
+
+**Decisions taken**:
+1. **Static checks beat live probes for INV-P001 / INV-P002.** Spec.md Q2 caveat ("live policy probe asserts SSRF guard rejects un-allowlisted hosts/ports") is the gold-standard verification — but it requires a running NemoClaw sandbox + a real OpenShell L7 proxy. The host-runnable shape tests catch every regression class except runtime infrastructure bugs in OpenShell itself, in milliseconds, on every PR. The live probe stays as a Phase 7 closure step.
+2. **Policy preset shape test is the *only* test that ties the documented path set to the runtime allowlist.** This is the single point where "we shipped a route" meets "we allowed the route in the preset" — a Slice-C-era regression that shipped `/v1/gene/{symbol}` without extending the preset would have been silent until the first agent call from the live sandbox 404'd. The test ships both directions: any preset path must be in the documented set, and the test's documented set must be kept in sync with the host service's actual routes.
+3. **`needs_sandbox` marker, not `needs_bio`.** The sandbox image is conceptually separate from the bio-binary toolkit image. `needs_bio` runs inside `genomeclaw/toolkit`; `needs_sandbox` runs against the nemoclaw-plugin sandbox image. Future tests gated on each get the right marker.
+4. **Source-code regex check vs. AST check for INV-P001.** Considered using a TypeScript AST parser (tree-sitter, swc) to find URL literals — rejected. The regex is simpler, faster, and the failure mode is the same: a URL literal anywhere in the source surfaces. If we ever needed to scope by AST node (e.g. "URLs in string contexts only, not in comments"), we'd switch.
+5. **Live verification deferred, not skipped.** The three deferred checks (sandbox-image rebuild + LLM-addresses-fields-by-name + OpenShell SSRF live probe) all require the project owner's NemoClaw environment. They're real `INV-P002` enforcement layers — they don't get retired because they can't run in CI. Filed under "Phase 5 live closure follow-ups" below + linked from phase-5.md's Completion Criteria.
+
+**Phase 5 live closure follow-ups** (require project owner's NemoClaw sandbox; deferred to Phase 7 invariant sweep or first live sandbox session, whichever happens first):
+1. **Build the sandbox image**: `nemoclaw onboard --from packages/nemoclaw-plugin/sandbox/Dockerfile`. Confirms the rewritten Dockerfile (`COPY types/`) + the Slice D index.ts compile cleanly with the real `openclaw/plugin-sdk` from the sandbox base image.
+2. **Live INV-D002 smoke**: set `GENOMECLAW_SANDBOX_IMAGE` to the build tag + run `pytest tests/invariants/test_invD002_sandbox_image_no_bio_binaries.py -m needs_sandbox`. Expected: all 11 parametrized cases pass.
+3. **Live LLM round-trip**: in the project owner's sandbox, invoke `genomeclaw_status` + `genomeclaw_gene BRCA1` through the agent (over Telegram). Confirm the LLM addresses returned fields by name in a follow-up message — the spec Q2 caveat verification.
+4. **Live SSRF probe**: from inside the sandbox, attempt `fetch("http://example.com")` (or an un-allowlisted host:port). Expected: rejected by OpenShell with `ssrf_denied: blocked: internal address` / `host not in allowlist`. Confirms the `allowed_ips:` block + path allowlist enforce in production, not just in the YAML parser.
+
+**Phase 5 status at end of Slice E**: ~95% complete by deliverable count. All five host-service routes shipped + 22 tests. Plugin migrated to `registerTool` + 16 tests. Three invariant test files added (INV-P001, INV-P002, INV-D002) + 10 host-runnable cases. Remaining: the four live-sandbox verifications above. The host work is done; the rest requires production NemoClaw infrastructure.
+
+### 2026-05-15 — Phase 5 live verification sweep (Steps 1–4 of the Slice E follow-ups)
+
+**Live sweep scope**: run the 4 deferred Slice E verifications against a real built sandbox image + caught one regression in the process. Closes 2 of 4 follow-ups fully; 2 (LLM round-trip + live SSRF probe) still need the project owner's Telegram + a running NemoClaw gateway.
+
+**Step 1 — sandbox image build**: pulled `ghcr.io/nvidia/nemoclaw/sandbox-base:latest` (digest `sha256:b8af8a05df0a65c8932c292cb8b3de02fbd2f837696727602f5ff561217ffe9e`); `docker build -f packages/nemoclaw-plugin/sandbox/Dockerfile -t genomeclaw/sandbox:slice-e .` succeeded. All 12 Dockerfile stages ran clean: `npm ci` resolved 49 packages, `tsc` produced `dist/index.js` with the new SDK stub from `types/`, `openclaw doctor --fix` registered the plugin (modulo the pre-existing root-vs-sandbox-user config-path quirk noted below).
+
+**Step 2 — live INV-D002 sweep**: `GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:slice-e uv run pytest tests/invariants/test_invD002_sandbox_image_no_bio_binaries.py` → **11/11 passing**. None of `samtools`, `bcftools`, `bgzip`, `tabix`, `mosdepth`, `vcfanno`, `vep`, `cyrius`, `pharmcat`, `pgsc_calc`, `nextflow` resolve on the sandbox image's PATH. INV-D002 holds end-to-end.
+
+**Step 3 — plugin-load verification + bug surfaced + fixed**: the harness pattern: pipe a small `.mjs` file via stdin into `docker run -i`, intercept the `openclaw/plugin-sdk` import with a Node ESM loader hook supplying mock `jsonResult` / `failedTextResult`, then call the plugin's `register()` and assert the 5-tool surface registers.
+
+First run against the v1 image (`genomeclaw/sandbox:slice-e`) **failed** with `ERR_MODULE_NOT_FOUND: Cannot find package '@sinclair/typebox' imported from /sandbox/.openclaw/extensions/genomeclaw/dist/index.js`. **Root cause**: Slice D's rewrite introduced a real runtime dependency on `@sinclair/typebox`, but the Dockerfile only copied `dist/` into the extension dir — `node_modules/` was left behind. The v0 plugin had no runtime deps (its SDK imports were type-only) so the original install pattern worked; the v1 plugin needs the actual TypeBox module at load time.
+
+**Fix landed in [sandbox/Dockerfile](../../../../packages/nemoclaw-plugin/sandbox/Dockerfile)**: added `cp -a node_modules /sandbox/.openclaw/extensions/genomeclaw/` to the install step, with a comment block explaining the Slice D dependency + the trade-off (~250KB extra vs. bundling). Rebuilt the image as `genomeclaw/sandbox:slice-e-v2`; harness now passes:
+
+```
+[info] GenomeClaw plugin registered (5 tools): host=http://host.openshell.internal:8643
+---
+tools registered: 5
+  * genomeclaw_status,  outputClass=summary, has_params=true, has_execute=true
+  * genomeclaw_findings, outputClass=summary, has_params=true, has_execute=true
+  * genomeclaw_variant,  outputClass=summary, has_params=true, has_execute=true
+  * genomeclaw_evidence, outputClass=summary, has_params=true, has_execute=true
+  * genomeclaw_gene,     outputClass=summary, has_params=true, has_execute=true
+PASS: 5 tools registered with summary outputClass + TypeBox params + execute
+```
+
+INV-D002 re-run against `slice-e-v2` — 11/11 still pass (the `node_modules/` addition didn't smuggle in any bio binary; TypeBox has zero transitive runtime deps).
+
+**Permanent regression test** ([test_invD002_plugin_registers_inside_sandbox.py](../../../../packages/toolkit/tests/invariants/test_invD002_plugin_registers_inside_sandbox.py)): converted the harness into a `needs_sandbox`-gated test. Harness lives at [tests/invariants/fixtures/sandbox_plugin_harness.mjs](../../../../packages/toolkit/tests/invariants/fixtures/sandbox_plugin_harness.mjs); the Python test pipes it into `docker run -i` and asserts the harness emits `PASS:`. Skips cleanly without the env var; passes against the rebuilt image. **A future Dockerfile change that drops `node_modules/` (or any other Slice-D-introduced runtime dep) surfaces here in seconds rather than at NemoClaw deploy time.**
+
+**OpenClaw recognises the plugin**: `openclaw security audit --json` against the rebuilt image reported `"Enabled extension plugins: genomeclaw."` under the `plugins.tools_reachable_permissive_policy` finding — direct confirmation that the install step worked + the plugin loaded. The audit also surfaced two pre-existing deployment-hardening items unrelated to Slice E (group-writable state dir + critical writable credentials dir + missing gateway auth on loopback — all baseline issues with the sandbox base image's default state, not introduced by us). Filed as follow-up: a deployment-time `chmod 700` step + an explicit `plugins.allow: [genomeclaw]` allowlist would close them.
+
+**Step 4 — live SSRF probe**: **not runnable in this session.** The probe requires the OpenShell L7 proxy actively running + intercepting outbound HTTP from inside a live sandbox container. The proxy is a NemoClaw gateway process that needs systemd or a supervisor (per the build-time `openclaw doctor` output: "systemd user services are unavailable; install/enable systemd or run the gateway under your supervisor"). Outside the scope of a one-off `docker run`. Remains as a Phase 7 invariant-sweep follow-up. The static [INV-P002 policy-preset shape test](../../../../packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py) covers the contract that the live probe would dynamically verify — what's deferred is the proof that OpenShell honours the YAML at runtime.
+
+**LLM round-trip verification**: also not runnable here — needs the project owner's Telegram + a running gateway + an agent. Remains the last live-only check; lands during the first Phase 6 session or the Phase 7 invariant sweep, whichever comes first.
+
+**Gate results**:
+- Sandbox image built: ✅ `genomeclaw/sandbox:slice-e-v2`.
+- INV-D002 (no bio binaries): ✅ 11/11 against the rebuilt image.
+- Plugin loads + registers 5 tools with TypeBox params inside the sandbox runtime: ✅ verified live + pinned as a permanent regression test.
+- Live SSRF probe: ❌ deferred (requires running gateway).
+- Live LLM round-trip: ❌ deferred (requires project owner's Telegram setup).
+- Full host suite: 527 passed / 85 skipped (up from 84: the new regression test adds 1 skip without a sandbox image).
+
+**Decisions taken**:
+1. **Copy `node_modules/` instead of bundling.** Slice D introduced a real runtime dep on TypeBox; bundling via esbuild/rollup would shrink the install footprint but adds a build dep + tooling complexity. Copying `node_modules/` keeps the source-readability story (a reviewer inspecting the installed plugin sees the same module shape as the source tree) + adds only ~250KB. Revisit if the deployed-extension size becomes a concern + we accumulate more runtime deps.
+2. **Harness uses stdin-pipe, not bind-mount.** Tried `-v /tmp/harness.mjs:/tmp/harness.mjs:ro` first — failed under colima's virtiofs. `docker run -i` + piping the file via stdin works universally + matches how CI would inject the harness without depending on host-mount semantics.
+3. **`needs_sandbox` regression test, not a unit test.** The "package missing" bug is fundamentally a packaging-time issue between the source tree + the install path. A unit-test-level mock wouldn't catch it (the mock would just supply the missing module). The right gate is "the compiled plugin loads inside the real sandbox runtime" — that's a `needs_sandbox` test by construction.
+4. **Don't try to fix the security-audit findings in this slice.** The three baseline findings (group-writable state, writable credentials, no gateway auth on loopback) are sandbox-base-image defaults; fixing them is Phase 6/7 deployment-hardening work. The `plugins.tools_reachable_permissive_policy` finding is interesting — it's the agent-context tool-policy layer, separate from INV-P002's network policy. Worth a follow-up plan but not Slice E's scope.
+
+**Status update for the four [phase-5.md live verification follow-ups](phases/phase-5.md)**:
+
+| # | Step | Status |
+|---|------|--------|
+| 1 | Build sandbox image | ✅ Done (genomeclaw/sandbox:slice-e-v2) |
+| 2 | Live INV-D002 smoke (11 binaries) | ✅ Done — all clear |
+| 3 | Plugin loads + registers 5 tools | ✅ Done — and converted to a permanent regression test |
+| 4 | Live LLM round-trip | ⏸ Deferred (needs project owner's Telegram + running gateway) |
+| 5 | Live SSRF probe | ⏸ Deferred (needs running OpenShell L7 proxy) |
+
+Net: 3/5 originally-deferred items closed in this sweep + one real bug found and fixed + a permanent regression test added. Phase 5 is now ~98% complete; the two remaining items are infrastructure-dependent and land in Phase 6's first live session or Phase 7's invariant sweep.
+
+### 2026-05-15 — Live LLM round-trip with real OpenAI gpt-5.5 (continuation of Slice E live sweep)
+
+**Scope**: do the live LLM tool round-trip against real OpenAI gpt-5.5. The user provided their `OPEN_AI_API_KEY` in `.env` and asked for model `gpt-5.5`. This closes the 4th of 5 live-sweep follow-ups; the 5th (live SSRF probe) still needs OpenShell's L7 proxy actively intercepting, which is a NemoClaw deploy-mode concern outside Slice E's scope.
+
+**Setup**: ran the host service on the Mac (`uv run genomeclaw host service --derived-root /tmp/gc-live/derived --host 0.0.0.0`) against a hand-staged manifest declaring `run_id: run-live`, `schema_version: v0.2`, `sample_id: live-smoke`. Sandbox container reached it via `--add-host=host.openshell.internal:host-gateway` — the policy preset's documented alias resolves to the Mac's bridge IP, no plugin config override needed.
+
+**Two more real bugs surfaced and fixed (on top of Step 3's `node_modules/` bug)**:
+
+1. **`openclaw plugins install` was missing from the Dockerfile**. The original install pattern (`cp -a` files + `openclaw doctor --fix`) staged the plugin on disk but didn't register it in OpenClaw's plugin index. The `openclaw plugins list` showed nothing for `genomeclaw`; the gateway's `plugins.allow: [genomeclaw]` config warned "plugin not found: genomeclaw (stale config entry ignored)." Fix: replaced the `cp` block with `openclaw plugins install /opt/genomeclaw --link` after staging the package source. This requires a new field in [package.json](../../../../packages/nemoclaw-plugin/package.json): `"openclaw": {"extensions": ["./dist/index.js"]}`. After the fix, `openclaw plugins inspect genomeclaw` returns `Status: loaded` + lists all 5 tools.
+
+2. **The plugin imported `failedTextResult` from the deprecated `openclaw/plugin-sdk` compat layer**. Runtime error: `(0 , _pluginSdk.failedTextResult) is not a function`. OpenClaw fired a `[OPENCLAW_PLUGIN_SDK_COMPAT_DEPRECATED]` warning pointing at the migration guide. The bare `openclaw/plugin-sdk` is the compat layer (`jsonResult` works there, `failedTextResult` doesn't); the proper home for both is the `openclaw/plugin-sdk/agent-runtime` subpath. Probed the real SDK in the sandbox runtime-deps (`/sandbox/.openclaw/plugin-runtime-deps/.../node_modules/openclaw/plugin-sdk/agent-runtime.js`) — confirmed `jsonResult` + `failedTextResult` both exported as functions. Fix: switched value-imports in [src/index.ts](../../../../packages/nemoclaw-plugin/src/index.ts) to the subpath; types continue to come from the bare module (still declared in our [types/openclaw-plugin-sdk.d.ts](../../../../packages/nemoclaw-plugin/types/openclaw-plugin-sdk.d.ts) stub). Extended the stub with a `declare module "openclaw/plugin-sdk/agent-runtime"` block. Updated the vitest mocks to also intercept the subpath. 16/16 plugin tests pass after the fix.
+
+**Live agent transcript** (real OpenAI gpt-5.5 request + response):
+
+> **System prompt** (auto, fresh agent): bootstrap instructions to read BOOTSTRAP.md
+>
+> **User message**: "Use the genomeclaw_status tool and tell me the active GenomeClaw run-id and schema version. Be brief."
+>
+> **Agent execution trace**:
+> - winner: `openai/gpt-5.5`
+> - tool calls: `["read", "genomeclaw_status"]` (read BOOTSTRAP.md first per the bootstrap policy, then called the tool)
+> - failures: 0
+> - stage: success
+>
+> **Agent final reply**:
+> ```
+> Hey. I just came online, so bootstrap isn't complete yet — I still
+> need to figure out who I am with you.
+>
+> GenomeClaw:
+> - active run-id: `run-live`
+> - schema version: `v0.2`
+>
+> Next tiny step: what should you call me?
+> ```
+
+**This proves**: (a) gpt-5.5 receives the registered tool's schema + description, (b) decides to call `genomeclaw_status` to answer the user's question, (c) the plugin's `execute` body hits `http://host.openshell.internal:8643/v1/health`, (d) the host service resolves CURRENT, reads manifest.json, and returns the typed `HealthResponse`, (e) the plugin's `jsonResult` envelope round-trips through OpenClaw's structured-content channel back to the LLM, (f) gpt-5.5 surfaces the fields by name in its natural-language reply ("active run-id: `run-live`", "schema version: `v0.2`"). The Q2 spec caveat — *"modern LLMs parse pretty-printed JSON in text blocks trivially"* — verified empirically.
+
+**A third bug-as-friction surfaced + closed in passing**: the INV-P001 policy test flagged my doc-URL comment (`https://docs.openclaw.ai/plugins/sdk-migration`). Per the test's own escape-hatch docstring, I extended `_DOCUMENTATION_URL_ALLOWLIST` with the rationale. The test caught exactly the regression class it was built to catch.
+
+**Gate results**:
+- Sandbox image rebuilt 3 times during sweep (`slice-e-v2` → `slice-e-v3` → `slice-e-v4`); each rebuild fixed a real bug.
+- Plugin: 16/16 vitest pass; typecheck + build clean.
+- Toolkit: 527 host pass / 85 skipped; ruff + format clean.
+- Live agent round-trip: **PASS** — agent response references the active run-id verbatim.
+
+**Decisions taken**:
+1. **`openclaw plugins install --link` is the correct registration path, not `cp` + `doctor --fix`.** The Dockerfile previously bypassed OpenClaw's plugin-index registration. The link form keeps the source at `/opt/genomeclaw` (inspectable in `plugins inspect`) without duplicating bytes to the extension dir. Required a `package.json.openclaw.extensions: ["./dist/index.js"]` field that OpenClaw validates at install time.
+2. **Value imports from subpath, types from bare module.** The bare `openclaw/plugin-sdk` is being deprecated for value-side use, but the TypeScript type tree is still organised under the bare specifier in the live SDK (subpaths re-export). Keeps our stub small + matches the migration's actual shape.
+3. **Don't bundle the plugin into a single file.** Tempting to ship a fully-bundled `dist/index.js` so `node_modules/` could go away — rejected. Bundling adds an esbuild/rollup build step + obscures runtime imports from review. The current `cp -a node_modules` is one Dockerfile line and ~250KB; not worth the tooling complexity.
+4. **The Slice D vitest mock had ESM-hoisting subtlety.** Initial attempt used a shared factory `const _sdkValueMock = () => ({...})` referenced from both `vi.mock` calls. `vi.mock` hoists above all top-level `const` initialisation, causing `ReferenceError: Cannot access '_sdkValueMock' before initialization`. Fix: inlined the factory in each `vi.mock` call. Slightly more verbose; correct.
+5. **Live SSRF probe stays deferred.** This sweep proved that OpenClaw's network calls work *without* an active OpenShell L7 proxy intercepting — i.e., the sandbox's actual SSRF enforcement isn't being verified by what we did today. Verifying SSRF requires deploying the sandbox under OpenShell's full runtime envelope (the proxy + Landlock + seccomp + netns). That's NemoClaw-deploy work, not plugin work. Stays as Phase 7 invariant sweep follow-up.
+
+**Updated live verification scorecard**:
+
+| # | Step | Status |
+|---|------|--------|
+| 1 | Build sandbox image | ✅ `genomeclaw/sandbox:slice-e-v4` |
+| 2 | Live INV-D002 (11 forbidden bio binaries) | ✅ 11/11 absent |
+| 3 | Plugin loads + registers 5 tools inside sandbox | ✅ verified + permanent regression test |
+| 4 | **Live LLM round-trip via gpt-5.5** | ✅ **PASS — agent calls tool, host responds, LLM surfaces fields by name** |
+| 5 | Live SSRF probe via OpenShell L7 proxy | ⏸ Deferred (Phase 7) |
+
+**Phase 5 status**: **functionally complete (~99%)** — only the deploy-time SSRF probe remains, which proves a runtime behavior of OpenShell, not of GenomeClaw. The host service + plugin + sandbox image + privacy floor + agent round-trip all work end-to-end against the real OpenAI gpt-5.5 backend.
+
+### 2026-05-15 — Phase 6 kickoff + Slice A (Finding schema + `/v1/findings` endpoints)
+
+**Context Reviewed** (per planning protocol):
+- Authored [phase-6.md](phases/phase-6.md) — the missing Phase 5 closure deliverable. Maps Phase 6 into 6 slices (A: finding schema + endpoints, B: evidence resolver + curated-notes dispatch, C: 7 curated notes, D: Cyrius CYP2D6, E: pgsc_calc + PRS, F: Story 2/4/9/10 prose snapshots). Slice A is the smallest meaningful first piece: pure-Python, no bio binaries, no curated notes, no PGS Catalog egress.
+- Re-read INV-E001 + INV-C001 v1.5 in [INVARIANTS.md](../../../reference/INVARIANTS.md). Slice A enforces both at the Pydantic model layer.
+- Inspected existing variant + gene query helpers in [service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py) — Slice A follows the same pattern (typed column tuple → row-dict translator → query function).
+
+**Slice A scope**: Finding + FindingsListResponse Pydantic models + `findings` DuckDB table + 2 new endpoints (`/v1/findings` paginated list + `/v1/findings/{id}` detail). No curated notes resolver, no Cyrius, no PRS, no agent prose tests — all subsequent slices.
+
+**Step A.1 — RED**: wrote 15 tests across two files:
+- [test_finding_model.py](../../../../packages/toolkit/tests/integration/test_finding_model.py) (7 tests) — pure model contract:
+  - `test_invE001_finding_rejects_without_evidence_ref` + `test_invE001_finding_rejects_when_evidence_ref_missing` (INV-E001).
+  - `test_invC001_clinical_actionable_requires_escalation` + `test_invC001_clinical_actionable_with_escalation_validates` + `test_invC001_non_actionable_must_omit_escalation` (INV-C001 v1.5 — both directions: actionable WITHOUT escalation rejected, non-actionable WITH escalation rejected).
+  - `test_category_enum_is_pinned` + `test_finding_strict_extra_forbidden` (INV-P002 floor + closed-enum contract).
+- [test_service_findings.py](../../../../packages/toolkit/tests/integration/test_service_findings.py) (8 tests) — endpoint behavior:
+  - List endpoint: unfiltered, filtered by category, filtered by genes (typed-array via repeated query keys), filtered by drugs, degraded-state 503.
+  - Detail endpoint: happy path + 404 for unknown id.
+  - INV-P002 shape pin: both endpoints exclude the 7 provenance columns.
+
+Fixture: 4 synthetic findings across the four categories (BRCA2 actionable, CYP2D6 PGx actionable with drugs=`[codeine, tramadol]`, LCT lifestyle, CAD PRS non-actionable). Inserted via raw DuckDB SQL after `create_store()` initialises the new table.
+
+Initial run: ImportError on `genomeclaw_toolkit.schemas.finding` — RED confirmed.
+
+**Step A.2 — GREEN**:
+- Created [schemas/finding.py](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/finding.py): `Category` + `EvidenceQuality` + `ClinicalEscalation` literal types, `Finding` model with `model_validator(mode="after")` enforcing INV-C001 v1.5 (both directions), `FindingsListResponse` for the list shape, `FindingErrorResponse` for 404/503 bodies. All strict (`extra="forbid"`).
+- Extended [prep/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/store.py): added `_FINDINGS_DDL` (9 domain columns + 7 provenance columns + PRIMARY KEY (id)); wired into `create_store()` between coverage_qc and schema_meta. No schema-version bump — additive non-breaking change, consistent with Phase 4E pattern.
+- Extended [service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py): `_FINDING_COLUMNS` constant + `_row_to_finding_dict` translator (normalises null `gene_symbols` arrays to `[]`); `query_findings(run_dir, category, genes, drugs, limit, offset)` returns `(rows, total)` with `list_has_any(...)` for array filters; `query_finding_by_id(run_dir, finding_id)` returns the single row dict or None. SQL injection-safe (column names from constant tuple; param-bound user values).
+- Extended [service/app.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/app.py): `/v1/findings` route with TypeBox-style parameter validation (`category: Category | None`, `genes: list[str] | None`, `drugs: list[str] | None`, `limit: int [1..200]`, `offset: int >= 0`); `/v1/findings/{finding_id}` route with 404 → `FindingErrorResponse`. Both routes reuse the `_require_active_run()` helper from Phase 5 Slice B for the degraded-state path.
+
+15/15 Slice A tests pass on first GREEN run.
+
+**Step A.3 — REFACTOR**: ruff caught one issue: `_invC001` flagged as non-lowercase function name (UP037 also flagged the forward reference quote on `"Finding"`). Renamed to `_enforce_inv_c001` + dropped the quotes (already covered by `from __future__ import annotations`). Format clean.
+
+**Gate results**:
+- **Slice A tests**: 15/15 passing.
+- **Full host suite**: 542 passed / 85 skipped (up from 527 at Phase 5 close; +15 are Slice A).
+- Ruff + format: clean on all 6 new/touched files.
+- Plugin suite: no changes; 16/16 still pass (plugin migration to 6-tool surface lands in Slice E).
+
+**Decisions taken**:
+1. **INV-C001 v1.5 enforced bidirectionally at the model layer.** Both modes — clinical-actionable without escalation AND non-actionable with escalation — fail validation. Without bidirectional enforcement, a future code path that constructs e.g. `Finding(category="lifestyle", clinical_escalation="urgent_consultation")` would render as a lifestyle note styled with urgent-clinical visual markers — a serious safety issue. Model-layer enforcement means the structural floor holds before any prose rendering.
+2. **`list_has_any` for array filters.** A query `?genes=BRCA2&genes=LCT` returns findings citing BRCA2 OR LCT (set membership), not BOTH (intersection). Matches the spec Q4 use case "agent asks 'what's going on with BRCA2 and LCT'" — typically a disjunctive filter.
+3. **No schema version bump for the new `findings` table.** Additive non-breaking change; old runs without a `findings` table will gracefully error at the route layer when the query hits a missing table. Schema version stays at v0.2; v0.3 lands when a non-additive change appears.
+4. **List filter `category` typed as a `Category` Literal in the route signature.** FastAPI validates the value against the enum before the handler runs; an invalid `?category=research` returns 422 (Unprocessable Entity) without reaching our store layer.
+5. **Test fixture uses raw DuckDB INSERT, not a `write_findings` helper.** The streaming-batch write path that variants use is overkill for findings (~tens, not millions). A future `write_findings(...)` helper may land in Slice D/E; for now the fixture inserts directly.
+
+**Open for subsequent slices**:
+- **Slice B**: `/v1/evidence/{ref}` + `EvidenceResolver` dispatching on `<kind>:<id>` (clinvar / gene_note / topic / pgs_catalog). Tests: ~5.
+- **Slice C**: author 7 curated gene notes under `reference/curated_notes/` (LCT, CYP1A2, ADORA2A, ALDH2, ADH1B, APOE, MTHFR) + `topics/hard-genes.md`. Requires `privacy-safety-reviewer` agent review per INV-C001 v1.5.
+- **Slice D**: Cyrius CYP2D6 diplotype calling — needs a real BAM/CRAM fixture or `needs_bio` test against the project owner's data.
+- **Slice E**: pgsc_calc + `/v1/pgs/{trait}` + 6th plugin tool `genomeclaw_pgs`.
+- **Slice F**: Story 2/4/9/10 agent-prose snapshots (live LLM, reuses the Phase 5 gpt-5.5 harness).
+
+### 2026-05-15 — Phase 6 Slice B (`/v1/evidence/{ref}` + EvidenceResolver dispatch)
+
+**Slice B scope**: the prefix-dispatch evidence resolver. Lands the typed primitives + the resolver layer + the `/v1/evidence/{ref}` endpoint. Two of five evidence kinds (`gene_note:`, `topic:`) read from `reference/curated_notes/`; one (`clinvar:`) joins the variants table; two (`pgs_catalog:`, `pharmgkb:`) are accepted-but-empty until Slices D + E. The phase-6 plan calls these out explicitly.
+
+**Step B.1 — RED**: wrote 9 tests in [test_service_evidence.py](../../../../packages/toolkit/tests/integration/test_service_evidence.py):
+- Curated-notes: `gene_note:LCT` resolves to `reference/curated_notes/LCT.md` happy path + case-insensitive lookup (`gene_note:lct` → `LCT`) + `topic:hard-genes` resolves to the topics subtree.
+- Variant-keyed: `clinvar:RCV000031` joins the variants table on `clinvar_id`, synthesises a summary body ("ClinVar RCV000031: classification = Pathogenic. Review status: ...")
+- Errors: 404 for unknown gene_note id, 404 for unknown clinvar id, 400 for malformed ref (no colon), 400 for unknown kind prefix (`unknown_kind:abc`).
+- INV-P002 floor: the clinvar evidence body must NOT leak the full variant row (no qual, no filter, no per-pop AFs, no genotype, no provenance columns).
+
+Fixture: stages BOTH a derived store (with one ClinVar-annotated variant) AND a synthetic `reference/curated_notes/` tree (one gene note + one topic note). Build_app now takes `reference_dir` as a second kwarg.
+
+Initial run: 9/9 RED with `TypeError: build_app() got an unexpected keyword argument 'reference_dir'` — confirmed.
+
+**Step B.2 — GREEN**:
+- Created [schemas/evidence.py](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/evidence.py): `EvidenceKind` Literal (5 kinds), `EvidenceRecord` model (`kind`, `id`, `body`, `source`), `EvidenceErrorResponse` for 400/404. All strict.
+- Extended [service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py): `InvalidEvidenceRefError` + `UnknownEvidenceKindError` (two distinct error classes mapping to two distinct 400 reasons — malformed-ref vs. unsupported-kind); `parse_evidence_ref(ref)` splits on the first colon; `_SUPPORTED_EVIDENCE_KINDS` frozenset; three resolver helpers (`_resolve_gene_note`, `_resolve_topic`, `_resolve_clinvar`); `resolve_evidence(reference_dir, run_dir, ref)` is the top-level dispatch.
+- Extended [service/app.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/app.py): `build_app(derived_root, reference_dir=None)` — `reference_dir` is optional so a service running without curated_notes/ still works (returns 404 for curated-notes refs but variant-keyed refs still resolve). Added `/v1/evidence/{ref:path}` route (the `:path` converter allows colons in the URL so `clinvar:RCV...` doesn't get split by FastAPI's default path parser).
+- Extended [_cli/commands/host.py](../../../../packages/toolkit/src/genomeclaw_toolkit/_cli/commands/host.py) `host service` command with `--reference-dir` flag (default `/mnt/genomeclaw/reference`).
+
+9/9 Slice B tests pass on first GREEN run.
+
+**Step B.3 — REFACTOR**: one format-only fix in `service/store.py` after the format check. Ruff clean.
+
+**Gate results**:
+- **Slice B tests**: 9/9 passing.
+- **Full host suite**: 551 passed / 85 skipped (up from 542 at Slice A close; +9 are Slice B).
+- Ruff + format: clean on all 5 new/touched files.
+- INV-P002 policy preset test still passes (the existing allowlist already covered `/v1/evidence/*` from the Phase 5 policy file — no policy update needed).
+
+**Decisions taken**:
+1. **400 for unknown kind, 404 for unknown id.** Two distinct error classes so the agent can distinguish "I built a bad kind" from "the kind is supported but the id isn't in this run". The 400 names the supported set so the agent self-corrects.
+2. **Path converter `{ref:path}` instead of plain `{ref}`.** FastAPI's default `{ref}` uses a string converter that excludes `/` but DOES include `:`. Empirically the colon works, but the `:path` converter is explicit about accepting "anything resembling a path" — future-proofs against an evidence kind whose id contains a slash (e.g. `pubmed:2024/05/15/something` — unlikely but cheap insurance).
+3. **`reference_dir` is optional in `build_app`.** The host service can run with curated_notes/ absent (e.g. a fresh install before Slice C lands the content). Curated-notes refs return 404 in that case; variant-keyed refs still resolve via `run_dir`. The CLI defaults `--reference-dir` to `/mnt/genomeclaw/reference` matching the existing convention, but a test or fresh install can omit it.
+4. **`gene_note:` resolution is case-insensitive; `topic:` is case-sensitive.** HGNC gene symbols are conventionally uppercase but agents may pass them in arbitrary case; gene-note resolution case-folds. Topic slugs are kebab-case authored content; the filename IS the canonical form, so they're case-sensitive. A future regression that introduces a `Hard-Genes.md` file vs. a `hard-genes.md` file would surface as a 404 here, which is the right failure mode.
+5. **ClinVar body is a synthesised SUMMARY, not a row dump.** "ClinVar RCV000031: classification = Pathogenic. Review status: reviewed by expert panel. Gene: BRCA2. Consequence: stop_gained." Five facts; agent can frame on top of them. INV-P002 enforced at the resolver layer, not just in tests.
+6. **`pgs_catalog:` and `pharmgkb:` accepted but unimplemented.** The kinds are in `_SUPPORTED_EVIDENCE_KINDS` so the dispatch surface is documented; `resolve_evidence` returns `None` (= 404) for them today, and Slices D + E plug in the real resolvers. Better than rejecting at the kind level — keeps the agent's mental model of "what kinds exist" stable across slices.
+
+**Open for subsequent slices**:
+- **Slice C**: 7 curated gene notes + topics/hard-genes.md. The `gene_note:` + `topic:` resolvers wait on this content.
+- **Slice D**: Cyrius CYP2D6 → enables `pharmgkb:` resolver.
+- **Slice E**: pgsc_calc + `/v1/pgs/{trait}` + 6th plugin tool → enables `pgs_catalog:` resolver.
+- **Slice F**: Story 2/4/9/10 prose snapshots — gated on Slice C content existing.
 
 ---
 
@@ -858,3 +1384,182 @@ _(decisions land here as phases run)_
 - Annotator choice (Q1) is locked to SnpEff unless Phase 4 fixture performance forces a switch.
 - Sandbox image size is unmeasured; check in Phase 5.
 - Real-genome end-to-end run is Phase 7 only; the project owner's VCF must never enter CI.
+
+---
+
+## TODO — pick up here next session (2026-05-15 EOD checkpoint)
+
+End-of-2026-05-15 state: the first end-to-end real-data smoke completed at **4h08m58s** (ingest 1m42s + normalize 24.4s + annotate 4h03m31s + materialize 3m20s) against the project owner's Nebula VCF. Run dir: `/Volumes/Genome_Work/genomeclaw/derived/2026-05-14T20-37-49Z-579d3c/`. Phase 4 is substantively complete pending the three follow-ups below. Note this work-notes file itself is **stale** — entries stop at 2026-05-12; the 2026-05-13 → 2026-05-15 work (rich-cli closure, Phase 4D + 4E ship, annotate-shard-resilience Phase A, host-mount-lifecycle slices, two real-data smokes) is captured in the per-plan + per-phase docs but not yet retrofitted into a session block here. Item 5 below addresses that.
+
+### Day-1 (immediate — your action)
+
+1. **Verify the 4h08m run's variants.duckdb column counts.** ~5 min.
+   ```bash
+   RUN_DIR=$(readlink /Volumes/Genome_Work/genomeclaw/derived/CURRENT)
+   duckdb /Volumes/Genome_Work/genomeclaw/derived/$RUN_DIR/variants.duckdb <<'SQL'
+   SELECT
+     COUNT(*) AS total,
+     COUNT(clinvar_classification) AS clinvar,
+     COUNT(dbsnp_rsid) AS dbsnp,
+     COUNT(gnomad_af_popmax) AS gnomad,
+     COUNT(mane_select_transcript) AS mane,
+     COUNT(hgvsc) AS hgvsc,
+     COUNT(alphamissense_score) AS am,
+     COUNT(gene_loeuf) AS loeuf,
+     COUNT(CASE WHEN loftee_lof = 'HC' THEN 1 END) AS loftee_hc
+   FROM variants;
+   SQL
+   ```
+   Expected: `total ~4.87M minus the VEP-skipped decoy count` (which is what item 2 below makes visible); `clinvar ~42,885`; `loftee_hc = 0` (known gap, item 3 fixes); everything else populated.
+
+### Day-1 (TDD slices — Claude implements)
+
+2. **Decoy-variant provenance fix** *(filed at [docs/plans/active/decoy-variant-provenance.md](../decoy-variant-provenance.md))*. ~1h. Captures VEP's per-run skip count + per-chrom breakdown in the `vep` provenance step's `params` block. Makes the `normalize → materialize` row-count delta auditable. Doesn't change variants-table contents. Validated when the next real-data run lands.
+
+3. **LOFTEE Dockerfile fix.** ~30 min TDD slice (one Dockerfile line + one test extension). Add `perl-bio-bigfile` to the VEP micromamba env. Extend [test_vep_loftee_plugin.py](../../../../packages/toolkit/tests/integration/test_vep_loftee_plugin.py) to also `perl -c /opt/vep/.vep/Plugins/gerp_dist.pl` — that's the helper LoF.pm transitively loads; if its compile fails (today's case), the existing `perl -c LoF.pm` test passes anyway and misses the bug. Rebuild image; re-run real-data smoke produces non-NULL `loftee_lof` on expected variants. Filed inline in [phase-4-completion.md § W5](phases/phase-4-completion.md).
+
+### Day-2 (Phase 4 close paperwork — Claude implements)
+
+4. **Update [development-plan.md](development-plan.md) Progress Tracking** — flip Phase 4D + Phase 4 overall to Complete once items 2 + 3 land. Note 4h08m58s real-data outcome in the row. Phase-4A interim row noted as superseded by 4C.3.
+
+5. **Retrofit work-notes.md with a 2026-05-13 → 2026-05-15 session block** covering:
+   - 1f58aeb (W4 dbSNP rename + per-chrom shard + per-shard caches; W7 ClinVar parity 42,885/42,885)
+   - 2fb3beb / fa72c51 / 4c72f5d (Phase 4E schema + CSQ parser + materialize-side coverage)
+   - 1f67bbc (Phase 4D foundation: VEP wrapper + orchestrator + image)
+   - dc1207e / a395521 / fd835fb (VEP cache + AlphaMissense + LOFTEE fetches; SpliceAI drop)
+   - 2026-05-13 thorough plan revision (SpliceAI removal, status truth-up, CLI rename)
+   - 2026-05-14 first VEP smoke incident chain: Kingston colima mount → Bio::Perl shim → --fasta wiring + provenance → annotate-shard-resilience Phase A (split-scratch) → host-mount-lifecycle three slices
+   - 2026-05-15 second smoke success (4h08m58s) + decoy-variant-provenance follow-up filed + LOFTEE gerp_dist.pl follow-up filed
+   - The decision against pre-filtering decoy variants upstream (opinion-laden vs. opinion-free provenance trail).
+
+6. **Tick [phase-4.md](phases/phase-4.md) Completion Criteria** — every box closed except the two follow-ups in items 2 + 3 which become "tracked under [decoy-variant-provenance.md](../decoy-variant-provenance.md)" and "tracked under [phase-4-completion.md W5](phases/phase-4-completion.md)".
+
+7. **Author [phases/phase-5.md](phases/phase-5.md) skeleton** — host service (`genomeclaw-service` FastAPI app on `127.0.0.1:8643`) + plugin migration from `registerCommand` to `registerTool` + sandbox image build. The five plugin tools (`genomeclaw_status` / `_findings` / `_variant` / `_evidence` / `_gene`) land in 5; the sixth (`genomeclaw_pgs`) in Phase 6 with PRS. First live `INV-D002` (no bio binaries in sandbox image) + `INV-P002` (minimal-sufficient JSON shape) enforcement gates land here.
+
+8. **Move [phases/phase-4c4-annotation-correctness.md](phases/phase-4c4-annotation-correctness.md) into [docs/plans/completed/](../../completed/)** (status now "effectively closed" — W7 parity passed; W5 / W6 deferred or obsolete).
+
+### Day-2+ (Phase 5 + parked enhancements)
+
+9. **Phase 5 kickoff** — once 4 closes, start the FastAPI host service. Spec already locked (spec.md AC2: endpoints `/v1/health`, `/v1/findings`, `/v1/findings/{id}`, `/v1/variants`, `/v1/variants/{key}`, `/v1/evidence/{ref}`, `/v1/provenance/{run-id}`, `/v1/gene/{symbol}`).
+
+### Parked (filed; not Phase-4-close-blocking)
+
+- **[Annotate-shard-resilience](../annotate-shard-resilience/) Phase B (per-shard vcfanno cache) + Phase C (`--skip-if-present` CLI)** — non-urgent after the 2026-05-15 smoke ran cleanly. Promote when the next transient costs hours.
+- **[Refs-integrity-hardening](../refs-integrity-hardening/)** — parked since 2026-05-13; no trigger.
+- **[Phase 4c4 W5 + W6](../../completed/phase-4c4-annotation-correctness.md)** — pre-flight annotation schema validator + vcfanno stderr discipline. Non-blocking; verify W6 is genuinely obsolete (per-chrom shard pattern should have eliminated the bix.go noise; confirm against 2026-05-15 smoke's stderr).
+
+### Suggested order for tomorrow
+
+Start with item **1** (your verify), then I do items **2 → 3 → 4 → 5 → 6 → 7 → 8** in sequence (one TDD slice + a paperwork sweep). Total active: ~3-4 hours; Phase 4 closed end-of-day; Phase 5 begins.
+
+---
+
+## 2026-05-17 — Phase 6 Slice E v2 — sub-slice E.1 shipped
+
+**Scope completed**: agent-driven PRS *schema + 4 host endpoints + 4 plugin tools*. Pre-implementation pivot from the v1.5 static-three-trait panel to the agent-driven architecture (see [agent-driven PRS report](../../../reports/agent-driven-prs-computation.md) + Q8 v1.6 amendment in [spec.md](spec.md)). E.1 ships the host-side surface that subsequent sub-slices (E.2 + E.3) populate.
+
+**TDD walk-through**:
+
+1. **RED**: 15 new host tests + 5 plugin vitest tests against not-yet-created modules. Initial run showed `ModuleNotFoundError: No module named 'genomeclaw_toolkit.service.pgs_compute_orchestrator'` (3 of 3 test files) — RED-for-the-right-reason confirmed.
+2. **GREEN**: 5 new Pydantic models in [schemas/pgs.py](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/pgs.py) + `_PGS_SCORES_DDL` in [prep/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/store.py) + [service/pgs_compute_orchestrator.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/pgs_compute_orchestrator.py) (stubbed worker; full orchestration in E.3) + `query_pgs_computed_list` / `query_pgs_computed` helpers in [service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py) + 4 new FastAPI routes in [service/app.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/app.py) + 4 new TypeBox-schema'd tools in [packages/nemoclaw-plugin/src/index.ts](../../../../packages/nemoclaw-plugin/src/index.ts).
+3. **Two minor RED debugging cycles** worth recording:
+   - DDL test used DuckDB's `PRAGMA table_info` with the wrong column index — `row[0]` returns the column-id (numeric), `row[1]` is the column name, `row[2]` is the type. Fixed by re-indexing.
+   - DDL test expected `DOUBLE` but the initial DDL used `REAL` (DuckDB normalises to `FLOAT`). Decided `DOUBLE` is the right type for `percentile_in_user_ancestry` + `raw_score` (8-byte precision matches the Pydantic `float`); updated DDL.
+4. **Two pre-existing invariant-test updates** required to reflect the v1.6 surface widening (not regressions; legitimate architecture changes):
+   - [test_invP002_policy_preset_shape.py](../../../../packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py): `_ALLOWED_V0_PATHS` extended with the 4 new `/v1/pgs/*` paths. The `allows_only_get_methods` test became `restricts_post_to_documented_paths` since `/v1/pgs/compute` is the first allow-listed POST in v0 (the agent-triggered PRS compute enqueue).
+   - [test_invP001_plugin_default_egress.py](../../../../packages/toolkit/tests/privacy/test_invP001_plugin_default_egress.py): the `fetch(` regex matcher now ignores JSDoc/`//` comment lines (the new docstring for the consolidated `callHostService` includes the literal text *"one `fetch(...)` call site"* which the bare-substring matcher false-counted as a second call site).
+5. **One real plugin-side refactor**: `genomeclaw_pgs_compute` is the first POST tool in the plugin. Initial implementation added a second `postHostService` helper alongside the existing `callHostService` (GET-only), which broke the INV-P001 single-fetch-call-site invariant. **Refactored** to consolidate both methods into one `callHostService(cfg, path, query?, body?)` that dispatches GET/POST off the presence of `body`; `safePost` now just wraps `callHostService` with `body !== undefined`. One actual `fetch(...)` call site survives, as the invariant requires.
+
+**Test result**:
+
+```
+$ uv run pytest -q
+585 passed, 99 skipped in 6.68s              # +15 vs the 570 baseline
+
+$ cd packages/nemoclaw-plugin && npm test
+Test Files  1 passed (1)
+     Tests  21 passed (21)                   # +5 vs the 16 baseline
+```
+
+**Files added this slice**:
+- [packages/toolkit/src/genomeclaw_toolkit/schemas/pgs.py](../../../../packages/toolkit/src/genomeclaw_toolkit/schemas/pgs.py) (133 lines; 5 Pydantic models + error envelope)
+- [packages/toolkit/src/genomeclaw_toolkit/service/pgs_compute_orchestrator.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/pgs_compute_orchestrator.py) (143 lines; SQLite schema + enqueue/status helpers; full worker loop lands in E.3)
+- [packages/toolkit/tests/integration/test_pgs_model.py](../../../../packages/toolkit/tests/integration/test_pgs_model.py) (3 tests)
+- [packages/toolkit/tests/integration/test_pgs_scores_ddl.py](../../../../packages/toolkit/tests/integration/test_pgs_scores_ddl.py) (3 tests)
+- [packages/toolkit/tests/integration/test_service_pgs.py](../../../../packages/toolkit/tests/integration/test_service_pgs.py) (9 tests)
+
+**Files modified this slice**:
+- [packages/toolkit/src/genomeclaw_toolkit/prep/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/store.py) — added `_PGS_SCORES_DDL`; wired into `create_store()`.
+- [packages/toolkit/src/genomeclaw_toolkit/service/store.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/store.py) — added 2 query helpers.
+- [packages/toolkit/src/genomeclaw_toolkit/service/app.py](../../../../packages/toolkit/src/genomeclaw_toolkit/service/app.py) — 4 new FastAPI routes (`/v1/pgs/computed`, `/v1/pgs/computed/{pgs_id}`, `POST /v1/pgs/compute`, `/v1/pgs/compute/{task_id}`).
+- [packages/nemoclaw-plugin/src/index.ts](../../../../packages/nemoclaw-plugin/src/index.ts) — registered 4 new `genomeclaw_pgs_*` tools; consolidated `callHostService` to handle GET + POST; log line `(5 tools)` → `(9 tools)`; dropped stale `gene_note:` / `topic:` examples from `genomeclaw_evidence` description.
+- [packages/nemoclaw-plugin/tests/index.test.ts](../../../../packages/nemoclaw-plugin/tests/index.test.ts) — bumped existing 5-tool assertion to 9; added 5 new vitest tests for the PGS tools.
+- [packages/nemoclaw-plugin/policy-preset.yaml](../../../../packages/nemoclaw-plugin/policy-preset.yaml) — added 4 `/v1/pgs/*` paths; `POST /v1/pgs/compute` is the first allow-listed POST in v0.
+- [packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py](../../../../packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py) — extended `_ALLOWED_V0_PATHS`; replaced GET-only assertion with POST-allow-list assertion.
+- [packages/toolkit/tests/privacy/test_invP001_plugin_default_egress.py](../../../../packages/toolkit/tests/privacy/test_invP001_plugin_default_egress.py) — `fetch(` matcher tightened to skip JSDoc lines.
+
+**Open follow-ups for Slice E.2**:
+- `pgsc_calc` wrapper + `pipeline pgs-compute` CLI subcommand.
+- Real-data smoke against the project owner's Nebula VCF (manual; needs `pgsc_calc` + Nextflow + 1000G/HGDP ancestry data installed host-side).
+
+**State at end of Slice E.1**: the agent-driven PRS surface exists end-to-end at the schema + endpoint + tool layer. An `enqueue` request lands in `pgs_compute_tasks.sqlite` with `status=queued` and stays there (the worker loop lands in E.3); the agent-facing tool surface is fully wired through the plugin → policy preset → host service → derived store. Real `pgsc_calc` invocation comes in E.2.
+
+---
+
+## 2026-05-17 (continued) — Phase 6 Slice E v2 — sub-slice E.2 shipped
+
+**Scope completed**: the `pgsc_calc` wrapper (`prep/pgs.py`) + the `pipeline pgs-compute` CLI subcommand. The CLI is the manual-invocation entry point + the test scaffolding for E.3's async orchestrator; both call the same `compute_pgs(...)` function. On a successful compute, the CLI also INSERTs a matching `clinical-non-actionable` findings row so the agent's `genomeclaw_findings` filter surfaces the new PRS without a second materialize step.
+
+**TDD walk-through**:
+
+1. **RED**: 8 new tests across 2 files (5 wrapper tests in [test_pgsc_calc_wrapper.py](../../../../packages/toolkit/tests/integration/test_pgsc_calc_wrapper.py) + 3 CLI tests in [test_cli_pipeline_pgs_compute.py](../../../../packages/toolkit/tests/integration/test_cli_pipeline_pgs_compute.py)). Initial RED run showed the documented `ModuleNotFoundError: No module named 'genomeclaw_toolkit.prep.pgs'`.
+2. **GREEN**: authored [prep/pgs.py](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/pgs.py) — `compute_pgs(*, vcf, pgs_id, reference_root, work_dir, agent_choice_rationale, requested_for_question, trait_label=None) -> PgsRow` with a typed `PgsRow` dataclass + `PgsReferenceMissingError` (clean install hint when 1000G/HGDP ancestry data is missing instead of a raw Nextflow stack trace). The wrapper subprocess-invokes `pgsc_calc --target <vcf> --target_build GRCh38 --pgs_id <id> --run_ancestry <ref/ancestry>` and parses the documented Nextflow output files (`score/aggregated_scores.txt` + `ancestry/aggregated_scores_norm.txt`). Authored the `pipeline pgs-compute` CLI subcommand wrapping `compute_pgs(...)` + `_stamp_pgs_row(...)` (INSERTs both the `pgs_scores` row and the matching `findings` row with INV-R001 provenance).
+3. **One real INV-A003 contract decision**: `--rationale` enforces `>= 50 chars` at the CLI surface (raises `UsageError` if shorter). This mirrors the plugin-side TypeBox `minLength: 50` from Slice E.1 and the host-service `PgsComputeRequest` model gate. Together they enforce INV-A003's "alternatives considered + why this one" contract at every layer that touches a `compute_pgs` invocation.
+
+**Test result**:
+
+```
+$ uv run pytest -q
+593 passed, 99 skipped in 6.70s              # +8 vs the 585 baseline
+```
+
+**Files added this slice**:
+- [packages/toolkit/src/genomeclaw_toolkit/prep/pgs.py](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/pgs.py) (215 lines; wrapper + dataclass + error + 2 private parsers)
+- [packages/toolkit/tests/integration/test_pgsc_calc_wrapper.py](../../../../packages/toolkit/tests/integration/test_pgsc_calc_wrapper.py) (5 tests)
+- [packages/toolkit/tests/integration/test_cli_pipeline_pgs_compute.py](../../../../packages/toolkit/tests/integration/test_cli_pipeline_pgs_compute.py) (3 tests)
+
+**Files modified this slice**:
+- [packages/toolkit/src/genomeclaw_toolkit/_cli/commands/pipeline.py](../../../../packages/toolkit/src/genomeclaw_toolkit/_cli/commands/pipeline.py) — added `_PgsComputePayload` + `_stamp_pgs_row()` + `pipeline pgs-compute` subcommand.
+
+**Real-data smoke (manual; deferred to the project owner)**:
+
+To exercise the wrapper against the real Nebula VCF, the host needs:
+1. Nextflow installed (`brew install nextflow` or per the Nextflow docs).
+2. `pgsc_calc` installed (`nextflow pull pgscatalog/pgsc_calc` — pulls a Docker-image-based pipeline).
+3. 1000G + HGDP ancestry reference data staged under `<reference_root>/ancestry/{1000g,hgdp}/` (requires extending `genomeclaw refs fetch` with a `pgs_catalog_ancestry` source — tracked for later, not blocking E.3).
+
+Once staged, the smoke invocation:
+
+```bash
+genomeclaw pipeline pgs-compute \
+  --pgs PGS000018 \
+  --vcf $NEBULA_VCF \
+  --reference-root $REFS \
+  --rationale 'Canonical CARDIoGRAMplusC4D + UK Biobank CAD PRS; best cross-ancestry calibration metadata. Considered PGS004696 but rejected for less validation.' \
+  --question 'manual smoke against my Nebula VCF' \
+  --work-dir $SCRATCH/pgs-work \
+  --run-dir /Volumes/Genome_Work/genomeclaw/derived/$RUN_ID \
+  --json
+duckdb $DERIVED/CURRENT/variants.duckdb "SELECT * FROM pgs_scores WHERE pgs_id='PGS000018'"
+duckdb $DERIVED/CURRENT/variants.duckdb "SELECT * FROM findings WHERE evidence_ref='pgs_catalog:PGS000018'"
+```
+
+**Open follow-ups for Slice E.3**:
+- The async orchestrator worker loop that drains `pgs_compute_tasks.sqlite` (the E.1-shipped stub just enqueues + sits at `queued`; E.3 makes a background worker actually call `compute_pgs` + transition to `done`).
+- The kill-switch (`pgs.compute_enabled false`) + concurrency cap (1 in-flight) enforcement.
+- The agent system prompt's PGS-compute flow paragraph (§4 Step 3/4) + the PRS-decline pattern (§9; INV-C001 v1.7 with the four criteria + two-named-reasons rule).
+- The sandbox image rebuild (`ars-phase-2e` or `phase-6e-v2`) + the `needs_sandbox` gates that verify it.
+- The live `live_llm` tests (Story 10 compute end-to-end + decline behavioural + decline rehydration).
+- Optional: extend `genomeclaw refs fetch` with a `pgs_catalog_ancestry` source for one-shot 1000G/HGDP installation.
+
+**State at end of Slice E.2**: the host-side compute path is fully implemented + tested at the wrapper + CLI layer with mocked `subprocess.run`. Real `pgsc_calc` invocation works in principle (the argv shape + output parsing are pinned by the 5 wrapper tests) but the end-to-end real-data smoke is deferred to a manual run against the project owner's Nebula VCF once the Nextflow + 1000G/HGDP install lands host-side. The agent-driven path's async orchestrator + decline pattern + system-prompt update are the E.3 deliverables.
