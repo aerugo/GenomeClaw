@@ -71,6 +71,22 @@ network_policies:
           - allow: { method: GET, path: "/v1/evidence/*" }
           # Provenance envelopes (run-id metadata)
           - allow: { method: GET, path: "/v1/provenance/*" }
+          # Gene-level summaries (per spec Q7) — landed Phase 5 Slice C.
+          # `/v1/gene/{symbol}` aggregates the variants + coverage_qc
+          # tables; the agent uses it for gene-context follow-ups.
+          - allow: { method: GET, path: "/v1/gene/*" }
+          # Agent-driven PRS layer (per spec Q8 v1.6, Phase 6 Slice E v2).
+          # Four endpoints keyed by PGS Catalog ID; compute is async +
+          # agent-triggered; rationale persists per INV-A003. Note that
+          # `/v1/pgs/compute` is the ONLY POST path the policy allows
+          # for the host service — it enqueues a host-side pgsc_calc
+          # task, not a write to the derived store. The host service
+          # validates the PgsComputeRequest body (rationale minLength 50)
+          # so a malformed POST gets rejected with 422 at the route layer.
+          - allow: { method: GET, path: "/v1/pgs/computed" }
+          - allow: { method: GET, path: "/v1/pgs/computed/*" }
+          - allow: { method: POST, path: "/v1/pgs/compute" }
+          - allow: { method: GET, path: "/v1/pgs/compute/*" }
           # Capability manifest (what this host service exposes)
           - allow: { method: GET, path: "/v1/capabilities" }
     binaries:

@@ -6,6 +6,11 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
   "files": [
     "dist/",
     "openclaw.plugin.json",
@@ -20,7 +25,11 @@
   "engines": {
     "node": ">=22"
   },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }
