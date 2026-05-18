@@ -63,7 +63,19 @@ from genomeclaw_toolkit.prep.references import (
 if TYPE_CHECKING:
     from genomeclaw_toolkit._cli.context import AppContext
 
-_VALID_FETCH_SOURCES = ("clinvar", "grch38", "gnomad-exomes", "dbsnp")
+def _valid_fetch_sources() -> tuple[str, ...]:
+    """Source names known to the fetcher's ``_LAYOUTS`` registry.
+
+    Derived from the live registry rather than hardcoded so new sources
+    (Phase 4D added vep_cache + alphamissense + loftee + gnomad-constraint;
+    PRS Reference Bootstrap added pgs_catalog_ancestry) are automatically
+    accepted by ``refs fetch --source X``. Previously the hardcoded tuple
+    drifted out of sync and rejected legitimately-installable sources with
+    "Unknown source" usage errors.
+    """
+    from genomeclaw_toolkit.prep.fetch import _LAYOUTS
+
+    return tuple(sorted(_LAYOUTS.keys()))
 
 
 # ---------------------------------------------------------------------------
@@ -243,9 +255,9 @@ def refs_fetch(
             "--source and --release are required (or pass --all for the curated bundle).",
         )
 
-    if source not in _VALID_FETCH_SOURCES:
+    if source not in _valid_fetch_sources():
         raise UsageError(
-            f"Unknown source {source!r}; must be one of {list(_VALID_FETCH_SOURCES)}.",
+            f"Unknown source {source!r}; must be one of {list(_valid_fetch_sources())}.",
         )
 
     chrom_tuple: tuple[str, ...] | None = None

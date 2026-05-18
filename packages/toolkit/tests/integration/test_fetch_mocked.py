@@ -164,3 +164,242 @@ def test_fetch_requires_release(tmp_path: Path) -> None:
             reference_root=tmp_path,
             base_url="http://localhost:1",
         )
+
+
+def test_per_file_url_override_routes_to_alternate_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """In production (no ``base_url=`` injection), a file's ``url_override``
+    determines the wire URL; sibling files in the same source still use
+    the default ``base_url``.
+
+    Regression coverage for the LOFTEE GERP routing: the BigWig lives
+    on Ensembl FTP while the rest of LOFTEE's data stays on Broad's
+    personal mirror. The fix splits the fetch traffic across two hosts
+    inside one source.
+    """
+    from genomeclaw_toolkit.prep import fetch as fetch_mod
+    from genomeclaw_toolkit.prep.fetch import _FetchFile, _SourceLayout, fetch
+
+    base_calls: list[str] = []
+    override_calls: list[str] = []
+
+    def fake_stream(url: str, dest_path: Path, **_: object) -> tuple[str, int, int | None]:
+        target = override_calls if "/override/" in url else base_calls
+        target.append(url)
+        dest_path.write_bytes(b"")
+        return ("d41d8cd98f00b204e9800998ecf8427e", 0, 0)
+
+    monkeypatch.setattr(fetch_mod, "_stream_to_file", fake_stream)
+    monkeypatch.setitem(
+        fetch_mod._LAYOUTS,
+        "_synthetic_override",
+        _SourceLayout(
+            files=(
+                _FetchFile(
+                    relpath="/regular.bin",
+                    output_filename="regular.bin",
+                ),
+                _FetchFile(
+                    relpath="/unused.bin",
+                    output_filename="overridden.bin",
+                    url_override="https://override.example.com/override/data.bin",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setitem(
+        fetch_mod._DEFAULT_BASE_URLS,
+        "_synthetic_override",
+        "https://base.example.com",
+    )
+
+    fetch(
+        source="_synthetic_override",
+        reference_root=tmp_path,
+        release="v1",
+    )
+
+    assert base_calls == ["https://base.example.com/regular.bin"]
+    assert override_calls == ["https://override.example.com/override/data.bin"]
+
+
+def test_per_file_url_override_suppressed_when_base_url_injected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When a caller passes ``base_url=`` (test injection), the per-file
+    override is suppressed so the mocked HTTP server sees every request.
+    Without this, integration tests would silently hit the real Ensembl
+    host configured in a file's ``url_override``.
+    """
+    from genomeclaw_toolkit.prep import fetch as fetch_mod
+    from genomeclaw_toolkit.prep.fetch import _FetchFile, _SourceLayout, fetch
+
+    seen: list[str] = []
+
+    def fake_stream(url: str, dest_path: Path, **_: object) -> tuple[str, int, int | None]:
+        seen.append(url)
+        dest_path.write_bytes(b"")
+        return ("d41d8cd98f00b204e9800998ecf8427e", 0, 0)
+
+    monkeypatch.setattr(fetch_mod, "_stream_to_file", fake_stream)
+    monkeypatch.setitem(
+        fetch_mod._LAYOUTS,
+        "_synthetic_override",
+        _SourceLayout(
+            files=(
+                _FetchFile(
+                    relpath="/regular.bin",
+                    output_filename="regular.bin",
+                    url_override="https://elsewhere.example.com/should-not-be-hit",
+                ),
+            ),
+        ),
+    )
+
+    fetch(
+        source="_synthetic_override",
+        reference_root=tmp_path,
+        release="v1",
+        base_url="https://test.local",
+    )
+
+    assert seen == ["https://test.local/regular.bin"]
+
+
+def test_presence_marker_skips_refetch_when_canonical_deleted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A layout with ``presence_relpath`` skips re-fetch when the marker
+    exists, even when the canonical output file has been deleted by a
+    post-fetch hook.
+
+    Regression coverage for the vep_cache case: the post-fetch hook
+    extracts + deletes the 21 GB tarball. Before the marker was added,
+    ``fetch --all`` saw no ``vep_cache.tar.gz`` and re-downloaded the
+    whole source on every invocation.
+    """
+    from genomeclaw_toolkit.prep import fetch as fetch_mod
+    from genomeclaw_toolkit.prep.fetch import (
+        VersionAlreadyExists,
+        _FetchFile,
+        _SourceLayout,
+        fetch,
+    )
+
+    monkeypatch.setitem(
+        fetch_mod._LAYOUTS,
+        "_synthetic_marker",
+        _SourceLayout(
+            files=(
+                _FetchFile(
+                    relpath="/cache_{release_n}.tar.gz",
+                    output_filename="cache.tar.gz",
+                ),
+            ),
+            presence_relpath="extracted/{release_n}/info.txt",
+        ),
+    )
+    monkeypatch.setitem(
+        fetch_mod._DEFAULT_BASE_URLS,
+        "_synthetic_marker",
+        "https://base.example.com",
+    )
+
+    # Stage the post-fetch state: canonical tarball absent, marker present.
+    marker = tmp_path / "_synthetic_marker" / "v9" / "extracted" / "v9" / "info.txt"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("vep release info\n")
+
+    with pytest.raises(VersionAlreadyExists, match="post-fetch marker"):
+        fetch(
+            source="_synthetic_marker",
+            reference_root=tmp_path,
+            release="v9",
+        )
+
+
+def test_presence_marker_substitutes_release_placeholders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``presence_relpath`` honors ``{release_n}`` and ``{release}``
+    substitution, matching the templating already used by ``relpath`` /
+    ``output_filename`` / ``url_override``.
+
+    Without this, the vep_cache marker (which embeds the Ensembl release
+    in its on-disk path) would be statically wrong across releases.
+    """
+    from genomeclaw_toolkit.prep import fetch as fetch_mod
+    from genomeclaw_toolkit.prep.fetch import (
+        VersionAlreadyExists,
+        _FetchFile,
+        _SourceLayout,
+        fetch,
+    )
+
+    monkeypatch.setitem(
+        fetch_mod._LAYOUTS,
+        "_synthetic_marker_tmpl",
+        _SourceLayout(
+            files=(
+                _FetchFile(relpath="/x", output_filename="x.bin"),
+            ),
+            presence_relpath="release-{release_n}/marker",
+        ),
+    )
+    monkeypatch.setitem(
+        fetch_mod._DEFAULT_BASE_URLS,
+        "_synthetic_marker_tmpl",
+        "https://example.com",
+    )
+
+    marker = tmp_path / "_synthetic_marker_tmpl" / "42" / "release-42" / "marker"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+
+    with pytest.raises(VersionAlreadyExists):
+        fetch(
+            source="_synthetic_marker_tmpl",
+            reference_root=tmp_path,
+            release="42",
+        )
+
+
+def test_vep_cache_layout_declares_presence_marker() -> None:
+    """``vep_cache`` must declare a ``presence_relpath`` — its post-fetch
+    hook intentionally deletes the canonical tarball, so the default
+    existence check is structurally insufficient for this source.
+    """
+    from genomeclaw_toolkit.prep.fetch import _LAYOUTS
+
+    vep = _LAYOUTS["vep_cache"]
+    assert vep.presence_relpath is not None
+    assert "{release_n}" in vep.presence_relpath
+    assert "homo_sapiens" in vep.presence_relpath
+
+
+def test_loftee_layout_routes_gerp_to_ensembl() -> None:
+    """The LOFTEE source's GERP BigWig must carry an Ensembl-FTP override.
+
+    The four other files (human_ancestor trio + loftee.sql.gz) stay on
+    the default Broad personal mirror — only the 12.6 GB BigWig is
+    rerouted to bypass Broad's per-IP throttle.
+    """
+    from genomeclaw_toolkit.prep.fetch import _LAYOUTS
+
+    by_name = {f.output_filename: f for f in _LAYOUTS["loftee"].files}
+
+    gerp = by_name["gerp_conservation_scores.homo_sapiens.GRCh38.bw"]
+    assert gerp.url_override is not None
+    assert gerp.url_override.startswith("https://ftp.ensembl.org/")
+    assert "92_mammals.gerp_conservation_score" in gerp.url_override
+
+    for name in (
+        "human_ancestor.fa.gz",
+        "human_ancestor.fa.gz.fai",
+        "human_ancestor.fa.gz.gzi",
+        "loftee.sql.gz",
+    ):
+        assert by_name[name].url_override is None, (
+            f"{name} should fall through to Broad personal mirror"
+        )

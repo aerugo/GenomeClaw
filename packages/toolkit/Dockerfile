@@ -38,6 +38,15 @@ ARG LOFTEE_REF=grch38
 # ``--dir_plugins`` flag resolves these in /opt/vep/.vep/Plugins/.
 ARG VEP_PLUGINS_REPO=https://github.com/Ensembl/VEP_plugins.git
 ARG VEP_PLUGINS_REF=release/114
+# PRS Runtime Bootstrap Phase 1 — Nextflow + JRE 17 + mamba + pre-warmed
+# pgsc_calc source. Pgsc_calc requires Nextflow ≥ 23.10.0; we pin to a
+# current stable LTS. JRE 17 is Nextflow's minimum. Mamba is required by
+# `pgsc_calc -profile conda` for per-process env materialisation. Single
+# source of truth for pins: src/genomeclaw_toolkit/prep/_versions.py
+# ``PRS_RUNTIME_VERSIONS``.
+ARG NEXTFLOW_VERSION=24.10.0
+ARG PGSC_CALC_VERSION=v2.2.0
+ARG JRE_VERSION=17
 
 # ---------------------------------------------------------------------------
 # Stage 1 — bioinformatics binaries via bioconda.
@@ -129,6 +138,76 @@ RUN mkdir -p /opt/vep/.vep/Plugins \
     && rm -rf /tmp/loftee /tmp/vep_plugins /opt/vep/.vep/Plugins/.git
 
 # ---------------------------------------------------------------------------
+# Stage prs-runtime — Nextflow + JRE 17 + mamba in an isolated micromamba env
+# (/opt/conda-prs), plus the pre-warmed `pgsc_calc` pipeline source at
+# /opt/pgsc_calc/. Same isolation pattern as Stage `vep` — keeps the prs
+# runtime layer independently cacheable and avoids polluting /opt/conda
+# with openjdk/mamba/nextflow (the bio env's bcftools/samtools/htslib stays
+# untouched on a Nextflow pin bump).
+#
+# Why these three pieces:
+# - Nextflow: the orchestrator for pgsc_calc (Nextflow DSL2 pipeline).
+# - JRE 17: Nextflow's runtime; required by Nextflow ≥ 24.x.
+# - mamba: shelled out to by `pgsc_calc -profile conda` to materialise
+#   per-process scoring envs (plink2, plink, R + Bioconductor) at first
+#   user run into $NXF_CONDA_CACHEDIR on the bind-mounted reference
+#   volume. The plink/R/Bioconductor deps are NOT baked into the image —
+#   they materialise once + cache forever on the volume, governed by
+#   `INV-R001` (rebuildable from `Dockerfile + pinned pgsc_calc release`).
+#
+# Pre-warming: `nextflow pull pgscatalog/pgsc_calc -r <pin>` runs at image-
+# build time so the pipeline source is on-disk at /opt/pgsc_calc/, making
+# the first user invocation offline-capable and the image deterministic
+# from its hash.
+# ---------------------------------------------------------------------------
+FROM mambaorg/micromamba:${MAMBA_TAG} AS prs-runtime
+ARG NEXTFLOW_VERSION
+ARG PGSC_CALC_VERSION
+ARG JRE_VERSION
+USER root
+# JDK 17 + mamba into an isolated env at /opt/conda-prs. Same pattern as
+# /opt/conda-vep (Stage vep) — avoids pinning openjdk/mamba into the bio
+# env where it could conflict with future bcftools/htslib upgrades.
+RUN micromamba create -y -p /opt/conda-prs \
+        -c conda-forge \
+        "openjdk=${JRE_VERSION}" \
+        "mamba" \
+    && micromamba clean -a -y
+
+# PATH + JAVA_HOME updates BEFORE the Nextflow installer + pull RUNs.
+# The get.nextflow.io install script verifies a `java` binary is reachable
+# at install time and aborts with rc=1 if it isn't, even before downloading
+# the JAR (verified empirically 2026-05-17 — failed first build with
+# PATH update positioned after the install).
+ENV JAVA_HOME=/opt/conda-prs
+ENV PATH="/opt/conda-prs/bin:${PATH}"
+ENV NXF_VER=${NEXTFLOW_VERSION}
+
+# Nextflow CLI via the official installer. Pinned via NXF_VER env so the
+# installer fetches the exact version. The resulting `nextflow` binary
+# lands in /opt/conda-prs/bin so it's discoverable on PATH alongside JDK
+# + mamba from the same env.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://get.nextflow.io | bash \
+    && mv nextflow /opt/conda-prs/bin/nextflow \
+    && chmod +x /opt/conda-prs/bin/nextflow
+
+# Pre-warm BOTH the Nextflow framework JAR + the pgsc_calc pipeline assets.
+# NXF_HOME points at the canonical /opt/nextflow bake-in path so the layout
+# becomes /opt/nextflow/{framework,assets}/. The same dir surfaces as
+# /opt/pgsc_calc (canonical bake-in path probed by `host doctor`'s
+# prs_runtime_ready check). `chmod a+rwX` makes the cache usable by the
+# non-root genomeclaw user at runtime — Nextflow writes lock files +
+# session metadata in $NXF_HOME during a run, so the cache cannot be
+# read-only without an entrypoint-side state-dir indirection.
+ENV NXF_HOME=/opt/nextflow
+RUN nextflow pull pgscatalog/pgsc_calc -r ${PGSC_CALC_VERSION} \
+    && cp -r ${NXF_HOME}/assets/pgscatalog/pgsc_calc /opt/pgsc_calc \
+    && chmod -R a+rwX /opt/nextflow /opt/pgsc_calc
+
+# ---------------------------------------------------------------------------
 # Stage 2 — Python toolkit installed into a uv-managed venv.
 # ---------------------------------------------------------------------------
 FROM ghcr.io/astral-sh/uv:${UV_TAG} AS uv-bin
@@ -168,6 +247,35 @@ RUN apt-get update \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
+# Docker CLI for DooD (Docker-out-of-Docker) — required by `pgsc_calc
+# -profile docker`. Real-data smoke 2026-05-17 surfaced that pgsc_calc
+# v2.2.0's conda env definitions pin ``plink2 2.0a5.10`` which is
+# unavailable on linux-aarch64 (conda-forge ships it only for linux-64).
+# The conda/mamba profiles fail with "Could not solve for environment
+# specs" on arm64 hosts. The `-profile docker` path uses pgscatalog/*
+# pre-baked images (multi-arch including arm64) and skips conda env
+# materialisation entirely — much faster + works on arm64.
+#
+# Trade-off vs the spec's image-or-volume boundary: the container needs
+# the host Docker socket bind-mounted (`-v /var/run/docker.sock:/var/run/
+# docker.sock`) so the nested `docker run` calls spawn sibling containers
+# via the host's Docker daemon. For the single-user PoC this is
+# acceptable; architectural purity (Singularity profile, or arm64-
+# friendly conda envs in a future pgsc_calc release) is a follow-up.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && . /etc/os-release \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+        | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
+    && rm -rf /var/lib/apt/lists/*
+
 # Bioinformatics binaries from the micromamba env.
 COPY --from=bio /opt/conda /opt/conda
 
@@ -181,15 +289,34 @@ COPY --from=vep /opt/conda-vep /opt/conda-vep
 # bind-mounted reference/vep_cache/Plugins/ volume per Q3.
 COPY --from=vep-plugins /opt/vep /opt/vep
 
+# PRS runtime (Stage prs-runtime): nextflow + JRE 17 + mamba isolated at
+# /opt/conda-prs/ + the Nextflow framework + pgsc_calc assets cache at
+# /opt/nextflow/ + the canonical pgsc_calc pipeline-source marker at
+# /opt/pgsc_calc/. The conda env is isolated for the same reason as
+# /opt/conda-vep — it pins openjdk which we don't want pinned in /opt/conda
+# alongside the bio binaries. /opt/nextflow is set as the runtime NXF_HOME
+# default below so the launcher finds the pre-warmed JAR + assets without
+# a first-run download tax.
+COPY --from=prs-runtime /opt/conda-prs /opt/conda-prs
+COPY --from=prs-runtime /opt/nextflow /opt/nextflow
+COPY --from=prs-runtime /opt/pgsc_calc /opt/pgsc_calc
+
+# Default NXF_HOME points at the pre-warmed cache. The shim can override
+# via `-e NXF_HOME=/mnt/genomeclaw/reference/nextflow-cache` to share the
+# cache across container restarts on the bind-mounted reference volume.
+ENV NXF_HOME=/opt/nextflow
+
 # Python toolkit venv from the uv build.
 COPY --from=pybuild /opt/genomeclaw/toolkit /opt/genomeclaw/toolkit
 
 # Put everything on PATH; toolkit venv first so ``genomeclaw`` resolves
 # there. /opt/conda/bin is next so the project-pinned bcftools /
 # mosdepth / samtools / htslib / vcfanno take priority over VEP's
-# bundled versions. /opt/conda-vep/bin is last so ``vep`` resolves
-# but doesn't shadow the rest.
-ENV PATH="/opt/genomeclaw/toolkit/.venv/bin:/opt/conda/bin:/opt/conda-vep/bin:${PATH}"
+# bundled versions. /opt/conda-prs/bin carries nextflow / java / mamba —
+# placed before /opt/conda-vep/bin so `mamba` from prs resolves before
+# any (transitive) mamba VEP might pull in. /opt/conda-vep/bin is last
+# so ``vep`` resolves but doesn't shadow the rest.
+ENV PATH="/opt/genomeclaw/toolkit/.venv/bin:/opt/conda/bin:/opt/conda-prs/bin:/opt/conda-vep/bin:${PATH}"
 
 # VEP's perl interpreter (/opt/conda-vep/bin/perl) has its @INC default
 # pointing at /opt/conda/lib/perl5/... (the project-pinned env's perl
@@ -213,7 +340,8 @@ RUN mkdir -p /mnt/genomeclaw/raw /mnt/genomeclaw/reference \
 RUN groupadd --system --gid 1000 genomeclaw \
     && useradd --system --uid 1000 --gid genomeclaw --home-dir /home/genomeclaw \
         --create-home --shell /usr/sbin/nologin genomeclaw \
-    && chown -R genomeclaw:genomeclaw /mnt/genomeclaw
+    && mkdir -p /work \
+    && chown -R genomeclaw:genomeclaw /mnt/genomeclaw /work
 
 USER genomeclaw
 WORKDIR /work

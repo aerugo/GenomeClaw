@@ -13,7 +13,7 @@ discipline means the existing ``doctor()`` tests stay valid.
 
 from __future__ import annotations
 
-from pathlib import Path  # noqa: TC003 — used at runtime in Typer option defaults
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 import typer
@@ -189,6 +189,12 @@ def host_doctor(
     when a precondition fails (no canonical layout — run setup first).
     Missing reference data / no staged sample / no derived runs are
     reported but do not change the exit code.
+
+    Also surfaces **stale colima mounts** — entries in ``~/.colima/default/colima.yaml``
+    that point at drives not currently plugged in. These cause
+    ``colima start`` to fail with ``mkdir … permission denied``; doctor
+    warns before that happens and includes a one-line fix (plug in the
+    drive, or run ``genomeclaw host eject <drive>`` to remove the entry).
 
     ``--watch`` refreshes the rendered diagnostic every 2 seconds.
     Suppressed in ``--json`` mode (agents poll the one-shot form on
@@ -433,7 +439,16 @@ def host_eject(
         ),
     ] = False,
 ) -> None:
-    """Stop colima and ``diskutil eject`` the external drive.
+    """Stop colima, remove the drive's colima mount entry, and ``diskutil eject``.
+
+    Three steps in order:
+
+    1. ``colima stop`` so no container is reading the drive.
+    2. Remove the drive's entry from ``~/.colima/default/colima.yaml``
+       (with a timestamped backup). Without this, the next ``colima
+       start`` after the drive is unplugged fails with
+       ``mkdir /Volumes/<drive>: permission denied``.
+    3. ``diskutil eject`` the drive.
 
     The eject prompt asks the user to type the drive's mount-point
     basename (e.g. ``Genome_Work`` for ``/Volumes/Genome_Work``) — short
@@ -471,6 +486,53 @@ def host_eject(
         payload=_HostEjectPayload(drive=drive, force_used=force, exit_code=rc),
         rich_renderer=lambda _p: None,  # eject_impl already prints its summary
     )
+
+
+@app.command("service")
+def host_service(
+    typer_ctx: typer.Context,  # noqa: ARG001 — kept for ctx parity with other commands.
+    derived_root: Annotated[
+        Path,
+        typer.Option("--derived-root", help="Derived root containing the CURRENT symlink."),
+    ] = Path("/mnt/genomeclaw/derived"),
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            help=(
+                "Bind address. Defaults to loopback so the service is only "
+                "reachable from the host (Phase 5 sandbox reaches it via "
+                "OpenShell's L7 proxy on host.openshell.internal)."
+            ),
+        ),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", help="Bind port."),
+    ] = 8643,
+) -> None:
+    """Launch the read-only host service over the active derived run.
+
+    Binds to ``127.0.0.1:8643`` by default (per [spec.md AC2](../spec.md)).
+    The service reads ``<derived-root>/CURRENT`` at startup; send the
+    process ``SIGHUP`` to re-resolve after a new pipeline run completes.
+
+    The service is read-only: every endpoint is a GET. ``INV-D002`` keeps
+    raw genomic artifacts host-side; the sandbox reaches this surface via
+    OpenShell's L7 proxy with a policy preset that allows only the
+    documented v0 endpoints.
+
+    The earlier ``--reference-dir`` flag (Phase 6 Slice B) was removed in
+    agent-research-and-synthesis Phase 1 — the host service no longer
+    resolves curated-notes evidence kinds. Lifestyle calibration moved to
+    the agent's research-and-synthesis pattern (memory + reasoned
+    research at max reasoning per ``INV-A002``).
+    """
+    import uvicorn
+
+    from genomeclaw_toolkit.service.app import build_app
+
+    uvicorn.run(build_app(derived_root=derived_root), host=host, port=port)
 
 
 __all__ = ["DoctorPayload", "app"]

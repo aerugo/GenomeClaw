@@ -55,10 +55,17 @@ release = "v1.0"
 
 # Phase 4D — LOFTEE data (human_ancestor.fa.gz + indices, plus the
 # optional gerp_conservation_scores.bw + loftee.sql.gz for finer-
-# grained loftee_filter values). ~1 GB total. The LOFTEE plugin
-# **code** ships in the toolkit Docker image; only the data is
+# grained loftee_filter values). ~13 GB total with GERP. The LOFTEE
+# plugin **code** ships in the toolkit Docker image; only the data is
 # fetched here. Without this, the LoF plugin runs but emits NULL for
 # ``loftee_lof`` on every variant.
+#
+# Mirror routing: four files come from Broad's per-IP-throttled
+# personal mirror (~1 GB combined, ~30 min on residential); the 12.6
+# GB GERP BigWig is rerouted to Ensembl FTP release-115's 92_mammals
+# alignment to bypass the throttle (no Broad mirror exists at GCS-
+# class bandwidth for this file). See ``_LAYOUTS["loftee"]`` in
+# ``prep/fetch.py`` for the per-file routing.
 [[sources]]
 source = "loftee"
 release = "v1.0"
@@ -72,3 +79,16 @@ release = "v1.0"
 [[sources]]
 source = "gnomad-constraint"
 release = "v4.1"
+
+# PRS Reference Bootstrap — PGS Catalog continuous-ancestry reference
+# bundle (1000G + HGDP genotype panels). Required by `pgsc_calc
+# --run_ancestry` for ancestry calibration of any PRS the agent
+# surfaces (`INV-C001` v1.7 mandates ancestry-calibrated PRS or
+# decline). ~5-7 GB `.tar.zst` from `ftp.ebi.ac.uk`; extracts to
+# ~50-60 GB into `reference/pgs_catalog_ancestry/v1/{1000g,hgdp}/`.
+# The release tag here is the PGS Catalog reference-bundle version
+# (not a pgsc_calc pipeline version) — bump when PGS Catalog re-cuts
+# the bundle.
+[[sources]]
+source = "pgs_catalog_ancestry"
+release = "v1"

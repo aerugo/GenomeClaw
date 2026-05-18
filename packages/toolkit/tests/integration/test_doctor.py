@@ -294,3 +294,411 @@ class _StubRunner:
         key = tuple(cmd)
         self.calls.append(key)
         return self.responses.get(key, (0, "", ""))
+
+
+# ---------------------------------------------------------------------------
+# PRS Reference Bootstrap Phase 2 — ancestry_ready readiness gate.
+#
+# `host doctor` surfaces a new informational `ancestry_ready` section that
+# probes the canonical post-fetch layout under
+# `reference/pgs_catalog_ancestry/v1/{1000g,hgdp}/`. Per INV-C001 v1.7 a
+# partial fetch (one of two subtrees) must be flagged explicitly — silent
+# degradation of ancestry calibration would let PRS findings ship that
+# the Slice E.3 PRS-decline pattern cannot defend.
+#
+# `ancestry_ready` is informational, matching the `references_section`
+# pattern: missing reference data is "what to do next", not corrupted
+# state, so it does NOT change the doctor exit code.
+# ---------------------------------------------------------------------------
+
+
+def _stage_canonical_ancestry_layout(reference_root: Path, *, release: str = "v1") -> Path:
+    """Stage the canonical post-fetch ancestry layout the doctor probe expects.
+
+    Verified upstream layout (2026-05-17 real-data smoke against PGS Catalog
+    v1 bundle): gnomAD-merged 1000G + HGDP callset extracts FLAT into the
+    release dir — combined files keyed by reference build, no per-
+    population subdirs.
+    """
+    ancestry_dir = reference_root / "pgs_catalog_ancestry" / release
+    ancestry_dir.mkdir(parents=True)
+    (ancestry_dir / "GRCh38_HGDP+1kGP_ALL.pgen").write_bytes(b"data")
+    (ancestry_dir / "GRCh38_HGDP+1kGP_ALL.pvar.zst").write_bytes(b"data")
+    (ancestry_dir / "GRCh38_HGDP+1kGP_ALL.psam").write_bytes(b"data")
+    return ancestry_dir
+
+
+def test_doctor_reports_ancestry_ready_when_canonical_layout_staged(tmp_path: Path) -> None:
+    """Canonical `pgs_catalog_ancestry/v1/{1000g,hgdp}/` → status='ready'."""
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    ancestry_dir = _stage_canonical_ancestry_layout(layout["reference"])
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0
+    assert "ancestry_ready" in report
+    ar = report["ancestry_ready"]
+    assert ar["status"] == "ready", f"expected ready, got {ar}"
+    assert ar["path"] == str(ancestry_dir)
+
+
+def test_doctor_reports_ancestry_partial_invC001_when_some_files_present(
+    tmp_path: Path,
+) -> None:
+    """Some required files present, some missing → status='partial' + names which.
+
+    INV-C001 v1.7: ancestry calibration requires the full gnomAD-merged
+    1000G + HGDP callset (combined files). A partial fetch — say the
+    network died mid-extract leaving a truncated tree — must surface
+    explicitly so the user (or the Slice E.3 orchestrator) sees the gap
+    before invoking compute. Exit code stays 0 because reference-data
+    state is "what to do next", not corrupted state.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    ancestry_dir = layout["reference"] / "pgs_catalog_ancestry" / "v1"
+    ancestry_dir.mkdir(parents=True)
+    # Stage just the .pgen — the .pvar.zst + .psam are missing.
+    (ancestry_dir / "GRCh38_HGDP+1kGP_ALL.pgen").write_bytes(b"data")
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0, "ancestry partial state must not flip the exit code"
+    ar = report["ancestry_ready"]
+    assert ar["status"] == "partial", f"expected partial, got {ar}"
+    assert "GRCh38_HGDP+1kGP_ALL.pgen" in ar["present_files"]
+    assert "GRCh38_HGDP+1kGP_ALL.pvar.zst" in ar["missing_files"]
+    assert "GRCh38_HGDP+1kGP_ALL.psam" in ar["missing_files"]
+    assert "fix" in ar and "pgs_catalog_ancestry" in ar["fix"]
+
+
+def test_doctor_reports_ancestry_missing_with_install_hint(tmp_path: Path) -> None:
+    """No `pgs_catalog_ancestry/` dir → status='missing' + actionable fix string."""
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    # reference/ is present but empty — no pgs_catalog_ancestry subtree at all.
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0, "missing ancestry data is informational, not a hard fail"
+    ar = report["ancestry_ready"]
+    assert ar["status"] == "missing", f"expected missing, got {ar}"
+    assert "genomeclaw refs fetch --source pgs_catalog_ancestry" in ar["fix"]
+
+
+# ---------------------------------------------------------------------------
+# PRS Runtime Bootstrap Phase 1 — prs_runtime_ready readiness gate.
+#
+# `host doctor` surfaces a new informational `prs_runtime_ready` section
+# probing the toolkit image's Stage 1c contents: nextflow + java + mamba on
+# PATH + the pre-warmed pgsc_calc source at /opt/pgsc_calc/main.nf. Like
+# `ancestry_ready` (Plan 1 Phase 2), this is INFORMATIONAL — does not affect
+# exit code.
+#
+# Two tests here exercise the pure-Python plumbing via a stubbed runner.
+# The end-to-end image-level smoke (real `docker run` against the built
+# toolkit image) lives in test_toolkit_image_prs_runtime.py and is gated on
+# the `needs_prs_runtime` marker.
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_reports_prs_runtime_ready_when_stubbed_runner_returns_versions(
+    tmp_path: Path,
+) -> None:
+    """Stubbed `nextflow -version` / `java -version` / `mamba --version` → status='ready'.
+
+    Doctor's `_collect_prs_runtime_ready` shells out via the injected runner;
+    the stub returns canned successful output for each probe. Pre-warm marker
+    file is staged at /opt/pgsc_calc/main.nf — when missing, the section
+    drops to 'missing' even if all three binaries respond cleanly.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    runner = _StubRunner()
+    runner.responses[("nextflow", "-version")] = (
+        0,
+        "      N E X T F L O W\n      version 24.10.0 build 5928\n",
+        "",
+    )
+    runner.responses[("java", "-version")] = (
+        0,
+        "",
+        'openjdk version "17.0.10" 2024-01-16\n',
+    )
+    runner.responses[("mamba", "--version")] = (0, "mamba 1.5.8\nconda 24.5.0\n", "")
+    runner.responses[("test", "-f", "/opt/pgsc_calc/main.nf")] = (0, "", "")
+
+    _, report = doctor(paths=layout, runner=runner)
+
+    pr = report["prs_runtime_ready"]
+    assert pr["status"] == "ready", f"expected ready, got {pr}"
+    assert "24.10" in pr["nextflow_version"]
+    assert "17" in pr["java_version"]
+    assert "1.5" in pr["mamba_version"]
+    assert pr["pgsc_calc_prewarm"] == "/opt/pgsc_calc/main.nf"
+
+
+def test_doctor_reports_prs_runtime_missing_when_nextflow_unreachable(tmp_path: Path) -> None:
+    """Stubbed `nextflow -version` returning rc≠0 → status='missing' + names what's missing.
+
+    Exit code stays 0 — `prs_runtime_ready` is informational like
+    `ancestry_ready`. The Slice E.3 orchestrator's compute-time guard is the
+    actual enforcement layer; doctor surfaces the precondition so the user
+    sees it before invoking compute.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    runner = _StubRunner()
+    # Default stub returns (0, "", "") — i.e. command succeeded with no
+    # output. Override nextflow to fail explicitly; java/mamba succeed.
+    runner.responses[("nextflow", "-version")] = (127, "", "nextflow: not found\n")
+    runner.responses[("java", "-version")] = (0, "", 'openjdk version "17.0.10"\n')
+    runner.responses[("mamba", "--version")] = (0, "mamba 1.5.8\n", "")
+    runner.responses[("test", "-f", "/opt/pgsc_calc/main.nf")] = (0, "", "")
+
+    rc, report = doctor(paths=layout, runner=runner)
+
+    assert rc == 0, "prs_runtime missing must not flip the exit code"
+    pr = report["prs_runtime_ready"]
+    assert pr["status"] == "missing", f"expected missing, got {pr}"
+    assert "nextflow" in pr["missing"], f"expected nextflow in missing list, got {pr['missing']}"
+    assert "fix" in pr and "toolkit image" in pr["fix"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Slice 3 of host-mount-lifecycle — stale colima mount detection.
+# ---------------------------------------------------------------------------
+
+
+def _write_colima_cfg(path: Path, mounts: list[dict]) -> None:
+    import yaml as _yaml
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_yaml.safe_dump({"mounts": mounts}, sort_keys=False))
+
+
+def test_doctor_reports_stale_mount_when_drive_not_present(tmp_path: Path) -> None:
+    """A colima mount pointing at a path that doesn't exist on the host is stale.
+
+    Defends against the 2026-05-14 boot failure mode: a configured drive
+    was unplugged (or renamed), so the next ``colima start`` will fail
+    with ``mkdir … permission denied``. Doctor should warn before the
+    user discovers this via a cryptic colima error.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    existing = tmp_path / "existing_drive"
+    existing.mkdir()
+    missing = tmp_path / "missing_drive"  # NOT created
+    cfg = tmp_path / "colima.yaml"
+    _write_colima_cfg(
+        cfg,
+        [
+            {"location": str(existing), "writable": True},
+            {"location": str(missing), "writable": True},
+        ],
+    )
+
+    _rc, report = doctor(paths=layout, runner=_StubRunner(), colima_config_path=cfg)
+    stale = report["stale_mounts"]
+    locations = {entry["location"] for entry in stale}
+    assert str(missing) in locations
+    assert str(existing) not in locations
+
+
+def test_doctor_no_stale_mounts_when_all_drives_present(tmp_path: Path) -> None:
+    """Every configured drive exists on the host → empty stale_mounts list."""
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    drive1 = tmp_path / "drive1"
+    drive2 = tmp_path / "drive2"
+    drive1.mkdir()
+    drive2.mkdir()
+    cfg = tmp_path / "colima.yaml"
+    _write_colima_cfg(
+        cfg,
+        [
+            {"location": str(drive1), "writable": True},
+            {"location": str(drive2), "writable": True},
+        ],
+    )
+
+    _rc, report = doctor(paths=layout, runner=_StubRunner(), colima_config_path=cfg)
+    assert report["stale_mounts"] == []
+
+
+def test_doctor_handles_missing_colima_config_gracefully(tmp_path: Path) -> None:
+    """No colima.yaml on disk → empty stale_mounts list, no crash.
+
+    A fresh user who hasn't run ``host setup`` yet doesn't have a
+    colima.yaml. Doctor must still produce a complete report.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    cfg = tmp_path / "nonexistent" / "colima.yaml"
+
+    _rc, report = doctor(paths=layout, runner=_StubRunner(), colima_config_path=cfg)
+    assert report["stale_mounts"] == []
+
+
+def test_doctor_stale_mount_entry_includes_actionable_fix_hint(tmp_path: Path) -> None:
+    """Each stale-mount entry carries a ``fix`` field with a concrete next step.
+
+    The string should mention either ``host eject`` (to remove the
+    stale entry) or "plug in" (the drive). The user shouldn't have to
+    figure out the resolution from a bare path.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    missing = tmp_path / "unplugged_drive"
+    cfg = tmp_path / "colima.yaml"
+    _write_colima_cfg(cfg, [{"location": str(missing), "writable": True}])
+
+    _rc, report = doctor(paths=layout, runner=_StubRunner(), colima_config_path=cfg)
+    assert len(report["stale_mounts"]) == 1
+    entry = report["stale_mounts"][0]
+    assert entry["location"] == str(missing)
+    fix = entry["fix"]
+    assert "host eject" in fix or "plug in" in fix.lower()
+
+
+def test_doctor_stale_mounts_do_not_fail_exit_code(tmp_path: Path) -> None:
+    """A stale mount is a warning, not a failure — exit stays 0 if checks pass.
+
+    Doctor's exit code reflects critical infrastructure failure (missing
+    canonical paths, write-blocked mounts). Stale colima entries are
+    fixable misconfiguration, not corruption.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    missing = tmp_path / "unplugged_drive"
+    cfg = tmp_path / "colima.yaml"
+    _write_colima_cfg(cfg, [{"location": str(missing), "writable": True}])
+
+    rc, _report = doctor(paths=layout, runner=_StubRunner(), colima_config_path=cfg)
+    assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# PRS Input Coverage Fill Phase 1b — `prs_coverage_ready` readiness gate.
+#
+# `host doctor` surfaces an informational `prs_coverage_ready` section that
+# probes per-sample Tier 1 caches under
+# `derived/prs_coverage/<sample>/<panel>/{tier1.vcf.gz, tier1.qc.json}`. Like
+# `ancestry_ready` and `prs_runtime_ready`, this is INFORMATIONAL — does not
+# affect the doctor exit code. The Slice E.3 / Phase 2 compute orchestrator's
+# cache-hit check at compute time is the actual enforcement layer.
+# ---------------------------------------------------------------------------
+
+
+import json as _json  # noqa: E402
+
+
+def _stage_tier1_cache(
+    derived_root: Path,
+    *,
+    sample_id: str = "MPNRGLQ2K",
+    panel_version: str = "v1",
+    include_qc_json: bool = True,
+) -> Path:
+    """Stage a tier1.vcf.gz + tier1.qc.json under the canonical cache layout."""
+    cache_dir = derived_root / "prs_coverage" / sample_id / panel_version
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "tier1.vcf.gz").write_bytes(b"\x1f\x8b")  # gzip magic, presence-only
+    if include_qc_json:
+        (cache_dir / "tier1.qc.json").write_text(
+            _json.dumps(
+                {
+                    "sample_id": sample_id,
+                    "panel_version": panel_version,
+                    "source_cram_sha256": "deadbeef",
+                    "total_records": 6796,
+                    "schema_version": "1",
+                }
+            )
+        )
+    return cache_dir
+
+
+def test_doctor_reports_prs_coverage_no_samples_when_directory_empty(
+    tmp_path: Path,
+) -> None:
+    """`derived/` exists but no `prs_coverage/` subtree → status='no_samples'.
+
+    A fresh install with no Tier 1 caches built yet — the user has staged
+    the panel but hasn't run `genomeclaw prs prepare-coverage` against any
+    sample. Informational; exit stays 0.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0
+    assert "prs_coverage_ready" in report
+    pc = report["prs_coverage_ready"]
+    assert pc["status"] == "no_samples", f"expected no_samples, got {pc}"
+    assert pc["samples"] == []
+    assert "fix" in pc
+
+
+def test_doctor_reports_prs_coverage_ready_when_tier1_cache_present(
+    tmp_path: Path,
+) -> None:
+    """One sample with full tier1 cache → status='ready' + sample listed."""
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    _stage_tier1_cache(layout["derived"], sample_id="MPNRGLQ2K", panel_version="v1")
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0
+    pc = report["prs_coverage_ready"]
+    assert pc["status"] == "ready", f"expected ready, got {pc}"
+    assert len(pc["samples"]) == 1
+    sample = pc["samples"][0]
+    assert sample["sample_id"] == "MPNRGLQ2K"
+    assert any(pv["panel_version"] == "v1" and pv["status"] == "ready" for pv in sample["panel_versions"])
+
+
+def test_doctor_reports_prs_coverage_partial_when_qc_json_missing(
+    tmp_path: Path,
+) -> None:
+    """tier1.vcf.gz present but tier1.qc.json missing → sample status='partial'.
+
+    Catches the failure mode where a previous `prs prepare-coverage` run
+    crashed between the VCF promote and the QC JSON write. Informational;
+    the next `prepare-coverage` run will rebuild from the orphaned VCF.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    _stage_tier1_cache(
+        layout["derived"], sample_id="MPNRGLQ2K", panel_version="v1", include_qc_json=False
+    )
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0
+    pc = report["prs_coverage_ready"]
+    # Whole-section status is "partial" when no sample is fully ready.
+    assert pc["status"] == "partial", f"expected partial, got {pc}"
+    sample = pc["samples"][0]
+    assert sample["sample_id"] == "MPNRGLQ2K"
+    pv = sample["panel_versions"][0]
+    assert pv["status"] == "partial"
+    assert pv["tier1_vcf"] is not None
+    assert pv["tier1_qc_json"] is None

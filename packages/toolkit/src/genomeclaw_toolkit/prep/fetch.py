@@ -168,6 +168,19 @@ class _FetchFile:
     """Mode 2: the line key to match inside ``md5checksums.txt`` (NCBI
     prefixes entries with ``./``)."""
 
+    url_override: str | None = None
+    """Optional full URL that replaces ``base_url + relpath`` for this
+    one file. Used when a single file in a source's manifest legitimately
+    lives on a different host than its siblings — e.g. LOFTEE's GERP
+    BigWig is hosted on Ensembl FTP at GCS-class bandwidth while the
+    rest of LOFTEE's data only exists on Broad's per-IP-throttled
+    personal mirror. When set, ``base_url`` and ``relpath`` no longer
+    determine the wire URL for this file in production. Tests that pass
+    an explicit ``base_url=`` to :func:`fetch` retain full URL control —
+    the override is suppressed so the test's mocked HTTP server still
+    serves every file via ``base_url + relpath``. ``{release}`` /
+    ``{release_n}`` placeholders are substituted at fetch time."""
+
     def for_chrom(self, chrom: str) -> _FetchFile:
         """Substitute ``{chrom}`` in every templated field."""
         return _FetchFile(
@@ -185,6 +198,9 @@ class _FetchFile:
                 self.md5_checksums_key.format(chrom=chrom)
                 if self.md5_checksums_key is not None
                 else None
+            ),
+            url_override=(
+                self.url_override.format(chrom=chrom) if self.url_override is not None else None
             ),
         )
 
@@ -220,6 +236,23 @@ class _SourceLayout:
     host venv without samtools), the hook logs a warning and returns;
     production paths inside the ``genomeclaw/toolkit`` image always
     have the tool available."""
+
+    presence_relpath: str | None = None
+    """Optional marker path (relative to ``target_dir``, with
+    ``{release_n}`` / ``{release}`` substitution) whose existence
+    signals "this source has been successfully fetched AND any
+    post-fetch processing has completed". When set, the `INV-D001`
+    "already present" check uses this marker instead of looping over
+    ``files`` — required for sources whose post-fetch hook intentionally
+    deletes the canonical artifact (e.g. ``vep_cache`` extracts and
+    removes the 21 GB tarball, so ``Path.exists("vep_cache.tar.gz")``
+    is always False after a successful fetch and the next ``fetch
+    --all`` would otherwise re-download ~21 GB it doesn't need to).
+
+    The marker is an existence test only — it does NOT validate the
+    fetched data's bytes / MD5 / index sidecars. ``genomeclaw refs
+    verify`` is the structural-integrity tool; the presence marker is
+    the cheap "did the user already run fetch successfully" gate."""
 
     @property
     def is_multi_file(self) -> bool:
@@ -397,6 +430,72 @@ def _gunzip_loftee_sql_in_target_dir(target_dir: Path) -> None:
     )
 
 
+def _extract_pgs_catalog_ancestry_bundle(target_dir: Path) -> None:
+    """Extract the PGS Catalog HGDP+1KG ancestry bundle in-place; delete the .tar.zst.
+
+    PGS Catalog publishes the continuous-ancestry reference panel as a
+    single ``pgsc_HGDP+1kGP_<release>.tar.zst`` on
+    ``ftp.ebi.ac.uk/pub/databases/spot/pgs/resources/``. Verified upstream
+    layout (2026-05-17, v1, real-data smoke): the bundle extracts FLAT (no
+    outer dir, no per-population subdirs) into ``target_dir/``. The data is
+    gnomAD's merged 1000G + HGDP callset (gnomAD v3.1.2) processed by the
+    PGS Catalog team with plink2 — both populations live in single combined
+    files keyed by reference build:
+
+        GRCh38_HGDP+1kGP_ALL.{pgen,pvar.zst,psam,log,king.cutoff.out.id}
+        GRCh37_HGDP+1kGP_ALL.{pgen,pvar.zst,psam,log,king.cutoff.out.id}
+        Citation.txt, meta.txt, checksums.txt
+
+    Total compressed ~16 GB; extracted ~28 GB (both builds; we only need
+    GRCh38, but pruning the GRCh37 half is a future optimisation —
+    upstream ships them together).
+
+    Streams ``ZstdDecompressor.stream_reader`` → ``tarfile`` so the full
+    ~28 GB extracted tree never lives in memory at once.
+
+    Soft-fails when ``zstandard`` is missing so mocked-HTTP fetch tests run
+    on a bare host venv without the dep — production paths inside the
+    toolkit image always have it, and ``_check_ancestry_reference`` /
+    ``pgsc_calc`` fail loudly when the extracted tree is structurally
+    absent, so a soft-fail can't silently corrupt a real run.
+    """
+    import tarfile
+
+    try:
+        import zstandard
+    except ImportError:
+        log.warning(
+            "zstandard not installed; skipping PGS Catalog ancestry extraction. "
+            "Install with `uv sync`."
+        )
+        return
+
+    bundle = target_dir / "pgs_catalog_ancestry.tar.zst"
+    if not bundle.exists():
+        log.warning("pgs_catalog_ancestry bundle not found at %s; skipping extraction", bundle)
+        return
+    print(
+        "    extracting PGS Catalog ancestry bundle (≈16 GB → ~28 GB on disk)…",
+        file=sys.stdout,
+        flush=True,
+    )
+    extract_start = time.monotonic()
+    dctx = zstandard.ZstdDecompressor()
+    with bundle.open("rb") as fh, dctx.stream_reader(fh) as zst_stream:
+        # ``mode="r|"`` is streaming-tarfile mode (no seek required); the
+        # ``data`` filter (3.12+) refuses absolute-path / parent-traversal
+        # members, defensive against malformed upstream tarballs.
+        with tarfile.open(fileobj=zst_stream, mode="r|") as tf:
+            tf.extractall(path=target_dir, filter="data")
+
+    print(
+        f"    ✓ extracted in {time.monotonic() - extract_start:.0f}s; removing bundle",
+        file=sys.stdout,
+        flush=True,
+    )
+    bundle.unlink()
+
+
 def _extract_vep_cache_tarball(target_dir: Path) -> None:
     """Extract Ensembl's VEP cache tarball in-place, then delete the .tar.gz.
 
@@ -424,7 +523,9 @@ def _extract_vep_cache_tarball(target_dir: Path) -> None:
     if not tarball.exists():
         log.warning("vep_cache tarball not found at %s; skipping extraction", tarball)
         return
-    print("    extracting VEP cache tarball (≈21 GB → ~75 GB on disk)…", file=sys.stdout, flush=True)
+    print(
+        "    extracting VEP cache tarball (≈21 GB → ~75 GB on disk)…", file=sys.stdout, flush=True
+    )
     extract_start = time.monotonic()
     # tarfile.data_filter (3.12+) refuses absolute-path / parent-traversal
     # members; ``data`` is the safe-by-default filter for arbitrary
@@ -558,6 +659,14 @@ _LAYOUTS: dict[str, _SourceLayout] = {
             ),
         ),
         post_fetch=_extract_vep_cache_tarball,
+        # The post-fetch hook deletes the 21 GB tarball after extracting
+        # it, so the canonical ``vep_cache.tar.gz`` is gone on a healthy
+        # already-fetched dir and the default existence check would
+        # re-trigger the download. Ensembl ships ``info.txt`` at the
+        # root of each release cache (``homo_sapiens/<N>_GRCh38/info.txt``)
+        # — its presence is a reliable "this release was extracted"
+        # signal.
+        presence_relpath="homo_sapiens/{release_n}_GRCh38/info.txt",
     ),
     # Phase 4D: AlphaMissense precomputed scores for the AlphaMissense
     # VEP plugin. Hosted on Google Cloud Storage (DeepMind's public
@@ -582,8 +691,24 @@ _LAYOUTS: dict[str, _SourceLayout] = {
         post_fetch=_build_alphamissense_tbi_in_target_dir,
     ),
     # Phase 4D: LOFTEE plugin data files. Five files in total per the
-    # LOFTEE grch38 README, hosted on Konrad Karczewski's Broad
-    # personal-mirror. ~1 GB combined.
+    # LOFTEE grch38 README. ~1 GB combined for the human_ancestor +
+    # loftee.sql trio + ~10-13 GB for the GERP BigWig.
+    #
+    # Mirror routing (researcher-confirmed 2026-05-13): four files have
+    # no public byte-equivalent fast mirror and must come from Konrad
+    # Karczewski's Broad personal mirror — that host applies a ~500 kB/s
+    # per-IP throttle but the ~1 GB combined size makes the throttle
+    # tolerable (~30 min). The fifth file, ``gerp_conservation_scores.
+    # homo_sapiens.GRCh38.bw``, is the throttle's worst case (12.6 GB →
+    # 8h ETA on residential), so it is routed via the per-file
+    # ``url_override`` to Ensembl FTP release-115 where the same data
+    # serves at ~10 MB/s with no throttle. The Ensembl copy is the
+    # 92_mammals alignment vs Broad's frozen 88_mammals — functionally
+    # equivalent for LOFTEE's per-position lookup (LOFTEE issue #96
+    # confirms users routinely substitute Ensembl), but it IS a
+    # different scientific reference. Pin to release-115 for
+    # reproducibility; record the routing in the on-disk provenance
+    # manifest. See research-brief in commit message for details.
     #
     # Required for any LOFTEE output:
     #   - human_ancestor.fa.gz (+ .fai + .gzi) — ancestral-allele
@@ -597,9 +722,10 @@ _LAYOUTS: dict[str, _SourceLayout] = {
     #     post-fetch to loftee.sql so the plugin can open it via
     #     ``conservation_file:<path>``.
     #
-    # Mirror has no MD5 sidecars (Broad-personal hosting); structural
+    # Neither mirror publishes MD5 sidecars (Broad-personal hosting,
+    # Ensembl uses a CHECKSUMS file format we don't parse); structural
     # integrity is checked at first LOFTEE invocation. Worth mirroring
-    # internally for strict reproducibility — the URL is stable in
+    # internally for strict reproducibility — the URLs are stable in
     # practice but not under institutional SLA.
     "loftee": _SourceLayout(
         files=(
@@ -618,6 +744,11 @@ _LAYOUTS: dict[str, _SourceLayout] = {
             _FetchFile(
                 relpath="/gerp_conservation_scores.homo_sapiens.GRCh38.bw",
                 output_filename="gerp_conservation_scores.homo_sapiens.GRCh38.bw",
+                url_override=(
+                    "https://ftp.ensembl.org/pub/release-115/compara/"
+                    "conservation_scores/92_mammals.gerp_conservation_score/"
+                    "gerp_conservation_scores.homo_sapiens.GRCh38.bw"
+                ),
             ),
             _FetchFile(
                 relpath="/loftee.sql.gz",
@@ -640,6 +771,34 @@ _LAYOUTS: dict[str, _SourceLayout] = {
             ),
         ),
     ),
+    # PRS Reference Bootstrap — PGS Catalog continuous-ancestry reference
+    # bundle (1000G + HGDP genotype panels). Required by ``pgsc_calc
+    # --run_ancestry`` for ancestry calibration of any PRS the agent
+    # surfaces (``INV-C001`` v1.7). One ~5-7 GB ``.tar.zst`` on
+    # ``ftp.ebi.ac.uk/pub/databases/spot/pgs/resources/pgsc_calc/``;
+    # extracts to ~50-60 GB. The post-fetch hook streams zstd-decompress +
+    # tar-extract + deletes the bundle to reclaim disk. The
+    # ``presence_relpath`` marker survives the bundle deletion so ``fetch
+    # --all`` skips correctly on an already-fetched dir — same structural
+    # reason as ``vep_cache``.
+    "pgs_catalog_ancestry": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath=(
+                    "/pub/databases/spot/pgs/resources/pgsc_HGDP+1kGP_{release}.tar.zst"
+                ),
+                output_filename="pgs_catalog_ancestry.tar.zst",
+            ),
+        ),
+        post_fetch=_extract_pgs_catalog_ancestry_bundle,
+        # ``GRCh38_HGDP+1kGP_ALL.pgen`` is the largest + most-essential
+        # file in the extracted bundle (~12 GB; the combined GRCh38 1000G+
+        # HGDP genotype matrix pgsc_calc consumes via ``--run_ancestry``).
+        # Its presence is a durable signal that fetch + extraction
+        # succeeded, even after the .tar.zst is removed by the post-fetch
+        # hook.
+        presence_relpath="GRCh38_HGDP+1kGP_ALL.pgen",
+    ),
 }
 
 _DEFAULT_BASE_URLS: dict[str, str] = {
@@ -657,6 +816,9 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     # gnomAD constraint metrics — public-data GCS bucket, same root
     # as gnomad-exomes (different sub-tree).
     "gnomad-constraint": "https://storage.googleapis.com/gcp-public-data--gnomad",
+    # PGS Catalog continuous-ancestry reference bundle (1000G + HGDP),
+    # hosted on the EBI FTP under their PGS Catalog resources tree.
+    "pgs_catalog_ancestry": "https://ftp.ebi.ac.uk",
 }
 
 
@@ -1047,6 +1209,11 @@ def fetch(  # noqa: PLR0913 — top-level orchestrator
                 else None
             ),
             md5_checksums_key=tmpl.md5_checksums_key,
+            url_override=(
+                tmpl.url_override.replace("{release_n}", release).replace("{release}", release)
+                if tmpl.url_override is not None
+                else None
+            ),
         )
 
     files_to_fetch: list[_FetchFile] = [_apply_release(f) for f in layout.files]
@@ -1058,17 +1225,37 @@ def fetch(  # noqa: PLR0913 — top-level orchestrator
             for tmpl in layout.chrom_files:
                 files_to_fetch.append(_apply_release(tmpl).for_chrom(c))
 
-    # `INV-D001`: refuse to overwrite a previously-fetched release. Any
-    # already-present target file trips this.
-    for f in files_to_fetch:
-        canonical = out_dir / f.output_filename
-        if canonical.exists():
+    # `INV-D001`: refuse to overwrite a previously-fetched release.
+    # When the layout declares a ``presence_relpath`` marker, use it as
+    # the single source of truth — this covers sources whose post-fetch
+    # hook deletes the canonical artifact (e.g. vep_cache extracts and
+    # removes the tarball, leaving ``homo_sapiens/<N>_GRCh38/info.txt``
+    # as the durable signal of "fetched + extracted"). Otherwise fall
+    # back to "any canonical file exists".
+    if layout.presence_relpath is not None:
+        marker_rel = layout.presence_relpath.replace("{release_n}", release).replace(
+            "{release}", release
+        )
+        marker = target_dir / marker_rel
+        if marker.exists():
             raise VersionAlreadyExists(
-                f"{canonical} already exists; remove the old version "
-                f"deliberately if you want to re-fetch (INV-D001)"
+                f"{marker} already exists (post-fetch marker); remove "
+                f"{target_dir} deliberately if you want to re-fetch (INV-D001)"
             )
+    else:
+        for f in files_to_fetch:
+            canonical = out_dir / f.output_filename
+            if canonical.exists():
+                raise VersionAlreadyExists(
+                    f"{canonical} already exists; remove the old version "
+                    f"deliberately if you want to re-fetch (INV-D001)"
+                )
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    # When the caller (a test) injects ``base_url``, suppress per-file
+    # ``url_override``s so the mocked HTTP server sees every request. In
+    # production ``base_url`` is None and per-file overrides apply.
+    base_url_injected = base_url is not None
     resolved_base = base_url or _DEFAULT_BASE_URLS[source]
 
     # When a progress_callback is provided, the caller owns user-facing
@@ -1097,6 +1284,7 @@ def fetch(  # noqa: PLR0913 — top-level orchestrator
             resolved_base=resolved_base,
             out_dir=out_dir,
             source=source,
+            allow_url_override=not base_url_injected,
             progress_callback=progress_callback,
             max_resume_attempts=max_resume_attempts,
             retry_backoff_initial_sec=retry_backoff_initial_sec,
@@ -1166,6 +1354,7 @@ def _fetch_one_file(  # noqa: PLR0912, PLR0913, PLR0915 — config-heavy entry
     resolved_base: str,
     out_dir: Path,
     source: str = "",
+    allow_url_override: bool = True,
     progress_callback: Callable[[object], None] | None = None,
     max_resume_attempts: int = _DEFAULT_MAX_RESUME_ATTEMPTS,
     retry_backoff_initial_sec: float = _DEFAULT_RETRY_BACKOFF_INITIAL_SEC,
@@ -1189,7 +1378,10 @@ def _fetch_one_file(  # noqa: PLR0912, PLR0913, PLR0915 — config-heavy entry
     canonical = out_dir / f.output_filename
     scratch_path = out_dir / f".{f.output_filename}.part"
 
-    file_url = urljoin(resolved_base + "/", f.relpath.lstrip("/"))
+    if allow_url_override and f.url_override is not None:
+        file_url = f.url_override
+    else:
+        file_url = urljoin(resolved_base + "/", f.relpath.lstrip("/"))
 
     md5_scratch: Path | None = None
     md5_canonical: Path | None = None

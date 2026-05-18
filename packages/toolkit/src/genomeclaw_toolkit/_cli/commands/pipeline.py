@@ -52,7 +52,15 @@ from genomeclaw_toolkit.prep.annotate import annotate as annotate_impl
 from genomeclaw_toolkit.prep.ingest import ingest as ingest_impl
 from genomeclaw_toolkit.prep.materialize import materialize as materialize_impl
 from genomeclaw_toolkit.prep.normalize import normalize as normalize_impl
+from genomeclaw_toolkit.prep.pgs import (
+    PgsReferenceMissingError,
+    PgsRow,
+)
+from genomeclaw_toolkit.prep.pgs import (
+    compute_pgs as compute_pgs_impl,
+)
 from genomeclaw_toolkit.prep.reference_build import AmbiguousReferenceBuild
+from genomeclaw_toolkit.schemas import SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -238,9 +246,7 @@ def pipeline_ingest(
             )
             raise PreconditionError(str(exc)) from exc
         except (AmbiguousReferenceBuild, ValueError) as exc:
-            _emit_phase_failed(
-                callback, phase="ingest", error_type="usage_error", message=str(exc)
-            )
+            _emit_phase_failed(callback, phase="ingest", error_type="usage_error", message=str(exc))
             raise UsageError(str(exc)) from exc
 
     if not ctx.is_json:
@@ -345,13 +351,40 @@ def pipeline_materialize(
         Path,
         typer.Option("--derived-root", help="Derived root for CURRENT autodetect."),
     ] = Path("/mnt/genomeclaw/derived"),
+    reference_dir: Annotated[
+        Path,
+        typer.Option(
+            "--reference-dir",
+            help=(
+                "Reference root. When a gnomAD constraint TSV is staged under "
+                "<reference-dir>/gnomad-constraint/<release>/, materialize joins it "
+                "to populate gene_loeuf on the variants table; otherwise gene_loeuf "
+                "stays NULL."
+            ),
+        ),
+    ] = Path("/mnt/genomeclaw/reference"),
+    gnomad_constraint_release: Annotated[
+        str | None,
+        typer.Option(
+            "--gnomad-constraint-release",
+            help=(
+                "gnomAD constraint release tag (default: newest under "
+                "<reference-dir>/gnomad-constraint/)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Rewrite the variants table from ``normalized.vcf.gz``."""
     ctx: AppContext = typer_ctx.obj
     resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
     with _build_callback(ctx, command="pipeline.materialize") as callback:
         try:
-            out = materialize_impl(run_dir=resolved_dir, progress_callback=callback)
+            out = materialize_impl(
+                run_dir=resolved_dir,
+                reference_dir=reference_dir,
+                gnomad_constraint_release=gnomad_constraint_release,
+                progress_callback=callback,
+            )
         except FileNotFoundError as exc:
             _emit_phase_failed(
                 callback, phase="materialize", error_type="precondition_error", message=str(exc)
@@ -402,6 +435,16 @@ def pipeline_run(
         str | None,
         typer.Option("--clinvar-release", help="ClinVar release tag."),
     ] = None,
+    gnomad_constraint_release: Annotated[
+        str | None,
+        typer.Option(
+            "--gnomad-constraint-release",
+            help=(
+                "gnomAD constraint release tag for the materialize-time gene_loeuf "
+                "join (default: newest under <reference-root>/gnomad-constraint/)."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Chain ingest → normalize → annotate → materialize in one invocation."""
     ctx: AppContext = typer_ctx.obj
@@ -432,9 +475,7 @@ def pipeline_run(
             )
             raise PreconditionError(f"ingest failed: {exc}") from exc
         except (AmbiguousReferenceBuild, ValueError) as exc:
-            _emit_phase_failed(
-                callback, phase="ingest", error_type="usage_error", message=str(exc)
-            )
+            _emit_phase_failed(callback, phase="ingest", error_type="usage_error", message=str(exc))
             raise UsageError(f"ingest failed: {exc}") from exc
 
         try:
@@ -463,7 +504,12 @@ def pipeline_run(
             raise RuntimeFailure(f"annotate failed: {exc}") from exc
 
         try:
-            materialize_impl(run_dir=run_dir_path, progress_callback=callback)
+            materialize_impl(
+                run_dir=run_dir_path,
+                reference_dir=reference_root,
+                gnomad_constraint_release=gnomad_constraint_release,
+                progress_callback=callback,
+            )
         except FileNotFoundError as exc:
             _emit_phase_failed(
                 callback, phase="materialize", error_type="runtime_error", message=str(exc)
@@ -480,6 +526,389 @@ def pipeline_run(
 
     if not ctx.is_json:
         _emit_run_dir(ctx, command="pipeline.run", run_dir=run_dir_path)
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 Slice E v2 — pgs-compute subcommand (manual invocation path).
+#
+# The agent-driven path (E.3 async orchestrator) calls `compute_pgs` directly
+# via the host service's `POST /v1/pgs/compute`. This CLI subcommand wraps
+# the same function for users who want to trigger a compute outside the
+# agent path — useful for the project owner's real-data smoke + for seeding
+# `pgs_scores` rows before E.3 lands.
+#
+# On a successful compute, the subcommand also INSERTs a matching
+# `clinical-non-actionable` finding row into `findings` so the agent's
+# `genomeclaw_findings` filter surfaces the new PRS without a second
+# materialize step.
+# ---------------------------------------------------------------------------
+
+
+class _PgsComputePayload(BaseModel):
+    """`--json` payload for `pipeline pgs-compute` per INV-C002."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_dir: str
+    pgs_id: str
+    trait_label: str
+    percentile_in_user_ancestry: float | None
+    raw_score: float | None
+    calibration_warning: str | None
+
+
+def _stamp_pgs_row(run_dir: Path, row: PgsRow, *, vcf: Path) -> None:
+    """INSERT the `PgsRow` into `pgs_scores` with INV-R001 provenance + matching finding row.
+
+    Provenance: `source_path` is the VCF; `source_sha256` is unset for the
+    manual CLI path (the wrapper doesn't re-hash the VCF — for the real-data
+    smoke, the ingest's manifest carries the canonical hash). `tool` is
+    "pgsc_calc"; `tool_version` is "agent-driven" (the precise pgsc_calc
+    version is captured in the work-dir manifest by Nextflow itself; for
+    INV-R001 the canonical record is the run's manifest.json).
+    """
+    import json as _json
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    import duckdb
+
+    store_path = run_dir / "variants.duckdb"
+    now = datetime.now(tz=UTC)
+    params = _json.dumps({"pgs_id": row.pgs_id, "vcf": str(vcf)})
+
+    conn = duckdb.connect(str(store_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO pgs_scores (
+                pgs_id, trait_label, percentile_in_user_ancestry, raw_score,
+                study_population, calibration_warning,
+                agent_choice_rationale, requested_for_question, superseded_by,
+                source_path, source_sha256, tool, tool_version,
+                params_json, schema_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL,
+                      ?, '', 'pgsc_calc', 'agent-driven',
+                      ?, ?, ?)
+            """,
+            [
+                row.pgs_id,
+                row.trait_label,
+                row.percentile_in_user_ancestry,
+                row.raw_score,
+                row.study_population,
+                row.calibration_warning,
+                row.agent_choice_rationale,
+                row.requested_for_question,
+                str(vcf),
+                params,
+                SCHEMA_VERSION,
+                now,
+            ],
+        )
+        # Matching clinical-non-actionable finding row per Q8 v1.6 + INV-E001.
+        finding_id = f"fnd-pgs-{row.pgs_id}-{uuid4().hex[:8]}"
+        summary = (
+            f"{row.trait_label}: {row.percentile_in_user_ancestry}th percentile "
+            "in your ancestry-matched reference population "
+            "(PRS — population-level estimate, not a pathogenic variant call)."
+            if row.percentile_in_user_ancestry is not None
+            else f"{row.trait_label}: PRS percentile unavailable; see calibration_warning."
+        )
+        conn.execute(
+            """
+            INSERT INTO findings (
+                id, category, title, summary,
+                evidence_ref, evidence_quality,
+                gene_symbols, drugs, clinical_escalation,
+                source_path, source_sha256, tool, tool_version,
+                params_json, schema_version, created_at
+            ) VALUES (?, 'clinical-non-actionable', ?, ?, ?, 'moderate',
+                      [], NULL, NULL,
+                      ?, '', 'pgsc_calc', 'agent-driven',
+                      ?, ?, ?)
+            """,
+            [
+                finding_id,
+                f"{row.trait_label} — PRS",
+                summary,
+                f"pgs_catalog:{row.pgs_id}",
+                str(vcf),
+                params,
+                SCHEMA_VERSION,
+                now,
+            ],
+        )
+    finally:
+        conn.close()
+
+
+@app.command("pgs-compute")
+def pipeline_pgs_compute(
+    typer_ctx: typer.Context,
+    pgs_id: Annotated[
+        str,
+        typer.Option(
+            "--pgs",
+            help="PGS Catalog ID to compute (e.g. PGS000018).",
+        ),
+    ],
+    vcf: Annotated[
+        Path,
+        typer.Option(
+            "--vcf",
+            help="Source VCF (read-only). pgsc_calc reads it host-side; "
+            "no genomic data crosses any network boundary.",
+        ),
+    ],
+    reference_root: Annotated[
+        Path,
+        typer.Option(
+            "--reference-root",
+            help="Reference root. Must contain ancestry/{1000g,hgdp}/ for "
+            "continuous-ancestry calibration; install with "
+            "`genomeclaw refs fetch --source pgs_catalog_ancestry`.",
+        ),
+    ],
+    rationale: Annotated[
+        str,
+        typer.Option(
+            "--rationale",
+            help="Agent's reasoning for picking this PGS (alternatives considered + "
+            "why this one). Persisted to the pgs_scores row per INV-A003. "
+            "Required >= 50 chars.",
+        ),
+    ],
+    question: Annotated[
+        str,
+        typer.Option(
+            "--question",
+            help="Verbatim user question that triggered the compute. "
+            "Persisted to the pgs_scores row per INV-A003.",
+        ),
+    ],
+    work_dir: Annotated[
+        Path,
+        typer.Option(
+            "--work-dir",
+            help="Nextflow work directory for heavy intermediates.",
+        ),
+    ],
+    trait_label: Annotated[
+        str | None,
+        typer.Option(
+            "--trait-label",
+            help="Human-readable trait label (e.g. 'coronary artery disease'). "
+            "Defaults to `PGS Catalog <id>`.",
+        ),
+    ] = None,
+    run_dir: Annotated[
+        str | None,
+        typer.Option("--run-dir", help="Derived run dir (or CURRENT autodetect)."),
+    ] = None,
+    derived_root: Annotated[
+        Path,
+        typer.Option("--derived-root", help="Derived root for CURRENT autodetect."),
+    ] = Path("/mnt/genomeclaw/derived"),
+) -> None:
+    """Compute a PRS for one PGS Catalog ID; write a `pgs_scores` + matching `findings` row.
+
+    Manual-invocation path for the agent-driven PRS architecture (Q8 v1.6).
+    The agent's async path (E.3 orchestrator) calls `compute_pgs` via the
+    host service's `POST /v1/pgs/compute`; this CLI subcommand wraps the
+    same function for users who want to trigger a compute outside the
+    agent path. Always populate `--rationale` carefully — it persists as
+    a column on the result row + is the user's audit surface per INV-A003.
+    """
+    if len(rationale) < 50:
+        raise UsageError(
+            f"--rationale must be >= 50 chars (per INV-A003); got {len(rationale)}. "
+            "Include the alternative PGS scorefiles you considered + why this one."
+        )
+
+    ctx: AppContext = typer_ctx.obj
+    resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
+
+    try:
+        row = compute_pgs_impl(
+            vcf=vcf,
+            pgs_id=pgs_id,
+            reference_root=reference_root,
+            work_dir=work_dir,
+            agent_choice_rationale=rationale,
+            requested_for_question=question,
+            trait_label=trait_label,
+        )
+    except PgsReferenceMissingError as exc:
+        raise PreconditionError(str(exc)) from exc
+
+    _stamp_pgs_row(resolved_dir, row, vcf=vcf)
+
+    payload = _PgsComputePayload(
+        run_dir=str(resolved_dir),
+        pgs_id=row.pgs_id,
+        trait_label=row.trait_label,
+        percentile_in_user_ancestry=row.percentile_in_user_ancestry,
+        raw_score=row.raw_score,
+        calibration_warning=row.calibration_warning,
+    )
+    emit(
+        ctx=ctx,
+        command="pipeline.pgs-compute",
+        payload=payload,
+        rich_renderer=lambda p: get_console().print(
+            f"computed {p.pgs_id} ({p.trait_label}): {p.percentile_in_user_ancestry}th percentile"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1b — `prs-prepare-coverage` subcommand
+# ---------------------------------------------------------------------------
+#
+# Builds (or returns cached) the Tier 1 PCA-eligible force-genotyped VCF for
+# one sample, using the streaming `bcftools mpileup → call → norm` pipe
+# documented in :mod:`genomeclaw_toolkit.prep.coverage_fill`. The agent's
+# Phase 2 `prs-compute` orchestrator calls this transitively on cache miss;
+# this CLI surface is also the manual-invocation path for users who want to
+# warm the cache outside the agent path (or to seed a re-aligned CRAM's
+# fresh tier1 before any PRS question lands).
+# ---------------------------------------------------------------------------
+
+
+class _PrsPrepareCoveragePayload(BaseModel):
+    """`--json` payload for `pipeline prs-prepare-coverage` per INV-C002."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: str
+    panel_version: str
+    tier1_vcf: str
+    tier1_qc_json: str
+    cache_status: str  # "built" | "hit"
+
+
+@app.command("prs-prepare-coverage")
+def pipeline_prs_prepare_coverage(
+    typer_ctx: typer.Context,
+    sample_id: Annotated[
+        str,
+        typer.Option(
+            "--sample",
+            help="Sample identifier; used as the per-sample cache key + the "
+            "directory name under derived/prs_coverage/.",
+        ),
+    ],
+    cram: Annotated[
+        Path,
+        typer.Option(
+            "--cram",
+            help="User CRAM (read-only). Must have a sibling `.crai` index; "
+            "the bcftools pipe seeks via the index to each target site.",
+        ),
+    ],
+    sites: Annotated[
+        Path,
+        typer.Option(
+            "--sites",
+            help="PCA-eligible sites TSV (chrom, pos). Produced by "
+            "`refs materialize --target prs_pca_sites`; consumed by "
+            "`bcftools mpileup --regions-file`.",
+        ),
+    ],
+    alleles: Annotated[
+        Path,
+        typer.Option(
+            "--alleles",
+            help="PCA-eligible alleles TSV (chrom, pos, ref,alt). "
+            "Consumed by `bcftools call --constrain alleles --targets-file`.",
+        ),
+    ],
+    fasta: Annotated[
+        Path,
+        typer.Option(
+            "--fasta",
+            help="GRCh38 reference FASTA (bgzipped, with .fai + .gzi sidecars). "
+            "Used by `bcftools mpileup --fasta-ref` to decode CRAM.",
+        ),
+    ],
+    panel_version: Annotated[
+        str,
+        typer.Option(
+            "--panel-version",
+            help="HGDP+1kGP panel release tag (matches the directory name "
+            "under reference/pgs_catalog_ancestry/). Becomes part of the "
+            "cache key so a panel re-release re-builds cleanly.",
+        ),
+    ],
+    output_root: Annotated[
+        Path,
+        typer.Option(
+            "--output-root",
+            help="Derived root. The Tier 1 cache lands at "
+            "`<root>/prs_coverage/<sample>/<panel>/tier1.{vcf.gz,qc.json}`.",
+        ),
+    ] = Path("/mnt/genomeclaw/derived"),
+) -> None:
+    """Build (or return cached) the Tier 1 PCA-eligible force-genotyped VCF for one sample.
+
+    Streams the user CRAM through `bcftools mpileup → call --constrain alleles
+    → norm`, emitting one record per PCA-eligible HGDP+1kGP site. The output
+    lands under `derived/prs_coverage/<sample>/<panel>/tier1.vcf.gz` with a
+    sidecar `tier1.qc.json` recording the source CRAM SHA256, panel version,
+    bcftools version, GT distribution, mean DP, and per-chrom record counts
+    (INV-R001).
+
+    Re-invocations against the same (sample, panel_version, CRAM SHA256)
+    hit cache: zero subprocess calls, fast return.
+    """
+    from genomeclaw_toolkit.prep.coverage_fill import (
+        MissingCramIndexError,
+        MissingPanelError,
+        _tier1_cache_path,
+        prepare_coverage_tier1,
+    )
+
+    ctx: AppContext = typer_ctx.obj
+
+    cache_vcf = _tier1_cache_path(
+        derived_root=output_root, sample_id=sample_id, panel_version=panel_version
+    )
+    was_cached = cache_vcf.exists() and (cache_vcf.parent / "tier1.qc.json").exists()
+
+    try:
+        prepare_coverage_tier1(
+            sample_id=sample_id,
+            cram_path=cram,
+            sites_tsv=sites,
+            alleles_tsv=alleles,
+            fasta=fasta,
+            panel_version=panel_version,
+            output_root=output_root,
+        )
+    except (MissingCramIndexError, MissingPanelError) as exc:
+        raise PreconditionError(str(exc)) from exc
+
+    cache_qc = cache_vcf.parent / "tier1.qc.json"
+    # If the cache was warm AND we didn't write anything new, the second
+    # mtime check confirms "hit"; otherwise we built fresh.
+    cache_status = "hit" if was_cached else "built"
+
+    payload = _PrsPrepareCoveragePayload(
+        sample_id=sample_id,
+        panel_version=panel_version,
+        tier1_vcf=str(cache_vcf),
+        tier1_qc_json=str(cache_qc),
+        cache_status=cache_status,
+    )
+    emit(
+        ctx=ctx,
+        command="pipeline.prs-prepare-coverage",
+        payload=payload,
+        rich_renderer=lambda p: get_console().print(
+            f"{p.cache_status} tier1 cache: {p.tier1_vcf}"
+        ),
+    )
 
 
 __all__ = ["AUTODETECT_SENTINEL", "app"]

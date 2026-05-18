@@ -41,6 +41,9 @@ def test_default_release_set_loads_and_pins_phase4_sources() -> None:
         "vep_cache",
         "alphamissense",
         "loftee",
+        # PRS Reference Bootstrap Phase 1 — ancestry-calibration reference
+        # for `pgsc_calc --run_ancestry` (INV-C001 v1.7).
+        "pgs_catalog_ancestry",
     }
     # Every entry pins a non-empty release label (`INV-R001` rebuildability).
     for e in rs.sources:

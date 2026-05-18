@@ -38,20 +38,58 @@ os.environ.setdefault("GENOMECLAW_SKIP_PREFLIGHT", "1")
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Auto-skip ``@pytest.mark.needs_bio`` tests outside the toolkit image."""
-    if os.environ.get("GENOMECLAW_HAS_BIO") == "1":
-        return
+    """Auto-skip ``needs_bio`` + ``live_llm`` tests when their prereqs are absent.
 
-    skip_marker = pytest.mark.skip(
-        reason=(
-            "requires bcftools / mosdepth / samtools on PATH; "
-            "set GENOMECLAW_HAS_BIO=1 to opt in (or run inside the "
-            "genomeclaw/toolkit Docker image)"
+    Two independent gates:
+
+    - ``needs_bio`` skips unless ``GENOMECLAW_HAS_BIO=1`` (real bcftools /
+      mosdepth / samtools on PATH).
+    - ``live_llm`` skips unless ``OPENAI_API_KEY`` is set AND
+      ``GENOMECLAW_SANDBOX_IMAGE`` points at a built image. Each
+      ``live_llm`` test fires a real (paid) OpenAI call so we never
+      collect them in default CI / CI-without-secrets.
+    """
+    if os.environ.get("GENOMECLAW_HAS_BIO") != "1":
+        skip_bio = pytest.mark.skip(
+            reason=(
+                "requires bcftools / mosdepth / samtools on PATH; "
+                "set GENOMECLAW_HAS_BIO=1 to opt in (or run inside the "
+                "genomeclaw/toolkit Docker image)"
+            )
         )
-    )
-    for item in items:
-        if "needs_bio" in item.keywords:
-            item.add_marker(skip_marker)
+        for item in items:
+            if "needs_bio" in item.keywords:
+                item.add_marker(skip_bio)
+
+    if not os.environ.get("OPENAI_API_KEY") or not os.environ.get("GENOMECLAW_SANDBOX_IMAGE"):
+        skip_live = pytest.mark.skip(
+            reason=(
+                "live_llm test requires OPENAI_API_KEY + GENOMECLAW_SANDBOX_IMAGE. "
+                "Each call costs real money; opt in by exporting both env vars."
+            )
+        )
+        for item in items:
+            if "live_llm" in item.keywords:
+                item.add_marker(skip_live)
+
+    # PRS Runtime Bootstrap Phase 1 — `needs_prs_runtime` tests require a
+    # toolkit image carrying the new Stage 1c PRS runtime stack (Nextflow +
+    # JRE 17 + mamba + pre-warmed pgsc_calc source). The project owner
+    # builds the image, exports GENOMECLAW_TOOLKIT_PRS_IMAGE pointing at the
+    # tag, and the docker CLI must be on PATH. On a bare host venv these
+    # auto-skip cleanly.
+    prs_image = os.environ.get("GENOMECLAW_TOOLKIT_PRS_IMAGE")
+    if not prs_image or shutil.which("docker") is None:
+        skip_prs = pytest.mark.skip(
+            reason=(
+                "needs_prs_runtime test requires GENOMECLAW_TOOLKIT_PRS_IMAGE pointing at "
+                "a built toolkit image carrying the PRS runtime stack + docker on PATH. "
+                "Build the image first (see prs-runtime-bootstrap plan) and export the env var."
+            )
+        )
+        for item in items:
+            if "needs_prs_runtime" in item.keywords:
+                item.add_marker(skip_prs)
 
 
 @pytest.fixture(scope="session")

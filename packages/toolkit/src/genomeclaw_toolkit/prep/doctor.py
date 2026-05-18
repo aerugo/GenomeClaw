@@ -417,27 +417,284 @@ def _collect_derived_runs(*, derived_root: Path) -> list[_DerivedRunState]:
     return runs
 
 
+def _collect_prs_runtime_ready(runner: _Runner) -> dict[str, Any]:
+    """Probe the toolkit image's PRS runtime stack. Informational only.
+
+    PRS Runtime Bootstrap Phase 1 ships a new Stage 1c that bakes Nextflow +
+    JRE 17 + mamba + the pre-warmed ``pgsc_calc`` pipeline source into the
+    toolkit image. This section confirms those four pieces are reachable
+    inside the runtime container so the user sees the gap before invoking
+    ``genomeclaw pipeline pgs-compute``.
+
+    Does NOT affect the doctor exit code — same informational pattern as
+    ``ancestry_ready``. The Slice E.3 orchestrator's compute-time guard is
+    the actual enforcement layer; doctor surfaces the precondition.
+
+    Probes shell out via the injected ``runner`` (tests stub it; production
+    uses ``subprocess``). Each probe is rc==0 to count as present; the
+    captured stdout/stderr provides version-string evidence.
+    """
+    probes: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("nextflow", ("nextflow", "-version")),
+        ("java", ("java", "-version")),
+        ("mamba", ("mamba", "--version")),
+    )
+
+    versions: dict[str, str] = {}
+    missing: list[str] = []
+    for label, cmd in probes:
+        rc, stdout, stderr = runner.run(list(cmd))
+        if rc != 0:
+            missing.append(label)
+            continue
+        # ``java -version`` writes to stderr by convention; nextflow + mamba
+        # write to stdout. Store the full captured output; downstream
+        # consumers parse what they need (nextflow's first line is a banner;
+        # the version is on line 2).
+        versions[label] = (stdout.strip() or stderr.strip()).strip()
+
+    # Pre-warmed pgsc_calc pipeline source — single file probe at the
+    # canonical bake-in path.
+    pgsc_calc_marker = "/opt/pgsc_calc/main.nf"
+    rc, _stdout, _stderr = runner.run(["test", "-f", pgsc_calc_marker])
+    pgsc_calc_prewarm: str | None = pgsc_calc_marker if rc == 0 else None
+    if pgsc_calc_prewarm is None:
+        missing.append("pgsc_calc")
+
+    if not missing:
+        return {
+            "status": "ready",
+            "nextflow_version": versions["nextflow"],
+            "java_version": versions["java"],
+            "mamba_version": versions["mamba"],
+            "pgsc_calc_prewarm": pgsc_calc_prewarm,
+        }
+
+    return {
+        "status": "missing",
+        "missing": tuple(missing),
+        "nextflow_version": versions.get("nextflow"),
+        "java_version": versions.get("java"),
+        "mamba_version": versions.get("mamba"),
+        "pgsc_calc_prewarm": pgsc_calc_prewarm,
+        "fix": (
+            "Rebuild the genomeclaw/toolkit image with the PRS runtime stage "
+            "(see docs/plans/active/prs-runtime-bootstrap/) — Nextflow + JRE 17 "
+            "+ mamba + pre-warmed pgsc_calc source must be on the in-container PATH."
+        ),
+    }
+
+
+def _collect_ancestry_ready(reference_root: Path) -> dict[str, Any]:
+    """Probe the canonical PGS Catalog ancestry layout. Informational only.
+
+    Per ``INV-C001`` v1.7 ``pgsc_calc --run_ancestry`` requires BOTH 1000G
+    and HGDP panels. A partial fetch (one subtree but not the other) would
+    silently degrade ancestry calibration; this section surfaces the gap
+    explicitly so the user (or the Slice E.3 orchestrator) sees it before
+    invoking compute.
+
+    Does NOT affect the doctor exit code — matches the ``references_section``
+    pattern where missing reference data is "what to do next", not corrupted
+    state. The Slice E.3 orchestrator + the existing
+    ``_check_ancestry_reference`` guard at compute-time are the actual
+    enforcement layer for ``INV-C001`` v1.7.
+    """
+    from genomeclaw_toolkit.prep.pgs import (
+        _PGS_ANCESTRY_PRESENCE_FILES,
+        _ancestry_reference_dir,
+    )
+
+    ancestry_dir = _ancestry_reference_dir(reference_root)
+    # Verified upstream layout (2026-05-17): bundle extracts FLAT, no per-
+    # population subdirs. Probe the three combined files pgsc_calc reads
+    # via --run_ancestry. File presence (not directory existence) catches
+    # the "user made the dir manually but never extracted" failure mode.
+    present_files: list[str] = []
+    missing_files: list[str] = []
+    for relpath in _PGS_ANCESTRY_PRESENCE_FILES:
+        if (ancestry_dir / relpath).exists():
+            present_files.append(relpath)
+        else:
+            missing_files.append(relpath)
+
+    if not missing_files:
+        return {
+            "status": "ready",
+            "path": str(ancestry_dir),
+            "present_files": tuple(present_files),
+        }
+
+    fix = "Install with `genomeclaw refs fetch --source pgs_catalog_ancestry --release v1`."
+    if present_files:
+        return {
+            "status": "partial",
+            "path": str(ancestry_dir),
+            "present_files": tuple(present_files),
+            "missing_files": tuple(missing_files),
+            "fix": fix,
+        }
+    return {
+        "status": "missing",
+        "path": str(ancestry_dir),
+        "missing_files": tuple(missing_files),
+        "fix": fix,
+    }
+
+
+def _collect_prs_coverage_ready(derived_root: Path) -> dict[str, Any]:
+    """Probe per-sample Tier 1 caches under ``derived/prs_coverage/``. Informational.
+
+    For each sample directory found under ``derived/prs_coverage/<sample>/``,
+    walks the per-panel subdirectories and reports the presence of the
+    canonical tier1 outputs (``tier1.vcf.gz`` + ``tier1.qc.json``). A
+    panel-version is ``ready`` when both files exist, ``partial`` when only
+    one does.
+
+    Whole-section status:
+
+    - ``no_samples`` — no ``prs_coverage/`` dir, or the dir is empty.
+    - ``ready`` — at least one sample × panel pair is fully cached.
+    - ``partial`` — at least one sample is present but no sample × panel
+      pair is fully ready (e.g. every cache is mid-build).
+
+    Does NOT affect the doctor exit code — matches ``ancestry_ready`` /
+    ``prs_runtime_ready`` discipline. The Phase 2 compute orchestrator's
+    cache-hit check at compute time is the actual enforcement layer.
+    """
+    coverage_root = derived_root / "prs_coverage"
+    fix = (
+        "Build a Tier 1 cache with `genomeclaw prs prepare-coverage --sample <id>` "
+        "(needs the panel staged via `genomeclaw refs fetch --source pgs_catalog_ancestry`)."
+    )
+
+    if not coverage_root.exists():
+        return {"status": "no_samples", "samples": [], "fix": fix}
+
+    samples_out: list[dict[str, Any]] = []
+    any_ready = False
+    any_partial = False
+    sample_dirs = sorted(p for p in coverage_root.iterdir() if p.is_dir())
+    for sample_dir in sample_dirs:
+        panel_versions: list[dict[str, Any]] = []
+        panel_dirs = sorted(p for p in sample_dir.iterdir() if p.is_dir())
+        for panel_dir in panel_dirs:
+            tier1_vcf = panel_dir / "tier1.vcf.gz"
+            tier1_qc = panel_dir / "tier1.qc.json"
+            vcf_present = tier1_vcf.exists()
+            qc_present = tier1_qc.exists()
+            if vcf_present and qc_present:
+                status = "ready"
+                any_ready = True
+            else:
+                status = "partial"
+                any_partial = True
+            panel_versions.append(
+                {
+                    "panel_version": panel_dir.name,
+                    "tier1_vcf": str(tier1_vcf) if vcf_present else None,
+                    "tier1_qc_json": str(tier1_qc) if qc_present else None,
+                    "status": status,
+                }
+            )
+        samples_out.append(
+            {"sample_id": sample_dir.name, "panel_versions": panel_versions}
+        )
+
+    if not samples_out:
+        return {"status": "no_samples", "samples": [], "fix": fix}
+
+    section_status = "ready" if any_ready else "partial" if any_partial else "no_samples"
+    out: dict[str, Any] = {"status": section_status, "samples": samples_out}
+    if section_status != "ready":
+        out["fix"] = fix
+    return out
+
+
+_DEFAULT_COLIMA_CONFIG = Path.home() / ".colima" / "default" / "colima.yaml"
+
+
+def _collect_stale_colima_mounts(config_path: Path) -> list[dict[str, str]]:
+    """Return colima mount entries whose ``location`` doesn't exist on the host.
+
+    Slice 3 of [host-mount-lifecycle](../../../../docs/plans/active/host-mount-lifecycle/development-plan.md):
+    a stale mount (configured drive that's been unplugged or renamed)
+    causes ``colima start`` to fail with ``mkdir … permission denied``.
+    Surfacing this in doctor's read-only report lets the user fix it
+    before the next colima boot.
+
+    Each returned entry has ``location`` (the stale path) and ``fix``
+    (an actionable next-step string). Empty list when no config exists
+    or every configured mount path is present.
+    """
+    if not config_path.exists():
+        return []
+    try:
+        import yaml
+
+        loaded = yaml.safe_load(config_path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(loaded, dict):
+        return []
+    mounts = loaded.get("mounts") or []
+
+    stale: list[dict[str, str]] = []
+    for entry in mounts:
+        if not isinstance(entry, dict):
+            continue
+        location = entry.get("location")
+        if not isinstance(location, str):
+            continue
+        # Trailing-slash insensitive existence check.
+        candidate = Path(location.rstrip("/") or "/")
+        if candidate.exists():
+            continue
+        stale.append(
+            {
+                "location": location,
+                "fix": (
+                    f"Plug in the drive at {location}, OR run "
+                    f"`bin/genomeclaw host eject {location}` to remove the stale entry."
+                ),
+            }
+        )
+    return stale
+
+
 def doctor(
     *,
     paths: dict[str, Path] | None = None,
     runner: _Runner | None = None,
+    colima_config_path: Path | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Run host-side layout checks + collect setup-log + colima status +
-    reference / raw-sample / derived-run state.
+    reference / raw-sample / derived-run state + stale-mount warnings.
 
     Returns ``(exit_code, report_dict)``. Exit 0 iff every infrastructure
     check passes — missing reference data / no raw sample / no derived
-    runs do **not** change the exit code (they're "what to do next"
-    signals, not corrupted-state alarms).
+    runs / stale colima mount entries do **not** change the exit code
+    (they're "what to do next" signals, not corrupted-state alarms).
+
+    Args:
+        paths: Canonical-layout overrides (tests). Defaults to
+            :data:`_DEFAULT_PATHS`.
+        runner: Subprocess runner injection point (tests).
+        colima_config_path: Override path to ``colima.yaml`` for the
+            stale-mount check (Slice 3 of host-mount-lifecycle). Defaults
+            to ``~/.colima/default/colima.yaml``.
     """
     paths = paths or _DEFAULT_PATHS
     runner = runner or _SubprocessRunner()
+    if colima_config_path is None:
+        colima_config_path = _DEFAULT_COLIMA_CONFIG
 
     checks = _run_checks(paths)
     any_failed = any(c["status"] == "FAIL" for c in checks)
 
     setup_log = _collect_setup_log(paths["scratch"])
     colima = _collect_colima(runner)
+    stale_mounts = _collect_stale_colima_mounts(colima_config_path)
 
     # Pipeline-readiness sections. These never affect the exit code; if
     # release_sets can't load (toolkit packaging bug, etc.) we still
@@ -457,13 +714,20 @@ def doctor(
 
     raw_sample = asdict(_collect_raw_sample(raw_root=paths["raw"]))
     derived_runs = [asdict(r) for r in _collect_derived_runs(derived_root=paths["derived"])]
+    ancestry_ready = _collect_ancestry_ready(paths["reference"])
+    prs_runtime_ready = _collect_prs_runtime_ready(runner)
+    prs_coverage_ready = _collect_prs_coverage_ready(paths["derived"])
 
     report = {
         "checks": checks,
         "setup_log": setup_log,
         "colima": colima,
+        "stale_mounts": stale_mounts,
         "paths": {k: str(v) for k, v in paths.items()},
         "references": references_section,
+        "ancestry_ready": ancestry_ready,
+        "prs_runtime_ready": prs_runtime_ready,
+        "prs_coverage_ready": prs_coverage_ready,
         "raw_sample": raw_sample,
         "derived_runs": derived_runs,
     }

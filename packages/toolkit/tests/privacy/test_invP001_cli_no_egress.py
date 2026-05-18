@@ -19,6 +19,8 @@ calls this out explicitly).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 
@@ -337,3 +339,92 @@ def test_invP001_no_egress_during_completion_bash(invoke_cli, _no_outbound_http:
     result = invoke_cli(["completion", "bash"])
     assert result.exit_code == 0, result.stderr
     assert "genomeclaw" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# PRS Input Coverage Fill Phase 1b: prs-prepare-coverage makes zero outbound calls.
+# ---------------------------------------------------------------------------
+
+
+def test_invP001_no_egress_during_pipeline_prs_prepare_coverage(
+    invoke_cli,
+    monkeypatch,
+    tmp_path,
+    _no_outbound_http: None,
+) -> None:
+    """`pipeline prs-prepare-coverage` runs entirely on-device.
+
+    The bcftools pipe is the only subprocess; nothing in the wrapper touches
+    urllib. Stubbing the bcftools subprocess keeps the test gate-free
+    (no GENOMECLAW_HAS_BIO required); the `_no_outbound_http` fixture
+    confirms zero urllib calls happen during CLI dispatch or wrapper logic.
+    """
+    import re as _re
+    import subprocess as _subprocess
+    from unittest.mock import MagicMock
+
+    raw = tmp_path / "raw" / "MPNRGLQ2K"
+    raw.mkdir(parents=True)
+    cram = raw / "MPNRGLQ2K.cram"
+    cram.write_bytes(b"CRAM-fixture")
+    (raw / "MPNRGLQ2K.cram.crai").write_bytes(b"")
+    fasta_dir = tmp_path / "reference" / "grch38"
+    fasta_dir.mkdir(parents=True)
+    fasta = fasta_dir / "grch38.fa.gz"
+    fasta.write_bytes(b"")
+    pca = tmp_path / "reference" / "prs_pca_sites" / "v1"
+    pca.mkdir(parents=True)
+    sites = pca / "pca_sites.tsv"
+    sites.write_text("chr22\t10001\n")
+    alleles = pca / "pca_alleles.tsv"
+    alleles.write_text("chr22\t10001\tA,G\n")
+    derived = tmp_path / "derived"
+    derived.mkdir()
+
+    norm_re = _re.compile(r"bcftools norm[^|&]*?--output\s+(\S+)")
+
+    def _bcftools_stub(cmd, **_kwargs):
+        cmd_str = " ".join(str(x) for x in cmd)
+        match = norm_re.search(cmd_str)
+        if match:
+            out = Path(match.group(1))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            import gzip as _gzip
+
+            with _gzip.open(out, "wt") as fh:
+                fh.write(
+                    "##fileformat=VCFv4.2\n"
+                    "##contig=<ID=chr22,length=50818468>\n"
+                    "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"genotype\">\n"
+                    "##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"depth\">\n"
+                    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+                    "chr22\t10001\t.\tA\tG\t.\tPASS\t.\tGT:DP\t0/0:30\n"
+                )
+            (out.parent / (out.name + ".tbi")).write_bytes(b"")
+        return _subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(
+        "genomeclaw_toolkit.prep.coverage_fill.subprocess.run", MagicMock(side_effect=_bcftools_stub)
+    )
+
+    result = invoke_cli(
+        [
+            "pipeline",
+            "prs-prepare-coverage",
+            "--sample",
+            "MPNRGLQ2K",
+            "--cram",
+            str(cram),
+            "--sites",
+            str(sites),
+            "--alleles",
+            str(alleles),
+            "--fasta",
+            str(fasta),
+            "--panel-version",
+            "v1",
+            "--output-root",
+            str(derived),
+        ]
+    )
+    assert result.exit_code == 0, result.stderr

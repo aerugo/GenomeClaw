@@ -54,6 +54,7 @@ def test_fetch_all_iterates_default_release_set(
         "vep_cache",
         "alphamissense",
         "loftee",
+        "pgs_catalog_ancestry",
     }
     # gnomAD must propagate its chroms tuple from the manifest; the others
     # must not (single-file sources reject ``chroms``).
@@ -65,6 +66,7 @@ def test_fetch_all_iterates_default_release_set(
     assert by_source["alphamissense"]["chroms"] is None
     assert by_source["loftee"]["chroms"] is None
     assert by_source["gnomad-constraint"]["chroms"] is None
+    assert by_source["pgs_catalog_ancestry"]["chroms"] is None
     assert by_source["gnomad-exomes"]["chroms"] is not None
     assert "1" in by_source["gnomad-exomes"]["chroms"]
     assert "fetching release set 'default'" in result.stderr
@@ -132,6 +134,7 @@ def test_fetch_all_skips_already_present_sources(
         "vep_cache",
         "alphamissense",
         "loftee",
+        "pgs_catalog_ancestry",
     }
     assert "[skip]" in result.stderr and "clinvar" in result.stderr
 

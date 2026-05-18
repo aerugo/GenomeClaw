@@ -157,6 +157,76 @@ CREATE TABLE schema_meta (
 );
 """
 
+# Phase 6 Slice A — findings table.
+#
+# One row per agent-consumable finding. Materialised post-annotate from
+# the variants table + curated notes + (Phase 6D) the Cyrius CYP2D6
+# diplotype + (Phase 6E) PRS scores. Every row carries the canonical
+# seven provenance columns (`INV-R001`).
+#
+# Schema invariants enforced at the model layer in
+# [schemas/finding.py](../schemas/finding.py):
+#   - INV-E001: evidence_ref is non-empty.
+#   - INV-C001 v1.5: clinical_escalation is set iff category =
+#     'clinical-actionable'.
+_FINDINGS_DDL = """
+CREATE TABLE findings (
+    id                     TEXT NOT NULL,
+    category               TEXT NOT NULL,
+    title                  TEXT NOT NULL,
+    summary                TEXT NOT NULL,
+    evidence_ref           TEXT NOT NULL,
+    evidence_quality       TEXT NOT NULL,
+    gene_symbols           TEXT[],
+    drugs                  TEXT[],
+    clinical_escalation    TEXT,
+    -- Provenance (the canonical seven; INV-R001)
+    source_path     TEXT NOT NULL,
+    source_sha256   TEXT NOT NULL,
+    tool            TEXT NOT NULL,
+    tool_version    TEXT NOT NULL,
+    params_json     TEXT NOT NULL,
+    schema_version  TEXT NOT NULL,
+    created_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (id)
+);
+"""
+
+
+# Phase 6 Slice E v2 — agent-driven PRS scores table.
+#
+# Keyed by PGS Catalog ID (per Q8 v1.6); one row per PRS the agent has
+# computed for this user. Carries the 6 domain columns + 2 INV-A003
+# provenance columns (agent_choice_rationale + requested_for_question) +
+# the supersession audit column + the seven canonical provenance columns.
+# `source_pgs_id` is implicit — it's identical to `pgs_id` since the table
+# is keyed by PGS Catalog ID; the response model echoes both fields for
+# output-shape consistency with the retired v1.5 `/v1/pgs/{trait}` shape.
+_PGS_SCORES_DDL = """
+CREATE TABLE pgs_scores (
+    pgs_id                          TEXT NOT NULL,
+    trait_label                     TEXT NOT NULL,
+    percentile_in_user_ancestry     DOUBLE,
+    raw_score                       DOUBLE,
+    study_population                TEXT NOT NULL,
+    calibration_warning             TEXT,
+    -- INV-A003 provenance: agent's choice rationale + originating user question.
+    agent_choice_rationale          TEXT NOT NULL,
+    requested_for_question          TEXT NOT NULL,
+    -- Supersession audit trail (mirrors INV-A001's prior-note-stays-on-disk pattern).
+    superseded_by                   TEXT,
+    -- Provenance (the canonical seven; INV-R001)
+    source_path     TEXT NOT NULL,
+    source_sha256   TEXT NOT NULL,
+    tool            TEXT NOT NULL,
+    tool_version    TEXT NOT NULL,
+    params_json     TEXT NOT NULL,
+    schema_version  TEXT NOT NULL,
+    created_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (pgs_id)
+);
+"""
+
 
 @dataclass(frozen=True)
 class ProvenanceTag:
@@ -197,6 +267,8 @@ def create_store(path: Path) -> None:
     try:
         conn.execute(_VARIANTS_DDL)
         conn.execute(coverage_qc_create_table_sql())
+        conn.execute(_FINDINGS_DDL)
+        conn.execute(_PGS_SCORES_DDL)
         conn.execute(_SCHEMA_META_DDL)
         conn.execute(
             "INSERT INTO schema_meta (key, value) VALUES (?, ?)",

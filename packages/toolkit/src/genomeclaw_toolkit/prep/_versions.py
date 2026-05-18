@@ -20,6 +20,21 @@ import duckdb
 from genomeclaw_toolkit import __version__ as toolkit_version
 from genomeclaw_toolkit.prep._bcftools import BcftoolsError, bcftools_version
 
+# PRS Runtime Bootstrap Phase 1 — pinned versions for the toolkit image's
+# Stage 1c PRS runtime stack. Single source of truth for the Dockerfile
+# build-arg defaults + the `host doctor` `prs_runtime_ready` probe's expected
+# values + the wrapper's `pgs_scores.params_json` provenance trail.
+#
+# - ``nextflow`` ≥ 23.10.0 per pgsc_calc's documented minimum (verified
+#   against PGScatalog/pgsc_calc nextflow.config 2026-05-17).
+# - ``jre`` 17 — Nextflow's current minimum; matches OpenJDK 17 conda-forge.
+# - ``pgsc_calc`` v2.2.0 — latest stable as of 2026-05-17.
+PRS_RUNTIME_VERSIONS: dict[str, str] = {
+    "nextflow": "24.10.0",
+    "jre": "17",
+    "pgsc_calc": "v2.2.0",
+}
+
 
 def collect_tool_versions() -> dict[str, str]:
     """Capture per-tool version strings for the manifest's ``tools`` block.
