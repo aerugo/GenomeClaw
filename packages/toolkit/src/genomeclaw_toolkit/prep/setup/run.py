@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 
 from genomeclaw_toolkit.prep.setup import detect as _detect
+from genomeclaw_toolkit.prep.setup._preconditions import raise_if_missing
 from genomeclaw_toolkit.prep.setup._reconfigure_colima import reconfigure_colima
 from genomeclaw_toolkit.prep.setup._recreate_layout import recreate_layout
 from genomeclaw_toolkit.prep.setup._start_colima import start_colima
@@ -68,6 +69,13 @@ def run_smart(*, platform: Platform | None = None) -> int:
     - non-zero on action-handler failure (the underlying handler
       raises; we let it propagate after logging).
     """
+    # Slice 1 of host-mount-lifecycle: fail loudly with an actionable
+    # install hint when colima/docker/diskutil isn't on PATH. Without
+    # this, the user gets a deep traceback from inside the destructive-
+    # path subprocess calls instead of a one-line "brew install colima"
+    # pointer.
+    raise_if_missing()
+
     # Resolve via the ``detect`` module's attribute so tests that
     # ``monkeypatch.setattr(detect, "default_platform", ...)`` apply
     # to both ``run_smart`` and ``run_interactive``.

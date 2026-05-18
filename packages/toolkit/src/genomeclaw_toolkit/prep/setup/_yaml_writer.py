@@ -84,4 +84,62 @@ def write_colima_yaml(
     return config_path
 
 
-__all__ = ["write_colima_yaml"]
+def remove_colima_mount(
+    config_path: Path,
+    *,
+    location: Path,
+    backup: bool = True,
+) -> Path | None:
+    """Remove the ``mounts:`` entry whose ``location`` matches ``location``.
+
+    Idempotent: re-running against a config without the entry is a no-op
+    (returns ``None``). Missing config file is also a no-op (returns
+    ``None``) — defends ``host eject`` on a fresh install that hasn't
+    run ``host setup`` yet.
+
+    Slice 2 of the [host-mount-lifecycle plan](../../../../../docs/plans/active/host-mount-lifecycle/development-plan.md).
+    Pairs with the eject path so retiring a drive cleans up its colima
+    mount entry; without this, the entry stays in ``colima.yaml`` and
+    the next ``colima start`` after the drive is unplugged fails with
+    ``mkdir /Volumes/<drive>: permission denied``.
+
+    Args:
+        config_path: Path to ``colima.yaml``. Missing file → no-op.
+        location: The mount location to remove (e.g.
+            ``Path("/Volumes/Genome_Work")``). Trailing-slash insensitive.
+        backup: If True and the file existed + a change was made, copies
+            the pre-edit bytes to ``<path>.bak.<ts>``.
+
+    Returns:
+        The rewritten ``config_path`` when a change was made; ``None`` when
+        no change was needed (file missing or entry already absent).
+    """
+    if not config_path.exists():
+        return None
+
+    loaded = yaml.safe_load(config_path.read_text()) or {}
+    if not isinstance(loaded, dict):
+        return None
+
+    existing_mounts = loaded.get("mounts") or []
+    target_loc = _normalise_location(str(location))
+    kept = [
+        m
+        for m in existing_mounts
+        if not (isinstance(m, dict) and _normalise_location(m.get("location", "")) == target_loc)
+    ]
+    if len(kept) == len(existing_mounts):
+        # Nothing to remove — entry wasn't there.
+        return None
+
+    if backup:
+        ts = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+        bak = config_path.with_name(f"{config_path.name}.bak.{ts}")
+        bak.write_bytes(config_path.read_bytes())
+
+    loaded["mounts"] = kept
+    config_path.write_text(yaml.safe_dump(loaded, sort_keys=False))
+    return config_path
+
+
+__all__ = ["remove_colima_mount", "write_colima_yaml"]

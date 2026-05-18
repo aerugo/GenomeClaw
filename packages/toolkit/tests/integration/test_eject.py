@@ -1,13 +1,18 @@
 """Phase 5 — ``genomeclaw host eject`` subcommand tests.
 
 Eject sequence: refuse if a pipeline is running, then ``colima stop``,
-then ``diskutil eject /Volumes/Genome_Work``. Tests inject a fake
-subprocess runner so no real ``colima`` / ``diskutil`` shellouts fire.
+then remove the drive's colima.yaml mount entry (Slice 2 of
+host-mount-lifecycle), then ``diskutil eject /Volumes/Genome_Work``.
+Tests inject a fake subprocess runner so no real ``colima`` /
+``diskutil`` shellouts fire.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 
 class _FakeRunner:
@@ -91,3 +96,97 @@ def test_eject_with_force_skips_pipeline_check() -> None:
     assert rc == 0
     assert any("colima" in call[0] for call in runner.calls)
     assert any("diskutil" in call[0] for call in runner.calls)
+
+
+# ---------------------------------------------------------------------------
+# Slice 2 of host-mount-lifecycle — eject also removes the colima mount.
+# ---------------------------------------------------------------------------
+
+
+def _write_colima_yaml(path: Path, mounts: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"mounts": mounts}, sort_keys=False))
+
+
+def test_eject_removes_drive_from_colima_yaml(tmp_path: Path) -> None:
+    """After eject, the drive's entry is gone from colima.yaml.
+
+    Without this, the next ``colima start`` hits the
+    ``mkdir /Volumes/<drive>: permission denied`` failure that bit the
+    project owner on 2026-05-14.
+    """
+    from genomeclaw_toolkit.prep.eject import eject
+
+    cfg = tmp_path / "colima.yaml"
+    _write_colima_yaml(
+        cfg,
+        [
+            {"location": "/Volumes/Genome_Work", "writable": True},
+            {"location": "/Users/hugi/GitRepos", "writable": True},
+        ],
+    )
+    runner = _FakeRunner()
+
+    rc = eject(
+        runner=runner,
+        drive="/Volumes/Genome_Work",
+        colima_config_path=cfg,
+    )
+    assert rc == 0
+
+    data = yaml.safe_load(cfg.read_text())
+    locations = [m["location"] for m in data["mounts"]]
+    assert "/Volumes/Genome_Work" not in locations
+    assert "/Users/hugi/GitRepos" in locations, (
+        "eject must remove only the target drive, not other user mounts"
+    )
+
+
+def test_eject_skips_colima_yaml_edit_when_config_missing(tmp_path: Path) -> None:
+    """No colima.yaml on disk → eject still succeeds (no-op on the edit step).
+
+    Fresh user who runs eject without ever having run setup shouldn't
+    see a crash. The diskutil + colima-stop steps still fire.
+    """
+    from genomeclaw_toolkit.prep.eject import eject
+
+    cfg = tmp_path / "nonexistent" / "colima.yaml"
+    runner = _FakeRunner()
+
+    rc = eject(
+        runner=runner,
+        drive="/Volumes/Genome_Work",
+        colima_config_path=cfg,
+    )
+    assert rc == 0
+    assert not cfg.exists()
+
+
+def test_eject_mount_removal_idempotent_on_retry(tmp_path: Path) -> None:
+    """Running eject twice in a row against the same drive is a no-op the
+    second time (the drive's mount is already gone after the first call).
+    """
+    from genomeclaw_toolkit.prep.eject import eject
+
+    cfg = tmp_path / "colima.yaml"
+    _write_colima_yaml(
+        cfg,
+        [
+            {"location": "/Volumes/Genome_Work", "writable": True},
+            {"location": "/Volumes/Other_Drive", "writable": True},
+        ],
+    )
+    runner = _FakeRunner()
+
+    # First call: removes the entry.
+    eject(runner=runner, drive="/Volumes/Genome_Work", colima_config_path=cfg)
+
+    # Second call: entry is already gone; no error.
+    runner2 = _FakeRunner()
+    rc = eject(runner=runner2, drive="/Volumes/Genome_Work", colima_config_path=cfg)
+    assert rc == 0
+
+    data = yaml.safe_load(cfg.read_text())
+    locations = [m["location"] for m in data["mounts"]]
+    assert "/Volumes/Genome_Work" not in locations
+    assert "/Volumes/Other_Drive" in locations
