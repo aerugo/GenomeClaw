@@ -12,10 +12,14 @@ from pathlib import Path
 
 import pytest
 
+from genomeclaw_toolkit.prep import _vep as vep_module
 from genomeclaw_toolkit.prep._vep import (
+    _VEP_SKIPPED_VARIANT_RE,
     VepConfig,
     VepPluginConfig,
+    VepRunStats,
     build_vep_flags,
+    vep_run,
 )
 
 
@@ -127,6 +131,34 @@ def test_build_vep_flags_assembly_defaults_to_grch38() -> None:
     assert flags[flags.index("--assembly") + 1] == "GRCh38"
 
 
+def test_build_vep_flags_emits_fasta_when_reference_fasta_set() -> None:
+    """``--fasta <path>`` lands in argv when ``reference_fasta`` is set.
+
+    VEP's ``--hgvs`` flag requires a reference FASTA in offline mode
+    (``ERROR: Cannot generate HGVS coordinates (--hgvs and --hgvsg) in
+    offline mode without a FASTA file``) — discovered the hard way during
+    the 2026-05-14 real-data smoke. Phase 4D unconditionally passes
+    ``--hgvs``, so the FASTA must always thread through.
+    """
+    flags = build_vep_flags(
+        _minimal_config(reference_fasta=Path("/ref/grch38/ncbi-2014/grch38.fa.gz"))
+    )
+    assert "--fasta" in flags, f"--fasta missing from flags: {flags}"
+    assert flags[flags.index("--fasta") + 1] == "/ref/grch38/ncbi-2014/grch38.fa.gz"
+
+
+def test_build_vep_flags_omits_fasta_when_reference_fasta_none() -> None:
+    """``--fasta`` is absent when no reference FASTA is configured.
+
+    Defends the "partial reference layouts still annotate everything
+    they can" contract: a user without a staged FASTA gets a flag set
+    that's still well-formed (will fail at VEP-time on ``--hgvs`` —
+    that's the upstream contract, not ours to mask).
+    """
+    flags = build_vep_flags(_minimal_config())
+    assert "--fasta" not in flags
+
+
 # ---------------------------------------------------------------------------
 # build_vep_flags — plugin expansion
 # ---------------------------------------------------------------------------
@@ -200,3 +232,104 @@ def test_build_vep_flags_extra_flags_appended_before_io_pair() -> None:
     i_idx = flags.index("-i")
     assert verbose_idx < i_idx
     assert flags[flags.index("--buffer_size") + 1] == "1000"
+
+
+# ---------------------------------------------------------------------------
+# Skipped-variant accounting (decoy-variant-provenance plan)
+# ---------------------------------------------------------------------------
+
+
+def test_skipped_variant_regex_matches_canonical_vep_warning() -> None:
+    """The regex captures the contig name from a real VEP skip warning.
+
+    VEP emits one ``WARNING: line N skipped (<contig> <pos> ... )`` line per
+    variant it can't annotate (chromosome absent from the cache — typical
+    for GRCh38 decoy / random / alt contigs). Capturing the contig name
+    powers the per-chrom skip breakdown that the orchestrator surfaces in
+    provenance for an audit trail of dropped variants.
+    """
+    line = (
+        "WARNING: line 12345 skipped (chrUn_JTFH01001998v1_decoy 1234 . A G): "
+        "Chromosome chrUn_JTFH01001998v1_decoy not found in annotation sources or synonyms"
+    )
+    match = _VEP_SKIPPED_VARIANT_RE.match(line)
+    assert match is not None
+    assert match.group(1) == "chrUn_JTFH01001998v1_decoy"
+
+
+def test_skipped_variant_regex_ignores_other_warnings() -> None:
+    """Non-skip ``WARNING:`` lines must not match — defends against false
+    positives that would inflate the recorded skip count.
+
+    LOFTEE's compile-time warnings, VEP's plugin-loading warnings, and
+    bgzip's stderr noise all start with ``WARNING:`` but aren't variant
+    skips; only the ``line N skipped (...)`` shape counts.
+    """
+    non_skip_lines = [
+        "WARNING: Plugin LoF compile failed",
+        "WARNING: 2026-05-15 something happened",
+        "INFO: line 1 skipped (foo bar)",  # different prefix
+        "WARNING: line skipped (chr1 1)",  # missing line number
+        "",
+        "Some random log line",
+    ]
+    for line in non_skip_lines:
+        assert _VEP_SKIPPED_VARIANT_RE.match(line) is None, (
+            f"regex unexpectedly matched non-skip line: {line!r}"
+        )
+
+
+def test_vep_run_stats_counts_skipped_variants_from_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``vep_run`` returns a :class:`VepRunStats` summing skips per chrom.
+
+    Monkeypatches ``subprocess.Popen`` to a fake that yields a stream of
+    canned stderr lines (mix of skips on three contigs + unrelated noise)
+    and asserts the returned stats match the input counts. The regex is
+    exercised end-to-end with the wrapper's parsing loop.
+    """
+    stderr_lines = [
+        b"2026-05-15 12:00:00 - Read 100 variants from stdin\n",
+        b"WARNING: line 1 skipped (chrUn_KI270742v1 1 . A T): not in cache\n",
+        b"WARNING: line 2 skipped (chrUn_KI270742v1 2 . A T): not in cache\n",
+        b"WARNING: line 3 skipped (chr1_KI270706v1_random 3 . C G): not in cache\n",
+        b"WARNING: line 4 skipped (chrUn_JTFH01001998v1_decoy 4 . T A): not in cache\n",
+        b"WARNING: line 5 skipped (chrUn_KI270742v1 5 . G A): not in cache\n",
+        b"WARNING: Plugin LoF compile noise - should not count\n",
+        b"2026-05-15 12:01:00 - Done\n",
+    ]
+
+    class _FakeProc:
+        def __init__(self, lines: list[bytes]) -> None:
+            self._lines = iter(lines)
+            self.returncode: int | None = None
+            self.stderr = self  # so proc.stderr.readline works
+
+        def readline(self) -> bytes:
+            return next(self._lines, b"")
+
+        def wait(self) -> int:
+            self.returncode = 0
+            return 0
+
+    def _fake_popen(*_args: object, **_kwargs: object) -> _FakeProc:
+        return _FakeProc(stderr_lines)
+
+    monkeypatch.setattr(vep_module.subprocess, "Popen", _fake_popen)
+
+    config = VepConfig(
+        input_vcf=tmp_path / "in.vcf.gz",
+        output_vcf=tmp_path / "out.vcf.gz",
+        cache_dir=tmp_path / "cache",
+        plugin_dir=tmp_path / "plugins",
+    )
+    stats = vep_run(config)
+
+    assert isinstance(stats, VepRunStats)
+    assert stats.skipped_variants == 5
+    assert stats.skipped_chroms == {
+        "chrUn_KI270742v1": 3,
+        "chr1_KI270706v1_random": 1,
+        "chrUn_JTFH01001998v1_decoy": 1,
+    }

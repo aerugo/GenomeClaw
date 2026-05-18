@@ -16,6 +16,57 @@ from pathlib import Path
 import pytest
 
 # ---------------------------------------------------------------------------
+# ephemeral_scratch_base — Phase A of annotate-shard-resilience
+# ---------------------------------------------------------------------------
+
+
+def test_ephemeral_scratch_base_returns_default_when_env_var_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``GENOMECLAW_EPHEMERAL_SCRATCH_DIR`` unset → returns the canonical default.
+
+    The default is intentionally **inside the container** (``/tmp/genomeclaw-scratch``)
+    so the heavy per-step intermediates that vcfanno and VEP write don't traverse
+    the virtiofs bind-mount that backs ``/mnt/genomeclaw/scratch`` on the host.
+    The cram-scratch-strategy plan's documented tripwire (vcfanno EBADF under
+    concurrent reads on virtiofs) fires when shard_scratch's writes go through
+    that mount — keeping the default off-virtiofs is the architectural fix.
+    """
+    from genomeclaw_toolkit.prep.scratch import ephemeral_scratch_base
+
+    monkeypatch.delenv("GENOMECLAW_EPHEMERAL_SCRATCH_DIR", raising=False)
+    base = ephemeral_scratch_base()
+    assert base == Path("/tmp/genomeclaw-scratch")
+
+
+def test_ephemeral_scratch_base_reads_env_var_when_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An explicit ``GENOMECLAW_EPHEMERAL_SCRATCH_DIR`` overrides the default.
+
+    Tests + the user can route ephemeral scratch wherever they like — that's
+    the seam for redirecting to ``tmp_path`` in pytest, or to a VM-internal
+    ext4 partition in production.
+    """
+    from genomeclaw_toolkit.prep.scratch import ephemeral_scratch_base
+
+    explicit = tmp_path / "my-ephemeral"
+    monkeypatch.setenv("GENOMECLAW_EPHEMERAL_SCRATCH_DIR", str(explicit))
+    base = ephemeral_scratch_base()
+    assert base == explicit
+
+
+def test_ephemeral_scratch_base_returns_path_type(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Returns ``pathlib.Path``, not ``str`` (caller can `/`-compose without `Path()` wrapping)."""
+    from genomeclaw_toolkit.prep.scratch import ephemeral_scratch_base
+
+    monkeypatch.setenv("GENOMECLAW_EPHEMERAL_SCRATCH_DIR", str(tmp_path))
+    assert isinstance(ephemeral_scratch_base(), Path)
+
+
+# ---------------------------------------------------------------------------
 # shard_scratch
 # ---------------------------------------------------------------------------
 

@@ -29,6 +29,38 @@ from pathlib import Path
 # Canonical container path; orchestrators pass this implicitly.
 _SCRATCH_BASE = Path("/mnt/genomeclaw/scratch")
 
+# Canonical container path for ephemeral per-step scratch. Per Phase A
+# of the [annotate-shard-resilience plan](../../../../docs/plans/active/annotate-shard-resilience/development-plan.md),
+# every ``shard_scratch(...)`` call uses this base by default instead of
+# the bind-mounted persistent scratch. The default path is **inside the
+# container** so writes don't traverse the virtiofs layer that backs
+# ``/mnt/genomeclaw/scratch`` from the host — that's where the
+# concurrent-FD pressure surfaced the 2026-05-14 EBADF tripwire.
+# Override via ``GENOMECLAW_EPHEMERAL_SCRATCH_DIR`` for tests + advanced
+# deployments.
+_EPHEMERAL_SCRATCH_BASE_DEFAULT = Path("/tmp/genomeclaw-scratch")
+
+
+def ephemeral_scratch_base() -> Path:
+    """Return the configured ephemeral scratch base.
+
+    Reads ``GENOMECLAW_EPHEMERAL_SCRATCH_DIR`` from the environment at
+    call time (not import time) so tests can override per-fixture via
+    ``monkeypatch.setenv``. Falls back to
+    :data:`_EPHEMERAL_SCRATCH_BASE_DEFAULT` (``/tmp/genomeclaw-scratch``)
+    when unset.
+
+    The orchestrators (``annotate_vcfanno``, ``annotate_vep``,
+    ``materialize``) pass this as ``base=`` to ``shard_scratch(...)``.
+    Persistent caches under ``_cache/`` keep using the bind-mounted
+    ``_SCRATCH_BASE`` — they're read sequentially across runs and don't
+    suffer the concurrent-FD pressure that surfaced EBADF on virtiofs.
+    """
+    override = os.environ.get("GENOMECLAW_EPHEMERAL_SCRATCH_DIR")
+    if override is not None:
+        return Path(override)
+    return _EPHEMERAL_SCRATCH_BASE_DEFAULT
+
 
 class ScratchError(Exception):
     """Base for scratch-primitive errors."""

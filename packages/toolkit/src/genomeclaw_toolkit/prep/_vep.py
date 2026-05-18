@@ -96,6 +96,7 @@ class VepConfig:
     output_vcf: Path
     cache_dir: Path
     plugin_dir: Path
+    reference_fasta: Path | None = None
     assembly: str = "GRCh38"
     plugins: tuple[VepPluginConfig, ...] = ()
     fork: int = 0
@@ -104,6 +105,29 @@ class VepConfig:
 
 class VepError(RuntimeError):
     """A ``vep`` invocation exited non-zero. Stderr tail is captured in the message."""
+
+
+@dataclass(frozen=True)
+class VepRunStats:
+    """Counts surfaced from VEP's stderr stream for provenance.
+
+    VEP silently drops variants whose contig isn't present in the
+    annotation cache (typical for GRCh38 decoy / random / alt contigs)
+    and emits one ``WARNING: line N skipped (<contig> ...)`` per drop.
+    The orchestrator records the per-run aggregate + per-chrom breakdown
+    in ``provenance.json`` so a future audit can reconcile the row-count
+    delta between ``normalize`` and ``materialize``.
+    """
+
+    skipped_variants: int
+    skipped_chroms: dict[str, int]
+
+
+# Captures the contig name from VEP's "line N skipped" warning lines.
+# Format: ``WARNING: line <N> skipped (<contig> <pos> ...)``. The
+# capture group is the contig — used for the per-chrom breakdown that
+# powers the decoy-skip audit trail in provenance.
+_VEP_SKIPPED_VARIANT_RE = re.compile(r"^WARNING: line \d+ skipped \((\S+)\s")
 
 
 # CLI flags always present in the production invocation. The orchestrator
@@ -142,6 +166,13 @@ def build_vep_flags(config: VepConfig) -> list[str]:
         config.assembly,
     ]
     args.extend(_STATIC_FLAGS)
+    # ``--hgvs`` in offline mode requires ``--fasta`` (verified at VEP
+    # 114.1 — fails ``post_setup_checks`` otherwise). Emit it whenever a
+    # reference FASTA is configured; the orchestrator always sets one in
+    # production, so the conditional really only matters for tests that
+    # exercise partial configs.
+    if config.reference_fasta is not None:
+        args.extend(["--fasta", str(config.reference_fasta)])
     if config.fork > 0:
         args.extend(["--fork", str(config.fork)])
     for plugin in config.plugins:
@@ -151,7 +182,7 @@ def build_vep_flags(config: VepConfig) -> list[str]:
     return args
 
 
-def vep_run(config: VepConfig) -> None:
+def vep_run(config: VepConfig) -> VepRunStats:
     """Run ``vep`` with ``config``; stream stderr; raise :class:`VepError` on failure.
 
     Stderr is captured incrementally + forwarded to the parent process's
@@ -159,11 +190,17 @@ def vep_run(config: VepConfig) -> None:
     lines in real time on long runs. A bounded tail of recent stderr is
     preserved for the :class:`VepError` message if the subprocess
     exits non-zero.
+
+    Each ``WARNING: line N skipped (<contig> ...)`` line is counted +
+    grouped by contig; the aggregate + per-chrom breakdown returns as
+    :class:`VepRunStats` so the orchestrator can record decoy-variant
+    drops in ``provenance.json`` without re-parsing stderr.
     """
     config.output_vcf.parent.mkdir(parents=True, exist_ok=True)
     flags = build_vep_flags(config)
 
     stderr_tail: deque[str] = deque(maxlen=200)
+    skipped_chroms: dict[str, int] = {}
     proc = subprocess.Popen(flags, stderr=subprocess.PIPE)
     assert proc.stderr is not None
     for raw_line in iter(proc.stderr.readline, b""):
@@ -173,10 +210,18 @@ def vep_run(config: VepConfig) -> None:
         stderr_tail.append(decoded)
         sys.stderr.write(decoded + "\n")
         sys.stderr.flush()
+        match = _VEP_SKIPPED_VARIANT_RE.match(decoded)
+        if match is not None:
+            chrom = match.group(1)
+            skipped_chroms[chrom] = skipped_chroms.get(chrom, 0) + 1
     proc.wait()
     if proc.returncode != 0:
         tail = "\n".join(stderr_tail)
         raise VepError(f"vep failed (rc={proc.returncode}):\n{tail}")
+    return VepRunStats(
+        skipped_variants=sum(skipped_chroms.values()),
+        skipped_chroms=skipped_chroms,
+    )
 
 
 # VEP's ``--help`` output (versions block) looks like:
@@ -219,6 +264,7 @@ __all__: Sequence[str] = (
     "VepConfig",
     "VepError",
     "VepPluginConfig",
+    "VepRunStats",
     "build_vep_flags",
     "vep_run",
     "vep_version",

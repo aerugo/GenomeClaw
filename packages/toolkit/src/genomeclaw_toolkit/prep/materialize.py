@@ -37,8 +37,12 @@ from genomeclaw_toolkit.prep._csq import (
     split_csq,
 )
 from genomeclaw_toolkit.prep._events import PhaseComplete, PhaseStart, emit_beat
+from genomeclaw_toolkit.prep._gnomad_constraint import (
+    join_gene_loeuf,
+    resolve_constraint_tsv,
+)
 from genomeclaw_toolkit.prep._vcf import iter_variant_rows
-from genomeclaw_toolkit.prep.scratch import shard_scratch
+from genomeclaw_toolkit.prep.scratch import ephemeral_scratch_base, shard_scratch
 from genomeclaw_toolkit.prep.store import _VARIANTS_DDL, ProvenanceTag, write_variants
 from genomeclaw_toolkit.schemas import SCHEMA_VERSION
 
@@ -147,6 +151,8 @@ def _reset_variants_table(store_path: Path) -> None:
 def materialize(
     *,
     run_dir: Path,
+    reference_dir: Path | None = None,
+    gnomad_constraint_release: str | None = None,
     started_at: datetime | None = None,
     progress_callback: Callable[[_ProgressEvent], None] | None = None,
 ) -> Path:
@@ -156,6 +162,17 @@ def materialize(
         run_dir: an existing ``derived/<run-id>/`` from a prior
             ``ingest`` + ``normalize``. Must contain ``normalized.vcf.gz``,
             ``manifest.json``, ``provenance.json``, and ``variants.duckdb``.
+        reference_dir: optional toolkit reference root. When provided
+            and a gnomAD constraint TSV is staged under
+            ``<ref>/gnomad-constraint/<release>/``, a post-write join
+            populates the ``gene_loeuf`` column from the constraint
+            metrics (MANE Select transcript's LOEUF per gene). When
+            ``None`` or no constraint source is staged, ``gene_loeuf``
+            stays NULL on every row — same graceful-degradation shape
+            as ``annotate_vep``'s "no cache → skip" fallback.
+        gnomad_constraint_release: optional release tag (e.g. ``"v4.1"``).
+            When ``None`` and ``reference_dir`` is provided, picks the
+            lex-largest dir under ``<ref>/gnomad-constraint/``.
         started_at: optional fixed UTC timestamp; defaults to
             ``datetime.now(tz=UTC)``. Tests pass a fixed value to drive
             determinism.
@@ -299,24 +316,71 @@ def materialize(
             vep_columns = _extract_vep_columns(csq_value, csq_fields)
             yield {**row, "sample_id": sample_id, **vep_columns}
 
-    # CSV-staging + DuckDB temp_directory live on /mnt/genomeclaw/scratch
-    # via the shard_scratch primitive (auto-cleanup on exit). The variants
-    # table is rewritten in place by DuckDB's transaction; no atomic_promote
-    # needed because there's no scratch→derived copy step.
-    # Scratch base inferred as a sibling of derived/ — see annotate.py /
-    # annotate_vcfanno.py for the same pattern.
-    scratch_base = run_dir.parent.parent / "scratch"
+    # CSV-staging + DuckDB temp_directory live on the **ephemeral** scratch
+    # base (container-local; off virtiofs) per Phase A of the
+    # [annotate-shard-resilience plan](../../../../docs/plans/active/annotate-shard-resilience/development-plan.md).
+    # The variants table is rewritten in place by DuckDB's transaction;
+    # no atomic_promote needed because there's no scratch→derived copy.
     emit_beat(
         progress_callback,
         phase="materialize",
         message="rewriting variants table in DuckDB",
         logger=log,
     )
-    with shard_scratch(step="materialize", run_id=run_dir.name, base=scratch_base) as scratch:
+    with shard_scratch(
+        step="materialize", run_id=run_dir.name, base=ephemeral_scratch_base()
+    ) as scratch:
         write_variants(store_path, _row_stream(), tag=tag, work_dir=scratch)
+
+    # gnomAD-constraint → gene_loeuf join. Runs after write_variants
+    # because the join targets the freshly-rewritten variants table's
+    # ``gene_symbol`` column (populated above from CSQ when the
+    # annotated VCF carries one).
+    #
+    # The join is opt-in via ``reference_dir``: when not provided, the
+    # column stays NULL and no constraint input lands in provenance.
+    # When ``reference_dir`` is provided but no constraint source is
+    # staged on disk, we silently skip — same graceful-degradation shape
+    # as ``annotate_vep``'s "no cache → skip" fallback, so a partial
+    # reference layout (fetched VEP cache but not constraint, for
+    # example) still produces a working variants table.
+    constraint_input: dict[str, Any] | None = None
+    constraint_release_recorded: str | None = None
+    if reference_dir is not None:
+        resolved = resolve_constraint_tsv(reference_dir, gnomad_constraint_release)
+        if resolved is not None:
+            constraint_tsv, constraint_release_recorded = resolved
+            emit_beat(
+                progress_callback,
+                phase="materialize",
+                message=(
+                    f"joining gene_loeuf from gnomAD constraint {constraint_release_recorded}"
+                ),
+                logger=log,
+            )
+            updated = join_gene_loeuf(store_path, constraint_tsv)
+            log.info("gene_loeuf populated for %d variant rows", updated)
+            constraint_input = {
+                "path": str(constraint_tsv),
+                "sha256": _sha256_file(constraint_tsv),
+            }
+
     completed_at = datetime.now(tz=UTC)
 
-    # Append step to provenance.json.
+    # Append step to provenance.json. Inputs always include the
+    # materialize input; the constraint TSV joins it when it was used.
+    inputs: list[dict[str, Any]] = [
+        {"path": materialize_input.name, "sha256": materialize_input_sha},
+    ]
+    if constraint_input is not None:
+        inputs.append(constraint_input)
+    params: dict[str, Any] = {
+        "sample_id": sample_id,
+        "input_kind": materialize_input_kind,
+    }
+    if constraint_release_recorded is not None:
+        params["gnomad_constraint_release"] = constraint_release_recorded
+
     provenance_path = run_dir / "provenance.json"
     provenance = json.loads(provenance_path.read_text())
     provenance["steps"].append(
@@ -326,14 +390,9 @@ def materialize(
             "tool_version": TOOLKIT_VERSION,
             "started_at": started_at,
             "completed_at": completed_at,
-            "inputs": [
-                {"path": materialize_input.name, "sha256": materialize_input_sha},
-            ],
+            "inputs": inputs,
             "outputs": [{"path": "variants.duckdb", "sha256": _sha256_file(store_path)}],
-            "params": {
-                "sample_id": sample_id,
-                "input_kind": materialize_input_kind,
-            },
+            "params": params,
         }
     )
     provenance_path.write_text(json.dumps(provenance, indent=2, default=_serialise_for_json) + "\n")

@@ -58,7 +58,11 @@ from genomeclaw_toolkit.prep._vep import (
     vep_run,
     vep_version,
 )
-from genomeclaw_toolkit.prep.scratch import atomic_promote, shard_scratch
+from genomeclaw_toolkit.prep.scratch import (
+    atomic_promote,
+    ephemeral_scratch_base,
+    shard_scratch,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -134,6 +138,27 @@ def _latest_release_dir(source_root: Path) -> Path | None:
         return None
     releases = sorted(p for p in source_root.iterdir() if p.is_dir())
     return releases[-1] if releases else None
+
+
+def _resolve_reference_fasta(reference_dir: Path) -> Path | None:
+    """Resolve ``reference/grch38/<release>/grch38.fa.gz`` (newest release).
+
+    VEP's ``--hgvs`` flag requires ``--fasta <path>`` in offline mode
+    (otherwise ``post_setup_checks`` raises ``ERROR: Cannot generate
+    HGVS coordinates in offline mode without a FASTA file``). Phase 4D
+    unconditionally enables ``--hgvs`` so the orchestrator must always
+    pass a FASTA; this resolver finds it.
+
+    Returns ``None`` when no GRCh38 source is staged — same graceful-skip
+    shape as ``_resolve_vep_cache_dir``. Callers must handle the None
+    case (the orchestrator surfaces an actionable error pointing the user
+    at ``genomeclaw refs fetch --source grch38``).
+    """
+    release = _latest_release_dir(reference_dir / "grch38")
+    if release is None:
+        return None
+    fasta = release / "grch38.fa.gz"
+    return fasta if fasta.exists() else None
 
 
 def _resolve_plugins(reference_dir: Path) -> tuple[VepPluginConfig, ...]:
@@ -249,6 +274,18 @@ def annotate_vep(
         )
         return None
 
+    reference_fasta = _resolve_reference_fasta(reference_dir)
+    if reference_fasta is None:
+        # ``--hgvs`` in offline mode requires ``--fasta`` (VEP 114.1
+        # post_setup_checks fails fatally otherwise). The orchestrator
+        # unconditionally enables ``--hgvs`` so a missing FASTA is an
+        # actionable user error rather than a silent fallback.
+        raise FileNotFoundError(
+            "no GRCh38 reference FASTA under reference/grch38/<release>/grch38.fa.gz; "
+            "run `genomeclaw refs fetch --source grch38` first "
+            "(VEP's --hgvs flag requires --fasta in offline mode)"
+        )
+
     if started_at is None:
         started_at = datetime.now(tz=UTC)
 
@@ -265,22 +302,33 @@ def annotate_vep(
     )
 
     vcfanno_sha = _sha256_file(vcfanno_vcf)
+    reference_fasta_sha = _sha256_file(reference_fasta)
     output_vcf = run_dir / "vep.vcf.gz"
 
-    scratch_base = run_dir.parent.parent / "scratch"
-    with shard_scratch(step="annotate-vep", run_id=run_dir.name, base=scratch_base) as scratch:
+    # Ephemeral scratch base (off virtiofs) per Phase A of the
+    # [annotate-shard-resilience plan](../../../../docs/plans/active/annotate-shard-resilience/development-plan.md).
+    # VEP's intermediate VCF is the LARGEST single transient artifact in
+    # the pipeline (~10–15 GB on real data); routing it through the
+    # container-local ephemeral base avoids the concurrent-FD pressure
+    # that surfaced EBADF on the bind-mounted persistent scratch.
+    with shard_scratch(
+        step="annotate-vep", run_id=run_dir.name, base=ephemeral_scratch_base()
+    ) as scratch:
         work_output = scratch / "vep.vcf.gz"
         config = VepConfig(
             input_vcf=vcfanno_vcf,
             output_vcf=work_output,
             cache_dir=cache_dir,
             plugin_dir=_IMAGE_PLUGIN_DIR,
+            reference_fasta=reference_fasta,
             plugins=plugins,
             fork=fork,
         )
         flags = build_vep_flags(config)
-        vep_run(config)
-        emit_beat(progress_callback, phase="annotate", message="vep complete; indexing output", logger=log)
+        run_stats = vep_run(config)
+        emit_beat(
+            progress_callback, phase="annotate", message="vep complete; indexing output", logger=log
+        )
         work_output_tbi = bcftools_index_tbi(vcf=work_output, derived_dir=scratch)
 
         atomic_promote(src=work_output, dst=output_vcf)
@@ -291,7 +339,10 @@ def annotate_vep(
 
     provenance_path = run_dir / "provenance.json"
     provenance = json.loads(provenance_path.read_text())
-    inputs: list[dict[str, Any]] = [{"path": str(vcfanno_vcf), "sha256": vcfanno_sha}]
+    inputs: list[dict[str, Any]] = [
+        {"path": str(vcfanno_vcf), "sha256": vcfanno_sha},
+        {"path": str(reference_fasta), "sha256": reference_fasta_sha},
+    ]
     # The VEP cache + plugin-data files are also reference inputs;
     # provenance records the cache release name so a rerun against the
     # same release reproduces the same annotation columns. Hashing the
@@ -311,6 +362,13 @@ def annotate_vep(
                 "plugins": [p.to_flag() for p in plugins],
                 "flags": flags,
                 "fork": fork,
+                # Decoy / random / alt-contig variants VEP couldn't
+                # annotate — surfaced from its stderr stream so the
+                # ``normalize → materialize`` row-count delta is
+                # auditable post-hoc. See [decoy-variant-provenance.md](
+                # ../../../../docs/plans/active/decoy-variant-provenance.md).
+                "vep_skipped_variants": run_stats.skipped_variants,
+                "vep_skipped_chroms": run_stats.skipped_chroms,
             },
         }
     )

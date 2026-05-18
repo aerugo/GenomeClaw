@@ -81,7 +81,11 @@ from genomeclaw_toolkit.prep._vcfanno import (
     run_vcfanno,
     vcfanno_version,
 )
-from genomeclaw_toolkit.prep.scratch import atomic_promote, shard_scratch
+from genomeclaw_toolkit.prep.scratch import (
+    atomic_promote,
+    ephemeral_scratch_base,
+    shard_scratch,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -693,8 +697,11 @@ def _stage_dbsnp_with_cache(
     file, so the next run treats the cache as a miss and rebuilds —
     crash recovery without manual cleanup.
     """
-    cache_dir = scratch_base / _PERSISTENT_CACHE_SUBDIR / "dbsnp" / _persistent_cache_key(
-        source_sha, _DBSNP_REFSEQ_TO_UCSC_MAP
+    cache_dir = (
+        scratch_base
+        / _PERSISTENT_CACHE_SUBDIR
+        / "dbsnp"
+        / _persistent_cache_key(source_sha, _DBSNP_REFSEQ_TO_UCSC_MAP)
     )
     cached_vcf = cache_dir / "dbsnp.ucsc.vcf.gz"
     cached_tbi = cache_dir / "dbsnp.ucsc.vcf.gz.tbi"
@@ -894,13 +901,21 @@ def annotate_vcfanno(
     # the prior ``normalize`` step (new mtime every run); listing it in
     # ``sources`` just lets the parallel pool include it in the same
     # worker rotation.
-    # Scratch base: sibling of derived/, matching both production (the
-    # shim bind-mounts /mnt/genomeclaw/{derived,scratch} as siblings)
-    # and the test layout (the genomeclaw_layout fixture lays out
-    # tmp/{derived,scratch}). Computed once here because both the hash
-    # cache and the per-step shard_scratch want the same root.
-    scratch_base = run_dir.parent.parent / "scratch"
-    hash_cache_dir = scratch_base / _PERSISTENT_CACHE_SUBDIR / "sha256"
+    # Two scratch tiers (split-scratch per Phase A of annotate-shard-resilience):
+    #
+    # - ``persistent_scratch``: bind-mounted ``/mnt/genomeclaw/scratch/``.
+    #   Houses the dbSNP rename cache + sha256 cache. Reads sequentially,
+    #   not under concurrent-FD pressure — safe on virtiofs.
+    # - ``ephemeral_scratch``: container-local (``/tmp/genomeclaw-scratch``
+    #   by default; ``GENOMECLAW_EPHEMERAL_SCRATCH_DIR`` overrides).
+    #   Houses the per-step shard_scratch dir (staged clinvar copy + per-
+    #   chrom input/output VCFs + vcfanno intermediates). These are the
+    #   concurrent-FD-pressure targets that surfaced EBADF on virtiofs
+    #   in the 2026-05-14 smoke — keeping them off the bind-mount fixes
+    #   the issue.
+    persistent_scratch = run_dir.parent.parent / "scratch"
+    ephemeral_scratch = ephemeral_scratch_base()
+    hash_cache_dir = persistent_scratch / _PERSISTENT_CACHE_SUBDIR / "sha256"
     worker_count = _resolve_worker_count()
     sources_to_hash: list[Path] = [clinvar_vcf, dbsnp_vcf, *gnomad_files, norm_vcf]
     emit_beat(
@@ -924,13 +939,14 @@ def annotate_vcfanno(
     norm_vcf_sha = shas[norm_vcf]
 
     output_vcf = run_dir / "vcfanno.vcf.gz"
-    # ``scratch_base`` was computed above (alongside ``hash_cache_dir``);
-    # used here for the per-step ``shard_scratch`` context. Keeping a
-    # single definition avoids drift if the path convention ever
-    # changes.
+    # ``shard_scratch`` uses the **ephemeral** base (off virtiofs).
+    # The persistent dbSNP cache (staged below) uses the **persistent**
+    # base. Both were resolved above.
     representative_config_toml: str | None = None
     chroms_processed: tuple[str, ...] = ()
-    with shard_scratch(step="annotate-vcfanno", run_id=run_dir.name, base=scratch_base) as scratch:
+    with shard_scratch(
+        step="annotate-vcfanno", run_id=run_dir.name, base=ephemeral_scratch
+    ) as scratch:
         emit_beat(
             progress_callback,
             phase="annotate",
@@ -959,7 +975,7 @@ def annotate_vcfanno(
         dbsnp_staged = _stage_dbsnp_with_cache(
             source=dbsnp_vcf,
             source_sha=dbsnp_sha,
-            scratch_base=scratch_base,
+            scratch_base=persistent_scratch,
             progress_callback=progress_callback,
         )
 
@@ -1019,11 +1035,7 @@ def annotate_vcfanno(
                 phase="annotate",
                 message=(
                     f"[{plan.idx}/{len(shard_plans)}] {plan.label}: extracting input shard"
-                    + (
-                        f" ({len(plan.regions)} contigs)"
-                        if len(plan.regions) > 1
-                        else ""
-                    )
+                    + (f" ({len(plan.regions)} contigs)" if len(plan.regions) > 1 else "")
                 ),
                 logger=log,
             )
@@ -1094,9 +1106,7 @@ def annotate_vcfanno(
                 max_workers=worker_count,
                 thread_name_prefix="annotate-vcfanno-shard",
             ) as pool:
-                future_to_idx = {
-                    pool.submit(_run_shard, plan): plan.idx for plan in shard_plans
-                }
+                future_to_idx = {pool.submit(_run_shard, plan): plan.idx for plan in shard_plans}
                 for fut in concurrent.futures.as_completed(future_to_idx):
                     idx = future_to_idx[fut]
                     annotated_shards[idx - 1] = fut.result()

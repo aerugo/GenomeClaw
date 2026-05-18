@@ -69,10 +69,41 @@ RUN micromamba install -y -n base \
 FROM mambaorg/micromamba:${MAMBA_TAG} AS vep
 ARG VEP_VERSION
 USER root
+# ``perl-bioperl`` is **not** pulled in transitively by ``ensembl-vep`` —
+# VEP itself uses ``Bio::EnsEMBL::*``, not ``Bio::Perl``. The LOFTEE
+# plugin (``LoF.pm`` line 46) explicitly ``use Bio::Perl;`` so without
+# the explicit install LOFTEE silently fails to compile at runtime and
+# every variant's ``loftee_lof`` column ends up NULL. Documented as the
+# 2026-05-14 real-data smoke regression — see
+# ``tests/integration/test_vep_loftee_plugin.py``.
+#
+# ``perl-bio-bigfile`` provides ``Bio::DB::BigFile`` — used by LOFTEE's
+# ``gerp_dist.pl`` helper (loaded by LoF.pm via ``do`` at runtime) to
+# read the bigwig GERP conservation file. ``perl -c LoF.pm`` does NOT
+# recurse into ``do``-loaded files, so the missing dep hid behind a
+# passing LoF.pm syntax check; the 2026-05-15 real-data smoke surfaced
+# it with another full set of NULL ``loftee_lof`` columns. The
+# ``test_gerp_dist_helper_compiles_with_vep_perl_inside_image`` test
+# guards against re-introducing the gap.
+#
+# Workaround for a bioconda packaging quirk: ``perl-bioperl-core`` 1.7.8
+# ships ``lib/perl5/site_perl/BioPerl.pm`` (a different module) but NOT
+# ``Bio/Perl.pm`` — the convenience wrapper LOFTEE's ``use Bio::Perl;``
+# expects. LoF.pm has the bare ``use`` but **no callsite** for any
+# Bio::Perl function (verified 2026-05-14 via ``grep Bio::Perl`` —
+# exactly one hit in the entire plugin). So an empty package shim at
+# ``Bio/Perl.pm`` satisfies the ``use`` statement without any runtime
+# difference. If LOFTEE ever adds a real ``Bio::Perl::foo()`` call this
+# shim will surface as ``Can't locate object method "foo" via package
+# Bio::Perl`` and we switch to ``cpanm Bio::Perl`` here.
 RUN micromamba create -y -p /opt/conda-vep \
         -c conda-forge -c bioconda \
         "ensembl-vep=${VEP_VERSION}" \
-    && micromamba clean -a -y
+        perl-bioperl \
+        perl-bio-bigfile \
+    && micromamba clean -a -y \
+    && printf 'package Bio::Perl;\nuse strict;\nuse warnings;\n# Empty shim — see Dockerfile comment.\n1;\n' \
+       > /opt/conda-vep/lib/perl5/site_perl/Bio/Perl.pm
 
 # ---------------------------------------------------------------------------
 # Stage 1b — VEP plugins (LOFTEE + Ensembl/VEP_plugins) git-cloned in
