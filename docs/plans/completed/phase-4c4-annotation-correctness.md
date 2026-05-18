@@ -1,34 +1,34 @@
 # Phase 4C.4 — annotation correctness + reference data integrity tactical sub-plan
 
-**Status**: ⏸️ **ON HOLD** — paused 2026-05-12 pending [rich-cli plan](../../rich-cli/) completion. Will resume after rich-cli Phase 8 closes (with W3 resumable after rich-cli Phase 4).
+**Status**: 🟢 **Closed 2026-05-15** as part of the MVP Phase 4 close-paperwork sweep. W1–W4 + W7 all ✅ shipped; W5 + W6 marked non-blocking residual items and explicitly accepted as deferred at Phase 4 closure. The 2026-05-13 second-pass investigation confirmed W4 (dbSNP rename) + W7 (real-data ClinVar parity at **42,885 / 42,885, +0.00%**) both shipped in commit 1f58aeb, in one session. W5 (pre-flight validator) didn't ship — kept as a future guard, not blocking. W6 (vcfanno stderr discipline) didn't ship — likely obsolete after the per-chrom shard pattern landed in 1f58aeb; verify before any future revisit.
 **Created**: 2026-05-12
 **Paused**: 2026-05-12
-**Parent**: [phase-4.md](phase-4.md)
-**Predecessor**: Sub-phase 4C.3 closed ([work-notes 2026-05-11](../work-notes.md#L753)); W3 parent-orchestrator rewrite shipped 218/0 in-image.
-**Successor**: [W4 — ClinVar parity check](phase-4-completion.md#w4--clinvar-match-count-parity-check-real-data-smoke-30-min) (currently blocked; will resume post-rich-cli).
+**Partially resumed**: 2026-05-13 (after [rich-cli plan](rich-cli/) closed)
+**W4 + W7 closed**: 2026-05-13 (commit 1f58aeb)
+**Plan closed + moved to completed/**: 2026-05-15
+**Parent**: [docs/plans/active/mvp/phases/phase-4.md](../active/mvp/phases/phase-4.md)
+**Predecessor**: Sub-phase 4C.3 closed ([work-notes 2026-05-11](../active/mvp/work-notes.md#L753)); W3 parent-orchestrator rewrite shipped 218/0 in-image.
+**Successor**: superseded by [docs/plans/active/mvp/phases/phase-4-completion.md § W4](../active/mvp/phases/phase-4-completion.md) (ClinVar parity check — passed 2026-05-13).
 **Scope**: diagnose and fix the faults that surfaced when the W4 real-data parity check ran against the project owner's Nebula VCF + full reference layout for the first time. Restore W4 to a passable state.
 
 ---
 
-## ⏸️ Pause notice
+## Status update — 2026-05-13 (second-pass investigation)
 
-Project owner directed (2026-05-12) that the [rich-cli migration](../../rich-cli/) ships completely before any further MVP work. Work items here are paused until rich-cli Phase 8 closes (with W3 resumable after rich-cli Phase 4).
+The [rich-cli plan](../../../completed/rich-cli/) closed, which absorbed W1 and W1.5 of this plan into its Phase 3. Commit 1f58aeb later that day shipped W4 + W7 together at exact real-data parity. As of 2026-05-13 end-of-day:
 
-**Work absorbed into rich-cli Phase 3** (Operations):
+| W# | Item | Status |
+|----|------|--------|
+| W1 | Fetcher Content-Length + bgzip EOF verification | ✅ shipped in rich-cli Phase 3 |
+| W1.5 | Smarter download: stall detection + Range-resume + bounded retries | ✅ shipped in rich-cli Phase 3 |
+| W2 | Doctor-side integrity sweep across staged references | ✅ shipped as `genomeclaw refs verify` (rich-cli Phase 4) |
+| W3 | Re-fetch the 5 truncated gnomAD chrom files | ✅ effectively done — `genomeclaw refs verify` confirms all 26 bgzipped reference files intact as of 2026-05-13 |
+| **W4** | **dbSNP RefSeq → UCSC chr-rename** | ✅ **shipped in commit 1f58aeb** — `_DBSNP_REFSEQ_TO_UCSC_MAP` (25 contigs) + `_stage_dbsnp_with_cache` + generalised `_stage_with_chr_rename` + 3 covering tests in `test_annotate_vcfanno.py` |
+| W5 | Pre-flight annotation schema validator | ⏸ **Pending but non-blocking** — W7 passed without it. Kept open as a future guard against overlay-source regressions. |
+| W6 | Vcfanno stderr noise filter + redirect-to-file | ⏸ **Pending but likely obsolete** — the per-chrom shard pattern shipped in 1f58aeb eliminated the bix.go noise structurally. The old `Popen + readline + sys.stderr.write + flush` pattern is still in `_vcfanno.py:136-150` but the 1h59m real-data wall on 4.87M variants suggests the 50% stderr-overhead concern is gone. Verify before closing 4C.4. |
+| **W7** | **Resume the ClinVar parity check** | ✅ **passed in commit 1f58aeb** at **42,885 / 42,885 ClinVar matches (+0.00% delta vs. Phase-4A baseline)** on the project owner's Nebula VCF, 1h59m end-to-end wall on consumer hardware |
 
-- **W1** (Fetcher Content-Length + bgzip EOF verification) — moves to rich-cli Phase 3 because rich-cli is rewriting the `fetch` command from scratch; shipping a known-buggy rewrite would be wrong.
-- **W1.5** (Smarter download: stall detection + Range-resume + bounded retries) — same reason; moves to rich-cli Phase 3.
-
-**Work that remains here**, waiting to resume:
-
-- **W2** Doctor-side integrity sweep across staged references
-- **W3** Re-fetch the 5 truncated gnomAD chrom files (using the resume-capable fetcher that ships in rich-cli Phase 3)
-- **W4** dbSNP RefSeq → UCSC chr-rename
-- **W5** Pre-flight annotation schema validator
-- **W6** Vcfanno stderr noise filter + redirect-to-file
-- **W7** Resume the ClinVar parity check
-
-**Reference data in the meantime**: the 5 truncated gnomAD files (chr6, chr7, chr9, chr10, chr11) remain on disk in their truncated state until rich-cli Phase 3 + this plan's W3 re-fetches them. The Phase 4 parity gate stays open until then.
+CLI commands throughout this doc are updated to the post-rich-cli `genomeclaw <group> <verb>` form.
 
 ---
 
@@ -95,6 +95,8 @@ This is exactly the class of issue the [cram-scratch-strategy](../../../complete
 
 ### W1 — Fetcher post-download integrity verification *(critical, ~2 hours)*
 
+**Status**: ✅ **Shipped via rich-cli Phase 3** (2026-05-12 / 2026-05-13). See [completed/rich-cli/](../../../completed/rich-cli/).
+
 **Goal**: Make `_stream_to_file` fail loudly when (a) the downloaded byte count doesn't match `Content-Length`, or (b) the downloaded file is bgzipped and lacks the canonical 28-byte EOF marker. Failed verification removes the partial file and raises a clear exception. (The smarter download strategy that wraps this with resume-on-stall lives in W1.5.)
 
 **TDD steps**:
@@ -122,6 +124,8 @@ This is exactly the class of issue the [cram-scratch-strategy](../../../complete
 ---
 
 ### W1.5 — Smarter download: stall detection + Range-based resume + bounded retries *(critical, ~3 hours)*
+
+**Status**: ✅ **Shipped via rich-cli Phase 3** (2026-05-12 / 2026-05-13). See [completed/rich-cli/](../../../completed/rich-cli/).
 
 **Goal**: Wrap `_stream_to_file` (now integrity-verified by W1) with a retry-and-resume layer. A stalled connection no longer nukes a multi-hour download; an interrupted transfer picks up at the offset where it left off via HTTP `Range: bytes=<offset>-`. Each successful resume terminates in W1's integrity verification — incomplete bytes never reach the consumer.
 
@@ -163,7 +167,9 @@ The W3 re-fetch is ~38 GB across 5 files over home broadband; even a single tran
 
 ### W2 — Doctor-side integrity sweep across staged references *(complement to W1, ~1 hour)*
 
-**Goal**: Extend `genomeclaw-prep doctor` to run the bgzip EOF-marker check across every staged reference file. Reports per-file status alongside the existing "reference present" check. Catches truncation that pre-dated the W1 fix (i.e. the project owner's current layout) and reports it as a partial-reference fault.
+**Status**: ✅ **Shipped as `genomeclaw refs verify`** during the rich-cli migration. The command runs the bgzip EOF-marker check across every staged reference file; the user's 2026-05-13 run reports `All 26 bgzipped files intact.` Note this landed as a `refs` subcommand rather than as a `doctor` extension — the rich-cli structure made the `refs` group the natural home for reference-integrity verification.
+
+**Goal**: Extend integrity-verification surface to run the bgzip EOF-marker check across every staged reference file. Reports per-file status alongside the existing "reference present" check. Catches truncation that pre-dated the W1 fix (i.e. the project owner's current layout) and reports it as a partial-reference fault.
 
 **TDD steps**:
 
@@ -176,7 +182,7 @@ The W3 re-fetch is ~38 GB across 5 files over home broadband; even a single tran
 - `packages/toolkit/src/genomeclaw_toolkit/prep/doctor.py` — MODIFY.
 - `packages/toolkit/tests/integration/test_doctor.py` — MODIFY (1 new test).
 
-**Gate**: new test passes; running `bin/genomeclaw-prep doctor` against the project owner's current layout reports chr6/chr7/chr9/chr10/chr11 as truncated.
+**Gate**: ✅ — running `bin/genomeclaw refs verify` against the project owner's current layout reports `All 26 bgzipped files intact.` as of 2026-05-13.
 
 **Dependencies**: W1 done (provides the `_verify_bgzip_eof_marker` helper).
 
@@ -184,22 +190,26 @@ The W3 re-fetch is ~38 GB across 5 files over home broadband; even a single tran
 
 ### W3 — Re-fetch the 5 truncated gnomAD chrom files *(unblocks W4, ~3–6 hours wall time)*
 
+**Status**: ✅ **Effectively done 2026-05-13** — `bin/genomeclaw refs verify` confirms all 26 bgzipped reference files intact (the truncated chr6/7/9/10/11 were re-fetched implicitly as part of the resumable-fetcher rich-cli landing).
+
 **Goal**: Replace the 5 truncated gnomAD-exomes chrom files with clean downloads using the now-correct fetcher (W1).
 
 **Procedure**:
-1. With W1 + W2 landed, run `bin/genomeclaw-prep doctor` to confirm the 5 truncated files are flagged.
-2. For each of chr6, chr7, chr9, chr10, chr11: invoke `bin/genomeclaw-prep fetch --source gnomad-exomes --release v4.1 --chroms <one>` (assuming the existing CLI supports the `--chroms` filter — verify; if not, scope a minor CLI extension).
-3. Re-run `bin/genomeclaw-prep doctor` — all 24 files should now report OK.
+1. With W1 + W2 landed, run `bin/genomeclaw refs verify` to confirm the 5 truncated files are flagged.
+2. For each of chr6, chr7, chr9, chr10, chr11: invoke `bin/genomeclaw refs fetch --source gnomad-exomes --release v4.1 --chroms <one>`.
+3. Re-run `bin/genomeclaw refs verify` — all 24 gnomad-exomes chrom files (and the other 2 bgzipped reference sources) should now report OK.
 
 **Sizes to expect** (from upstream gnomAD v4.1 docs): chr6 ≈ 8.32 GB, chr7 ≈ 7.8 GB, chr9 ≈ 6.6 GB, chr10 ≈ 7.0 GB, chr11 ≈ 8.5 GB. Total re-download ≈ 38 GB. At typical home-network speeds (~50 MB/s), wall time is ~13 minutes for chr6 alone — could be 1–2 hours total, dominated by network throughput.
 
-**Gate**: 24/24 files pass the doctor EOF-marker check.
+**Gate**: ✅ `refs verify` reports 26/26 OK (2026-05-13).
 
 **Dependencies**: W1 + W2 done.
 
 ---
 
 ### W4 — dbSNP RefSeq → UCSC chr-rename *(unrelated bug, blocks parity check anyway, ~1 hour)*
+
+**Status**: ✅ **Shipped 2026-05-13** in commit 1f58aeb. `_DBSNP_REFSEQ_TO_UCSC_MAP` (25 contigs: chr1–22 + X + Y + M) + `_stage_dbsnp_with_cache` (persistent cache keyed on source_sha + rename_map_text; one-time ~30 min rename amortises across runs) + generalised `_stage_with_chr_rename` (parameterised over (source, rename_map)) all in [annotate_vcfanno.py:115-141, 649-751](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/annotate_vcfanno.py). Test coverage in [test_annotate_vcfanno.py](../../../../packages/toolkit/tests/integration/test_annotate_vcfanno.py): `test_annotate_vcfanno_overlays_all_three_sources` (asserts `dbsnp_rsid=rs1` in output INFO), `test_invD001_annotate_vcfanno_does_not_mutate_reference_files` (verifies dbSNP source SHA256 unchanged), `test_annotate_vcfanno_caches_renamed_dbsnp_across_runs` (verifies persistent caching).
 
 **Goal**: Wire a dbSNP-specific contig rename at staging time, mirroring the ClinVar one. Without this, 0 `dbsnp_rsid` annotations are produced.
 
@@ -225,6 +235,8 @@ The W3 re-fetch is ~38 GB across 5 files over home broadband; even a single tran
 
 ### W5 — Pre-flight annotation schema validator *(defence-in-depth, ~2 hours)*
 
+**Status**: ⏸ **Pending but non-blocking**. W7 (the parity check W5 was meant to defend) passed without it on 2026-05-13. The validator remains valuable as a future guard against overlay-source regressions (new dbSNP release with different contig naming, gnomAD INFO field renames, etc.) — exactly the class of issue that caused the 2026-05-12 W4 attempted-failure. The provisional `INV-R-pre-flight` invariant is deliberately held for a separate later promotion pass (per the 2026-05-13 thorough revision direction).
+
 **Goal**: Before any vcfanno invocation, walk each overlay source's VCF header and assert: (a) every declared `field` in our config is present in `##INFO=<ID=...>` lines, AND (b) at least one contig in the input VCF is reachable in the source's tabix index. Fail in <1s with a clear per-source error rather than after 30+ min of vcfanno chewing.
 
 **TDD steps**:
@@ -249,6 +261,8 @@ The W3 re-fetch is ~38 GB across 5 files over home broadband; even a single tran
 ---
 
 ### W6a — Adopt `rich` for inline CLI progress + tabular output *(quality-of-life, ~3 hours)*
+
+**Status**: ✅ **Shipped via rich-cli plan** (2026-05-12 / 2026-05-13) — at much larger scope than this work item originally contemplated. The full CLI was migrated to Typer + rich + structured NDJSON; `genomeclaw <group> <verb>` is the canonical form. See [completed/rich-cli/](../../../completed/rich-cli/).
 
 **Goal**: Replace per-line `print(f"  {bytes_so_far}/{total} @ rate")` updates with inline-redrawn progress bars in the fetcher. Render `doctor`'s output as a `rich.table.Table`. Render `pipeline`'s phase banners as `rich.panel.Panel`s. The `--fetch-all` run goes from "hundreds of newline-flooded progress lines" to "one bar per file that updates in place + an overall progress bar". The `doctor` output goes from plain text to a structured table. Non-TTY contexts (CI logs, piped stdout) degrade gracefully to periodic frame updates without ANSI escapes — rich's `Console` handles this automatically.
 
@@ -298,13 +312,15 @@ The W3 re-fetch is ~38 GB across 5 files over home broadband; even a single tran
 - `packages/toolkit/tests/integration/test_fetch.py` — MODIFY (2 new callback tests).
 - `packages/toolkit/tests/integration/test_doctor.py` — MODIFY (text-render structure assertions; the JSON-mode tests stay unchanged).
 
-**Gate**: 4 new tests pass; the existing `doctor`'s `--json` mode produces byte-identical output to before; running `bin/genomeclaw-prep fetch --all` shows inline progress bars (one per file + overall); `bin/genomeclaw-prep doctor` shows a rich-rendered table.
+**Gate**: ✅ — running `bin/genomeclaw refs fetch --all` shows inline progress bars (one per file + overall); `bin/genomeclaw refs verify` / `bin/genomeclaw host doctor` show rich-rendered tables. Final implementation (rich-cli plan) is broader than the W6a scope (full CLI rewrite to Typer + structured NDJSON output).
 
 **Dependencies**: W1.5 done (provides the `progress_callback` hook in the resume-capable streamer).
 
 ---
 
 ### W6 — Vcfanno stderr noise filter + redirect-to-file *(cosmetic, ~1 hour)*
+
+**Status**: ⏸ **Pending but likely obsolete**. The original W6 motivation was 120M `bix.go:251: chromosome chrN not found in chrM.vcf.bgz` warnings drowning real errors, plus 50% wall-time overhead from the per-line `sys.stderr.write+flush` pattern. The 1f58aeb per-chrom shard pattern eliminated the bix.go noise structurally — each shard's vcfanno only queries the matching gnomAD-exomes file, so the cross-chrom not-found warnings drop to ~zero. The 1h59m real-data wall on 4.87M variants suggests the stderr overhead is also no longer material. The old `Popen + readline + sys.stderr.write + flush` pattern is still in [_vcfanno.py:136-150](../../../../packages/toolkit/src/genomeclaw_toolkit/prep/_vcfanno.py#L136-L150) but isn't causing observed harm. Verify (run the project owner's pipeline + count stderr lines + measure wall time) before deciding whether to close W6 as obsolete or to ship the planned filter.
 
 **Goal**: Stop draining vcfanno's stderr through the Python wrapper's `Popen + per-line sys.stderr.write + flush` pattern (~50% overhead + drowns real errors in noise). Replace with: subprocess-level redirect to a file in the scratch dir, plus a tailing thread that classifies lines into (noise, signal) and forwards only signal lines to the parent stderr. Surface a one-line summary count of suppressed noise. The full unfiltered log lives on disk for forensics.
 
@@ -332,46 +348,45 @@ The W3 re-fetch is ~38 GB across 5 files over home broadband; even a single tran
 
 ### W7 — Resume W4 (ClinVar parity check)
 
-**Goal**: Re-run the [phase-4-completion W4 gate](phase-4-completion.md#w4--clinvar-match-count-parity-check-real-data-smoke-30-min). With W1/W2/W3 (fetcher fix + integrity sweep + clean re-fetch), W4 (dbSNP rename), W5 (pre-flight validator), and W6 (stderr discipline) in place, the run should complete cleanly with a ClinVar match count comparable to the Phase-4A baseline.
+**Status**: ✅ **Passed 2026-05-13 in commit 1f58aeb**. Real-data outcome: **42,885 / 42,885 ClinVar matches (+0.00% delta vs. Phase-4A baseline)** on the project owner's Nebula VCF (4.87M variants, 1h59m end-to-end wall on consumer hardware). The original "± 1% of 42,885" gate (later softened to "documented and explainable") was met exactly. Notably this passed **without W5 (pre-flight validator) or W6 (stderr discipline) shipping** — W4 (dbSNP rename) + the per-chrom shard pattern were sufficient.
 
-**Procedure**: per the existing W4 plan in [phase-4-completion.md](phase-4-completion.md#w4--clinvar-match-count-parity-check-real-data-smoke-30-min).
+**Procedure used**: full pipeline ingest → normalize → annotate (with W4-shipped dbSNP rename + per-chrom shards) → materialize on the project owner's Nebula CRAM + VCF.
 
-**Gate**: count within ±1% of 42,885 → close 4C.4; mark phase-4-completion W4 as ✅; reopen W5 (VEP) per the existing successor plan.
+**Gate**: ✅ count is documented and explainable.
 
-**Dependencies**: W1, W1.5, W3, W4, W5, W6, W6a all done.
+**Dependencies (historical)**: W1, W1.5, W2, W3, W4 ✅ shipped.
 
 ---
 
-## Dependency graph
+## Dependency graph (2026-05-13 update)
 
 ```
-W1 (integrity) ─→ W1.5 (resume + retry) ─→ W2 (doctor sweep) ─→ W3 (re-fetch) ─┐
-                       │                                                       │
-                       └────────────────────→ W6a (rich progress UX) ──────────┤
-                                                                               │
-W4 (dbSNP rename) ──→ W5 (pre-flight validator) ───────────────────────────────→ W7 (W4 parity)
-                                                                               │
-W6 (vcfanno stderr discipline) ────────────────────────────────────────────────┘
+W1 ✅ ──→ W1.5 ✅ ──→ W2 ✅ ──→ W3 ✅ ──┐                  (reference-data thread; closed via rich-cli)
+                                        │
+                       W6a ✅ ──────────┤                  (UX thread; closed via rich-cli)
+                                        │
+W4 (dbSNP rename) ──→ W5 (pre-flight) ──┼──→ W7 (parity)   (active)
+                                        │
+W6 (vcfanno stderr) ────────────────────┘                  (active)
 ```
 
-- **Reference-data thread**: W1 → W1.5 → W2 → W3. Strict linear chain. W1.5 needs W1's integrity gate to be its success criterion; W2 reuses W1's `_verify_bgzip_eof_marker`; W3 needs the new fetcher + doctor in place to verify the re-fetch produces a clean layout.
-- **UX thread**: W6a (rich integration) joins the reference-data thread via W1.5's `progress_callback` hook. W6a's progress bars are the user-visible payoff of the resume work.
-- **Annotation-correctness thread**: W4 → W5. Independent of the reference-data thread.
-- **Stderr-discipline thread**: W6 stands alone.
-- **W7 (W4 parity gate)**: requires every other work item done.
+- **Reference-data thread**: ✅ closed via rich-cli Phase 3 + `refs verify`. All 26 bgzipped reference files intact as of 2026-05-13.
+- **UX thread**: ✅ closed via rich-cli — at much larger scope than W6a originally contemplated.
+- **Annotation-correctness thread**: W4 → W5 → W7 ⏳ active.
+- **Stderr-discipline thread**: W6 stands alone ⏳ active.
 
-## Suggested session breakdown
+## Suggested session breakdown — remaining work
 
 | Session | Items | Est. wall time | Notes |
 |---------|-------|----------------|-------|
-| 1 | W1 + W1.5 + W2 | ~5–6 hours | Fetcher integrity + resume + doctor sweep; all host-runnable; ~10 new tests; lays the foundation for everything downstream |
-| 2 | W4 + W6 | ~2 hours | dbSNP rename (in-image, needs_bio) + vcfanno stderr discipline (host-runnable); independent of the fetcher thread, can run in parallel with session 1 if needed |
-| 3 | W6a | ~3 hours | Rich integration: console singleton + progress callback in fetcher + doctor's rich.table + pipeline panel banners |
-| 4 | W3 | ~1–2 hours wall | Re-fetch the 5 truncated files using the new resume-capable fetcher; mostly network-bound, can run unattended |
-| 5 | W5 | ~2 hours | Pre-flight annotation schema validator |
-| 6 | W7 | ~1 hour | Real-data parity check on project owner's Nebula VCF |
+| ~~1~~ | ~~W1 + W1.5 + W2~~ | ✅ shipped via rich-cli |
+| ~~3~~ | ~~W6a~~ | ✅ shipped via rich-cli (broader scope) |
+| ~~4~~ | ~~W3~~ | ✅ effectively done — `refs verify` confirms 26/26 OK |
+| 2 | W4 + W6 | ~2 hours | dbSNP rename (in-image, needs_bio) + vcfanno stderr discipline (host-runnable). Independent — could split. |
+| 5 | W5 | ~2 hours | Pre-flight annotation schema validator. Promotion of `INV-R-pre-flight` is **deliberately deferred** out of the 2026-05-13 revision pass; the validator still ships but the invariant promotion is a separate later edit. |
+| 6 | W7 | ~1 hour | Real-data parity check on project owner's Nebula VCF; gate softened to "documented and explainable" per the 2026-05-13 revision. |
 
-**Total active time**: ~13–15 hours; wall time dominated by session 4's re-fetch (~1–2 hours unattended) and session 6's pipeline run (~30 min). Sessions 1 and 2 are independent and could parallelise if you want to split workdays.
+**Total remaining active time**: ~5 hours; wall time dominated by session 6's pipeline run (~30 min active + ~1.5 h compute).
 
 ---
 
@@ -385,21 +400,23 @@ W6 (vcfanno stderr discipline) ────────────────�
 
 ## Completion criteria
 
-- [ ] W1 — fetcher Content-Length + bgzip EOF verification shipped; `TruncatedDownload` / `IncompleteBgzip` exceptions defined; 4 new tests pass
-- [ ] W1.5 — fetcher resume-on-stall via Range requests + bounded retries shipped; `DownloadStalled` defined; 5 new tests pass; one demonstrably-recovering integration test
-- [ ] W2 — doctor's `reference_integrity` sweep ships; flags the existing truncated files
-- [ ] W3 — chr6/chr7/chr9/chr10/chr11 re-fetched using the resume-capable fetcher; doctor reports 24/24 OK
-- [ ] W4 — dbSNP RefSeq-accession contigs renamed; 2 new needs_bio tests pass
-- [ ] W5 — pre-flight validator shipped; 4 new host-runnable tests pass
-- [ ] W6 — vcfanno stderr filtered + full log on disk; 2 new tests pass
-- [ ] W6a — `rich` adopted for fetcher progress + doctor table + pipeline panels; `--json` doctor mode byte-identical; 4 new tests pass
-- [ ] W7 — W4 ClinVar parity check passes (count within ±1% of 42,885)
-- [ ] [phase-4-completion.md](phase-4-completion.md) updated to mark W4 ✅ and unblock W5 (VEP)
-- [ ] `INV-D-fetch-integrity` promoted to [INVARIANTS.md](../../../reference/INVARIANTS.md) (assuming W1 + W1.5 land cleanly)
-- [ ] This sub-plan retired (moved into Phase-4 work-notes or deleted)
+- [x] W1 — fetcher Content-Length + bgzip EOF verification ✅ shipped via rich-cli Phase 3.
+- [x] W1.5 — fetcher resume-on-stall via Range requests + bounded retries ✅ shipped via rich-cli Phase 3.
+- [x] W2 — `refs verify` integrity sweep ✅ shipped via rich-cli Phase 4; flags truncated files. Note: landed under the `refs` command group rather than `doctor`.
+- [x] W3 — chr6/chr7/chr9/chr10/chr11 re-fetched; `refs verify` reports 26/26 OK as of 2026-05-13.
+- [x] W4 — dbSNP RefSeq-accession contigs renamed; 3 covering tests pass in `test_annotate_vcfanno.py`. ✅ 2026-05-13 (1f58aeb).
+- [ ] W5 — pre-flight validator. **Non-blocking** — W7 passed without it; still valuable as a future guard.
+- [ ] W6 — vcfanno stderr filtered + full log on disk. **Likely obsolete** — per-chrom shard pattern resolved the noise; verify before closing.
+- [x] W6a — `rich` integration ✅ shipped via the rich-cli plan (broader scope than W6a originally contemplated).
+- [x] W7 — ClinVar match-count parity check passed: **42,885 / 42,885 (+0.00%)** on the project owner's Nebula VCF. ✅ 2026-05-13 (1f58aeb).
+- [ ] [phase-4-completion.md](phase-4-completion.md) updated to reflect 1f58aeb-shipped state.
+- [ ] `INV-D-fetch-integrity` promotion to [INVARIANTS.md](../../../reference/INVARIANTS.md) — **deliberately deferred** out of the 2026-05-13 revision pass (held for a separate later promotion alongside `INV-R-pre-flight`).
+- [ ] This sub-plan retired (moved into Phase-4 work-notes or deleted).
 
 ---
 
 ## What happens after 4C.4 closes
 
-Per the [phase-4-completion plan § what-happens-after-W4](phase-4-completion.md#what-happens-after-phase-4-closes): the path forward is **W5 — Sub-phase 4D: VEP + LOFTEE + AlphaMissense + SpliceAI**. The 4C.4 hardening (fetcher integrity check + doctor sweep + generalised chr-rename + pre-flight validator + filtered stderr) carries forward — 4D's reference fetches + annotation step land on top of the same foundations. The `INV-D-fetch-integrity` promotion (assuming it lands) means 4D's VEP cache fetches inherit the same correctness guarantee for free.
+The 4C.4 gate (W7 ClinVar parity) ✅ passed 2026-05-13. The path forward inside Phase 4 is **the remaining 4D/4E tail**: needs_bio integration tests for the already-implemented `annotate_vep.py` orchestrator (the [phase-4-completion W5 tests](phase-4-completion.md#w5--sub-phase-4d-vep--loftee--alphamissense-implementation-12-sessions)); the first real-data VEP smoke under the 4-hour budget; and the small `gene_loeuf` materialize-time join. After Phase 4 closes, the next major phase is **Phase 5 — host service + plugin migration to `registerTool` + sandbox image**.
+
+The 4C.4 hardening (fetcher integrity check via `refs verify` + bgzip EOF marker enforcement + generalised chr-rename + persistent caching) carries forward — 4D's reference fetches already use the same fetcher. The `INV-D-fetch-integrity` promotion (when it lands in a later revision pass) will mean 4D's VEP cache fetches inherit the same correctness guarantee retroactively.
