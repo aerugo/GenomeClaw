@@ -1,7 +1,8 @@
 # Reference-Data Integrity Hardening — Development Plan
 
-**Status**: Draft (not yet picked up)
+**Status**: Closed unimplemented — 2026-05-19. Plan was drafted on 2026-05-13 and never picked up. All 5 phases (manifest schema + write-on-fetch, manifest-anchored skip check, `refs verify` deep checks, `refs fetch --repair`, backfill + doctor integration) remain unstarted. No code, tests, or doc updates shipped. Real-data smoke gates never ran (there was nothing to smoke-test). Existing `refs fetch` skip-check remains `Path.exists()`-based; `refs verify` remains bgzip-EOF only. **If the underlying gap returns (silent bit-rot, partial multi-file fetch, single-bad-file forcing full `rm -rf <release-dir>`), this plan is a complete blueprint and can be promoted back to `active/` unchanged.** Companion docs that would have been updated on ship (`docs/reference/refs-manifest.md`, INV-R001 "How to verify", architecture.md manifest mention, `.claude/agents/bioinformatics-pipeline.md` first-class-artifact note) were never touched — no doc reconciliation required for closure.
 **Created**: 2026-05-13
+**Closed**: 2026-05-19 (unimplemented; see closure note above)
 **Branch**: `feature/refs-integrity-hardening` (TBD)
 **Spec**: [spec.md](spec.md)
 
