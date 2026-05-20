@@ -799,6 +799,26 @@ _LAYOUTS: dict[str, _SourceLayout] = {
         # hook.
         presence_relpath="GRCh38_HGDP+1kGP_ALL.pgen",
     ),
+    # PRS Input Coverage Fill Phase 5a — PGS Catalog scoring file source.
+    # Parameterised by PGS Catalog ID (via the existing ``{release_n}``
+    # substitution machinery — the PGS ID becomes the "release" string).
+    # Single ~5-50 MB .txt.gz per ID; no post-fetch transform (pgsc_calc
+    # + Phase 2's `_extract_pgs_sites_from_scorefile` read the file
+    # directly). The smoke baseline PGS000018 is wired into the default
+    # release set so ``host setup --fetch-all`` stages it.
+    "pgs_scorefile": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath=(
+                    "/pub/databases/spot/pgs/scores/{release_n}/"
+                    "ScoringFiles/Harmonized/{release_n}_hmPOS_GRCh38.txt.gz"
+                ),
+                output_filename="{release_n}_hmPOS_GRCh38.txt.gz",
+            ),
+        ),
+        # Canonical layout: reference/pgs_scorefile/<PGS_ID>/<PGS_ID>_hmPOS_GRCh38.txt.gz
+        # (matches grch38's reference/grch38/<release>/<file> shape).
+    ),
 }
 
 _DEFAULT_BASE_URLS: dict[str, str] = {
@@ -819,6 +839,9 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     # PGS Catalog continuous-ancestry reference bundle (1000G + HGDP),
     # hosted on the EBI FTP under their PGS Catalog resources tree.
     "pgs_catalog_ancestry": "https://ftp.ebi.ac.uk",
+    # PGS Catalog scoring files — same EBI FTP root, under the per-PGS
+    # ScoringFiles/Harmonized/ tree.
+    "pgs_scorefile": "https://ftp.ebi.ac.uk",
 }
 
 

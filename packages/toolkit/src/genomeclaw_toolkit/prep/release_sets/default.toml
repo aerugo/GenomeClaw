@@ -92,3 +92,17 @@ release = "v4.1"
 [[sources]]
 source = "pgs_catalog_ancestry"
 release = "v1"
+
+# PRS Input Coverage Fill Phase 5a — PGS Catalog scoring file for the
+# canonical CAD baseline (PGS000018, Inouye 2018 metaGRS_CAD). Required
+# by Phase 5's real-data smoke + by any agent-driven PRS question that
+# selects this PGS. Single ~12 MB ``.txt.gz``; landed at
+# ``reference/pgs_scorefiles/PGS000018_hmPOS_GRCh38.txt.gz``.
+#
+# Note: the release column is the PGS Catalog ID (parameterising the
+# fetch's URL pattern). Additional canonical PGS IDs (PGS003725 for
+# multi-ancestry CAD, etc.) become separate [[sources]] entries as the
+# agent's default-PGS set expands.
+[[sources]]
+source = "pgs_scorefile"
+release = "PGS000018"

@@ -542,6 +542,81 @@ def _collect_ancestry_ready(reference_root: Path) -> dict[str, Any]:
     }
 
 
+def _collect_pgs_scorefiles_ready(reference_root: Path) -> dict[str, Any]:
+    """Probe the canonical PGS Catalog scorefile layout vs. release-set expectation.
+
+    Phase 5a — for every ``pgs_scorefile`` entry in the default release set,
+    verify the file is staged at
+    ``reference/pgs_scorefile/<PGS_ID>/<PGS_ID>_hmPOS_GRCh38.txt.gz``.
+
+    Informational only — like ``ancestry_ready`` / ``prs_runtime_ready``,
+    a missing scorefile doesn't change the doctor exit code. The Phase 5
+    smoke driver's pre-flight + the agent's compute-time guard are the
+    actual enforcement layers; doctor surfaces the gap so the user sees
+    it before invoking compute.
+    """
+    expected: list[str] = []
+    try:
+        from genomeclaw_toolkit.prep.release_sets import load_release_set
+
+        release_set = load_release_set()
+        expected = [
+            entry.release for entry in release_set.sources if entry.source == "pgs_scorefile"
+        ]
+    except Exception:  # pragma: no cover — defensive
+        expected = []
+
+    present: list[str] = []
+    missing: list[str] = []
+    for pgs_id in expected:
+        target = (
+            reference_root / "pgs_scorefile" / pgs_id / f"{pgs_id}_hmPOS_GRCh38.txt.gz"
+        )
+        if target.exists():
+            present.append(pgs_id)
+        else:
+            missing.append(pgs_id)
+
+    fix = (
+        "Install with `genomeclaw refs fetch --source pgs_scorefile --release <PGS_ID>` "
+        "for individual scoring files, or `genomeclaw host setup --fetch-all` to stage "
+        "every default-release-set entry."
+    )
+
+    if not expected:
+        # No scorefiles configured in the release set (unusual; the default
+        # toml lists at least PGS000018 post-Phase-5a). Treat as informational
+        # rather than as an error — a custom release set may legitimately omit.
+        return {
+            "status": "no_scorefiles_configured",
+            "release_set_pgs_ids": [],
+            "present_pgs_ids": [],
+            "missing_pgs_ids": [],
+        }
+    if not missing:
+        return {
+            "status": "ready",
+            "release_set_pgs_ids": tuple(expected),
+            "present_pgs_ids": tuple(present),
+            "missing_pgs_ids": (),
+        }
+    if present:
+        return {
+            "status": "partial",
+            "release_set_pgs_ids": tuple(expected),
+            "present_pgs_ids": tuple(present),
+            "missing_pgs_ids": tuple(missing),
+            "fix": fix,
+        }
+    return {
+        "status": "missing",
+        "release_set_pgs_ids": tuple(expected),
+        "present_pgs_ids": (),
+        "missing_pgs_ids": tuple(missing),
+        "fix": fix,
+    }
+
+
 def _collect_prs_coverage_ready(derived_root: Path) -> dict[str, Any]:
     """Probe per-sample Tier 1 caches under ``derived/prs_coverage/``. Informational.
 
@@ -715,6 +790,7 @@ def doctor(
     raw_sample = asdict(_collect_raw_sample(raw_root=paths["raw"]))
     derived_runs = [asdict(r) for r in _collect_derived_runs(derived_root=paths["derived"])]
     ancestry_ready = _collect_ancestry_ready(paths["reference"])
+    pgs_scorefiles_ready = _collect_pgs_scorefiles_ready(paths["reference"])
     prs_runtime_ready = _collect_prs_runtime_ready(runner)
     prs_coverage_ready = _collect_prs_coverage_ready(paths["derived"])
 
@@ -726,6 +802,7 @@ def doctor(
         "paths": {k: str(v) for k, v in paths.items()},
         "references": references_section,
         "ancestry_ready": ancestry_ready,
+        "pgs_scorefiles_ready": pgs_scorefiles_ready,
         "prs_runtime_ready": prs_runtime_ready,
         "prs_coverage_ready": prs_coverage_ready,
         "raw_sample": raw_sample,

@@ -44,6 +44,10 @@ def test_default_release_set_loads_and_pins_phase4_sources() -> None:
         # PRS Reference Bootstrap Phase 1 — ancestry-calibration reference
         # for `pgsc_calc --run_ancestry` (INV-C001 v1.7).
         "pgs_catalog_ancestry",
+        # PRS Input Coverage Fill Phase 5a — PGS Catalog scoring file
+        # (PGS000018 smoke baseline). Parameterised by PGS ID via the
+        # release column.
+        "pgs_scorefile",
     }
     # Every entry pins a non-empty release label (`INV-R001` rebuildability).
     for e in rs.sources:

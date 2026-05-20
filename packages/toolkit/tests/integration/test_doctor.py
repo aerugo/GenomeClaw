@@ -674,6 +674,44 @@ def test_doctor_reports_prs_coverage_ready_when_tier1_cache_present(
     assert any(pv["panel_version"] == "v1" and pv["status"] == "ready" for pv in sample["panel_versions"])
 
 
+def test_doctor_reports_pgs_scorefile_present_when_staged(tmp_path: Path) -> None:
+    """Phase 5a: doctor reports `pgs_scorefiles_ready: ready` when PGS000018 staged.
+
+    Mirrors `_collect_ancestry_ready`'s pattern. The default release set
+    lists PGS000018 (Phase 5a wiring), so the section is `ready` only when
+    the canonical scorefile exists at the post-fetch path.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    scorefile_dir = layout["reference"] / "pgs_scorefile" / "PGS000018"
+    scorefile_dir.mkdir(parents=True)
+    (scorefile_dir / "PGS000018_hmPOS_GRCh38.txt.gz").write_bytes(b"fixture")
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0
+    pgs = report["pgs_scorefiles_ready"]
+    assert pgs["status"] == "ready", f"expected ready, got {pgs}"
+    assert "PGS000018" in pgs["present_pgs_ids"]
+
+
+def test_doctor_reports_pgs_scorefile_missing_with_install_hint(tmp_path: Path) -> None:
+    """No scorefile staged → status='missing' + actionable fix hint citing `refs fetch`."""
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    # No pgs_scorefile/ subtree at all.
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0, "missing scorefile is informational; exit stays 0"
+    pgs = report["pgs_scorefiles_ready"]
+    assert pgs["status"] == "missing"
+    assert "PGS000018" in pgs["missing_pgs_ids"]
+    assert "refs fetch --source pgs_scorefile" in pgs["fix"]
+
+
 def test_doctor_reports_prs_coverage_partial_when_qc_json_missing(
     tmp_path: Path,
 ) -> None:
