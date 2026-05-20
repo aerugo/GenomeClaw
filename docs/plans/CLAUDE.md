@@ -240,11 +240,14 @@ GenomeClaw treats several test categories as **first-class**, not afterthoughts:
 | **Evidence binding** | Every interpretation cites a source record | finding rejection without `evidence_ref` |
 | **Report rendering** | Snapshot/structural tests for user-facing output | renders include citations + caution markers |
 | **Perf** | Wall-clock budget on a representative-scale fixture; guards against perf cliffs that surface only at scale | 100k-variant ingest completes in <30s on the toolkit image |
+| **Tool-Contract** | External-tool wrapper conventions are pinned at version + cross-checked against an empirical probe; argv / samplesheet schema drift surfaces as a typed test failure rather than a silent `rc=1` | `tools/pgsc_calc/probe-output.txt` baseline; `PgscCalcConventions.verified_against_version` matches `_versions.PRS_RUNTIME_VERSIONS["pgsc_calc"]`; INV-T001 |
 | **Invariant** | One or more `INV-xxx` enforced as cross-cutting checks | walks all annotation rows and asserts schema version present |
 
 When a phase touches one of these categories, the phase plan must include the corresponding tests under **Step N.1**.
 
 **Real-data smoke as a phase-completion gate**. For phases touching scale-sensitive surfaces (DuckDB ingest, large-file streaming, multi-pass annotation joins, coverage / PRS computation over a genome), synthetic fixtures alone are insufficient — run the pipeline against the project owner's actual genome on actual hardware as part of the GREEN gate. The synthetic→real gap is exactly where production bugs live; verified empirically during MVP Phase 2 where two distinct bugs (4h09m perf cliff and ~1 GB virtiofs corruption) passed an otherwise-green synthetic suite.
+
+**Tool-integration discipline (INV-T001)**. New integrations of external bioinformatics tools (pgsc_calc, plink2, bcftools, VEP, etc.) require a `<Tool>Conventions` frozen dataclass + an empirical `tools/<tool>/probe-output.txt` golden baseline **before** the wrapper ships. The dataclass pins `verified_against_version` against the tool pin in `_versions.py`; wrapper tests assert against the dataclass fields, not against hardcoded argv literals. A pin bump that flips a flag the tool used to accept produces a typed test failure — not a silent `rc=1` in a real-tool smoke. See INV-T001 for the contract and [packages/toolkit/tests/invariants/test_invT001_tool_conventions_exist.py](../../packages/toolkit/tests/invariants/test_invT001_tool_conventions_exist.py) for the discovery test that catches missing dataclasses for new wrappers.
 
 ### Test File Conventions
 

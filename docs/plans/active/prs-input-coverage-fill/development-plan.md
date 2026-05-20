@@ -101,7 +101,7 @@ PGS_xxx_hmPOS_GRCh38.txt.gz ──▶ extract sites ──▶ ┌─────
 3. **Per-sample cache, keyed by panel version**. The Tier 1 cache directory is `derived/prs_coverage/<sample_id>/<panel_version>/`. If the panel updates (e.g., HGDP+1kGP v2 ships), Tier 1 rebuilds cleanly without invalidating per-sample raw CRAM provenance.
 4. **Per-PGS cache, keyed by scoring-file SHA256**. PGS Catalog scoring files are versioned by file (no monotonic semver). The cache key includes the scoring-file SHA256 so a silent upstream re-harmonization doesn't return stale Tier 2 output.
 5. **`-profile docker`, not `-profile conda`**. The May 2026 smoke proved `-profile conda` fails on linux/arm64 because plink2 2.0a5.10 is unavailable on conda-forge for aarch64. `-profile docker` works via DooD against the pre-pulled pgsc_calc images. (This switches the `_build_pgsc_calc_argv` default; tests are added under `test_pgsc_calc_wrapper.py`.)
-6. **Drop the pre-extraction post-fetch hook**. pgsc_calc v2.2.0 reads `pgs_catalog_ancestry.tar.zst` directly when `--run_ancestry` is pointed at the tarball, so the post-fetch hook that streamed-extracts to flat files is unnecessary for pgsc_calc consumption. Keep the extracted layout for `_check_ancestry_reference` doctor probes, but stop extracting on every `refs fetch` — point pgsc_calc at the `.tar.zst` directly. (This is a 4D-era cleanup that the meta-plan flagged.)
+6. **Keep the pre-extraction post-fetch hook** (corrected from the initial draft of this plan). Investigation during Phase 4 confirmed pgsc_calc's `--run_ancestry` requires a *directory* containing the panel files (`GRCh38_HGDP+1kGP_ALL.{pgen,pvar.zst,psam}`), not the `.tar.zst` tarball. The existing hook in `fetch.py:_extract_pgs_catalog_ancestry_bundle` streams the tarball through `zstandard` + `tarfile` into the extracted layout and deletes the bundle; this is correct and stays. The `presence_relpath="GRCh38_HGDP+1kGP_ALL.pgen"` marker survives the bundle deletion for skip-detection. The initial draft's "pgsc_calc reads .tar.zst directly" claim was based on a misread of the 2026-05-17 smoke logs and has been retracted.
 7. **Variant-count-tier QC table** (per agent recommendation, Section 5.1):
 
 | PGS variant count | Decline if match rate < | Warn if match rate in | Clean if ≥ |
@@ -211,7 +211,7 @@ PGS_xxx_hmPOS_GRCh38.txt.gz ──▶ extract sites ──▶ ┌─────
 ### Deliverables
 
 1. `_build_pgsc_calc_argv` emits `-profile docker` (test added under existing `test_pgsc_calc_wrapper.py`).
-2. `fetch.py:_extract_pgs_catalog_ancestry_bundle` post-fetch hook removed; `_check_ancestry_reference` updated to probe the `.tar.zst` presence instead of flat-file layout (or both, with `.tar.zst` preferred).
+2. ~~`fetch.py:_extract_pgs_catalog_ancestry_bundle` post-fetch hook removed~~ — **dropped from Phase 4 scope.** Investigation showed pgsc_calc's `--run_ancestry` requires a directory of extracted panel files; the existing hook is correct. See Solution Design Decision 6.
 3. `doctor.py:_collect_prs_coverage_ready` informational section.
 4. CLI cleanup: `genomeclaw prs prepare-coverage`, `genomeclaw prs compute`, `genomeclaw prs status`.
 
@@ -296,6 +296,13 @@ After implementation:
 | Phase 1a | Complete | 2026-05-18 | 2026-05-18 | Tier 1 primitives + orchestrator (11 tests GREEN: parse_prune_in, summarize_qc, cache_path, force_genotype_tier1, prepare_coverage_tier1, MissingCramIndexError) |
 | Phase 1b | Complete | 2026-05-18 | 2026-05-18 | `_materialize_pca_sites` (plink2 via DooD), doctor `prs_coverage_ready`, CLI `prs-prepare-coverage`, privacy zero-egress, real-bcftools smoke (10 new tests; 1 `needs_bio` skip) |
 | Phase 2  | Complete | 2026-05-18 | 2026-05-18 | Tier 2 force-genotype + scorefile parsing + cache (sha8-keyed) + `_merge_tier1_tier2` + `prepare_coverage_tier2` (9 new tests) |
+| Phase 3a | Complete | 2026-05-18 | 2026-05-18 | QC classifier (`_pgs_qc.py`) + 5-named-reasons enum + `PRSDeclineError` typed exception (14 tests). Variant-overlap axis only; ancestry-driven branches deferred to 3b. |
+| Phase 3b1 | Complete | 2026-05-18 | 2026-05-18 | Extend `PgsRow` with `calibration_status` + `decline_reason` optional fields + `apply_calibration_decision` helper (6 tests) |
+| Phase 3b2 | Complete | 2026-05-18 | 2026-05-18 | Wire classifier into `compute_prs_with_coverage_fill` with explicit `match_rate` + `pgs_variant_count` params; raises `PRSDeclineError` on DECLINE (4 tests) |
+| Phase 3b3a | Complete | 2026-05-18 | 2026-05-18 | `_pgsc_calc_match.py` parser (verified against real 2026-05-17 smoke log) + orchestrator auto-discovery (10 tests) |
+| Phase 3b3b | Complete | 2026-05-18 | 2026-05-18 | Migrated `pgs_scores` DDL (nullable `calibration_status` + `decline_reason`) + extended `_stamp_pgs_row` INSERT; CLI `prs-compute` catches `PRSDeclineError` → typed decline payload + exit 0 (8 tests) |
+| Phase 4  | Complete | 2026-05-18 | 2026-05-18 | `-profile docker` switch; `compute_prs_with_coverage_fill` orchestrator; `pipeline prs-compute` CLI (6 new + 1 flipped test). 4b retracted: pgsc_calc needs an extracted directory, not the .tar.zst. |
+| Phase 5  | In Progress | 2026-05-18 | | Driver + 10 verification gates landed (auto-skip cleanly on bare host); awaits user invocation of `bin/genomeclaw-prs-smoke` against real CRAM (~50–60 min). [phases/phase-5.md](phases/phase-5.md) |
 | Phase 2 | Pending | | | Tier 2 + cache + merge |
 | Phase 3 | Pending | | | QC + decline taxonomy + INV-C001/INV-A003 wiring |
 | Phase 4 | Pending | | | `-profile docker` switch, post-fetch hook cleanup, doctor + CLI |

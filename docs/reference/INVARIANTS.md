@@ -1,10 +1,16 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.11
-**Last Updated**: 2026-05-17
+**Version**: 1.14
+**Last Updated**: 2026-05-20
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.14 (2026-05-20)** — **adds `INV-R002`** (Never Cache a Degenerate Result) and **`INV-D008`** (Copy-Stage for DooD-Spawning Pipelines). Both surfaced during the 11 smoke iterations (v7–v17) that followed the path-crossing-discipline plan's close-out: v15 hit `ZeroMatchesError` because Tier 2's bcftools cache held 0 records from an earlier degenerate run (every subsequent iteration inherited the empty cache; the eventual symptom was 4 layers downstream from the root cause), and v14 hit `plink2: Failed to open high-LD-regions-hg38-GRCh38.txt` because nextflow's default symlink-staging dereferenced to a parent-container-only path. INV-R002 closes the silent-degenerate-cache class; INV-D008 closes the symlink-into-DooD-sibling class. See [docs/plans/active/prs-runtime-hardening/](../plans/active/prs-runtime-hardening/) for the iteration ledger.
+
+**v1.13 (2026-05-19)** — **tightens `INV-D006`** and **adds `INV-D007`** (Shim Seam Singularity). The Phase 5 real-data smoke against `MPNRGLQ2K.cram` surfaced four distinct gaps the v1.12 discipline didn't catch: a stale smoke-driver `docker run` bypass, a Python 3.11/3.13 dev/prod skew, three sub-bugs in the Phase 1 shim (docker socket not mounted, user/socket-group mismatch, auto-DooD case-statement scoped to `$1 $2` only), and most importantly a fourth path-crossing layer the original three-layer model missed: the factory accepted canonical-mount paths (`/mnt/genomeclaw/...`) even though those are container-only and cannot be resolved by host-daemon-spawned siblings. INV-D006 now requires host-form paths (from `GENOMECLAW_<SUB>_DIR` env vars the shim publishes); INV-D007 promotes "the host shim is the canonical seam for DooD-spawning subcommands" with a discovery test forbidding bespoke `docker run` in `bin/`. See [docs/plans/active/path-crossing-discipline/phases/phase-6.md](../plans/active/path-crossing-discipline/phases/phase-6.md).
+
+**v1.12 (2026-05-19)** — adds `INV-D005` (Identical-Path Bind Mounts for Sibling Containers), `INV-D006` (DooD-Safe Path Annotation), and introduces the new **`INV-T` category** (Tool Integration) with `INV-T001` (External-Tool Conventions Captured as Typed Wrappers). The three invariants close the path-crossing discipline gap that produced six Phase-5 smoke failures (the prs-input-coverage-fill plan's v1–v6) by capturing the contract at three layers: the shim's mount semantics (D005), the typed wrapper boundary (D006), and the tool-version contract (T001). See [docs/plans/active/path-crossing-discipline/](../plans/active/path-crossing-discipline/) and the source report at [docs/reports/path-crossing-discipline.md](../reports/path-crossing-discipline.md).
 
 **v1.11 (2026-05-17)** — adds `INV-A003` (Agent-Curated Compute Provenance) and revises `INV-C001` to v1.7 with the **PRS-decline pattern** as a peer to the existing hard-genes decline. The PRS-decline pattern (four criteria: top-decile RR < ~1.5×; no independent replication; ancestry-calibration failure for this user; no biologically-grounded polygenic basis) is the methodological gate that prevents the agent from computing confident-looking percentiles for traits with no meaningful evidence base. `INV-A003` covers agent-triggered host-side compute more broadly: choice rationale + alternatives considered must be persisted both as a column on the derived-store row and as a memory note; the decline pattern is documented in the agent system prompt with the two-named-reasons rule. Both changes ride on the MVP Q8 v1.6 amendment (agent-driven PRS computation replaces the fixed-three-trait static panel; see [docs/reports/agent-driven-prs-computation.md](../reports/agent-driven-prs-computation.md)).
 
@@ -40,6 +46,7 @@ If a rule is not in this document, it is not yet a project invariant. Convert ha
 | `INV-R` | Rebuildability & Provenance | Deterministic rebuilds, schema/tool versioning |
 | `INV-C` | Communication & Clinical Boundary | Research vs. clinical framing, uncertainty handling |
 | `INV-A` | Agent Cognition & Memory | Reasoning effort floors, memory note provenance, research-and-synthesis discipline |
+| `INV-T` | Tool Integration | External-tool wrapper conventions, version pinning, contract probes |
 
 Numbers are assigned in order of introduction within a category and never reused.
 
@@ -139,6 +146,93 @@ Numbers are assigned in order of introduction within a category and never reused
 - Per-command accept tests cover both consent paths: `--yes` on non-TTY → proceeds, and typed-phrase on TTY → proceeds.
 - Integration tests assert that `--force` (the pipeline-safety bypass) is independent of `--yes` — passing `--force` alone on non-TTY still refuses.
 - The error envelope's `suggested_actions` is asserted to include both routes forward in the refusal-path tests.
+
+---
+
+## INV-D005: Identical-Path Bind Mounts for Sibling Containers
+
+**Rule**: When a process inside a container will spawn sibling containers via Docker-out-of-Docker (DooD), every host path that may flow into a sibling's mount argument must be bind-mounted into the parent container at the **identical absolute path** as on the host. The canonical `/mnt/genomeclaw/...` mount convention is allowed **in addition to** (not instead of) the identical-path overlay.
+
+**Requirements**:
+- Any container that mounts `/var/run/docker.sock` (the DooD signal) must use identical-path bind mounts for every host directory referenced by paths it will pass to `docker run -v`.
+- Code that constructs `docker run -v` arg strings inside a container must produce paths that are valid on the host filesystem — i.e., paths under an identical-path-mounted dir.
+- The host shim auto-detects which subcommand groups spawn DooD siblings and sets `GENOMECLAW_DOOD=1` for them; the gate is per-subcommand so non-DooD subcommands don't pay the extra mount.
+- The shim publishes the deployment's canonical roots through the `GENOMECLAW_HOST_ROOTS` env var so the inside-container factory (see `INV-D006`) can recognise them as sibling-mountable prefixes.
+
+**Where it applies**:
+- The host shim ([bin/genomeclaw](../../bin/genomeclaw)) for any subcommand that may spawn siblings (currently: `pipeline prs-compute`; future: any other Nextflow-based or DooD-spawning subcommand).
+- Future host shims for other Nextflow-based tools (e.g., nf-core/sarek).
+
+**How to verify**:
+- [packages/toolkit/tests/integration/test_shim_identical_path_mounts.py](../../packages/toolkit/tests/integration/test_shim_identical_path_mounts.py) asserts the overlay mount exists when `GENOMECLAW_DOOD=1` and is absent when unset; also asserts the `GENOMECLAW_HOST_ROOTS` env-var threading.
+- [packages/toolkit/tests/invariants/test_invD005_identical_path_mounts.py](../../packages/toolkit/tests/invariants/test_invD005_identical_path_mounts.py) walks the shim's docker invocation for a DooD subcommand and asserts every host path that may flow to a sibling is mounted at its identical absolute path.
+- Runtime guard: `DooDPathError` (from `INV-D006`) fires when a code path about to call `docker run -v <host>:<container>` detects that `<host>` is not visible on the host filesystem.
+
+---
+
+## INV-D006: DooD-Safe Path Annotation
+
+**Rule** *(v1.13)*: Any wrapper function that writes a path into a downstream tool's invocation **whose execution context is sibling-containers via DooD** must mark its path-typed parameters with a `SiblingMountablePath` annotation (a validated `Path` subclass). Construction goes through `as_sibling_mountable(path)`, which accepts ONLY host-form paths (under a `GENOMECLAW_HOST_ROOTS` prefix the shim publishes) and rejects canonical-mount paths (`/mnt/genomeclaw/<sub>/...`) with a translated hint naming the host-form equivalent.
+
+**Requirements**:
+- Wrappers that prepare inputs for Nextflow / pgsc_calc / similar accept `SiblingMountablePath` for those inputs, not bare `Path`.
+- The orchestrator's "write merged VCF here" decision is constrained at the type level to choose a `SiblingMountablePath` location (`shard_scratch(...)` when rooted at the canonical scratch mount; `work_dir` is one), not a container-local scratch path (`ephemeral_scratch_base()` returns bare `Path` and is documented as **NOT sibling-mountable** in its docstring).
+- The `as_sibling_mountable(path)` factory raises `DooDPathError` with a fixable message when the path is under a non-host-visible location (e.g., `/tmp/genomeclaw-scratch/...`).
+- *(v1.13 tightening)* Canonical-mount paths (`/mnt/genomeclaw/<sub>/...`) are explicitly REJECTED. Reason: those paths exist only inside the toolkit container; DooD siblings spawned by the host daemon cannot resolve them against the host filesystem. The factory's error message translates the rejected path to its host-form equivalent using the matching `GENOMECLAW_<SUB>_DIR` env var (which the shim publishes for DooD subcommands).
+- The shim publishes four per-subdir env vars (`GENOMECLAW_RAW_DIR`, `GENOMECLAW_REF_DIR`, `GENOMECLAW_DERIVED_DIR`, `GENOMECLAW_SCRATCH_DIR`) plus the colon-list `GENOMECLAW_HOST_ROOTS`. Together they let the factory accept host-form paths and translate canonical-mount mistakes.
+
+**Where it applies**:
+- `compute_prs_with_coverage_fill` (the bug from smoke v3 lived here).
+- `_write_pgsc_calc_samplesheet` and any future samplesheet writer that records host paths for sibling consumption.
+- `_build_pgsc_calc_argv`, `compute_pgs`, and any future orchestrator that stages inputs for a Nextflow pipeline.
+- `ephemeral_scratch_base()` is the negative case — its return type stays bare `Path` and its docstring is the authoritative warning.
+
+**How to verify**:
+- [packages/toolkit/tests/unit/test_sibling_mountable_path.py](../../packages/toolkit/tests/unit/test_sibling_mountable_path.py) covers factory accept/reject + `DooDPathError` surface + the ephemeral-scratch rejection (smoke v3 reproducer).
+- [packages/toolkit/tests/unit/test_factory_rejects_canonical_mount.py](../../packages/toolkit/tests/unit/test_factory_rejects_canonical_mount.py) *(v1.13)* — canonical-mount paths under each of the four subdirs raise `DooDPathError` with the translated host-form path + the matching env var name in the message.
+- [packages/toolkit/tests/integration/test_shim_publishes_per_subdir_env.py](../../packages/toolkit/tests/integration/test_shim_publishes_per_subdir_env.py) *(v1.13)* — the shim's DooD env block threads all four `GENOMECLAW_<SUB>_DIR` env vars; non-DooD subcommands don't.
+- [packages/toolkit/tests/integration/test_compute_prs_rejects_non_sibling_path.py](../../packages/toolkit/tests/integration/test_compute_prs_rejects_non_sibling_path.py) asserts the orchestrator raises before any bcftools / pgsc_calc subprocess runs.
+- [packages/toolkit/tests/invariants/test_invD006_dood_safe_path_annotation.py](../../packages/toolkit/tests/invariants/test_invD006_dood_safe_path_annotation.py) walks the DooD-bound wrappers (parametrized over `_write_pgsc_calc_samplesheet`, `_build_pgsc_calc_argv`, `compute_pgs`, `compute_prs_with_coverage_fill`) and asserts the canonical path-typed parameters annotate `SiblingMountablePath`.
+- [packages/toolkit/tests/integration/test_prod_python_smoke.py](../../packages/toolkit/tests/integration/test_prod_python_smoke.py) *(v1.13)* — the rejection works in the toolkit image's Python 3.11 (closes the dev/prod skew gap that Phase 5 surfaced).
+
+---
+
+## INV-D007: Shim Seam Singularity
+
+**Rule** *(v1.13)*: The host shim ([bin/genomeclaw](../../bin/genomeclaw)) is the canonical seam for invoking toolkit subcommands. Scripts and drivers that need to invoke a DooD-spawning subcommand MUST go through the shim. Bespoke `docker run` invocations that duplicate shim logic are prohibited; their drift from the shim's behaviour is exactly what surfaced as the seven Phase 5 smoke failures (`bin/genomeclaw-prs-smoke`'s pre-Phase-1 bypass survived the discipline plan because the plan's scope listed wrappers, not scripts, as migration targets).
+
+**Requirements**:
+- Scripts under `bin/` MUST invoke the toolkit through the shim (`bin/genomeclaw <subcommand>`). Bespoke `docker run` invocations of `genomeclaw/toolkit:*` are forbidden.
+- The shim is the single seam where: mount layout (`raw`/`reference`/`derived`/`_scratch`), DooD detection + auto-`GENOMECLAW_DOOD=1` (per INV-D005), identical-path overlay, per-subdir env-var threading (per INV-D006 v1.13), docker socket mount, and `--user 0:0` default for DooD subcommands are all decided. Scripts that reimplement any of these silently drift when the shim evolves.
+- When a script genuinely needs a one-off invocation (e.g., one-time setup that doesn't fit any current subcommand), the canonical answer is: add a CLI subcommand. The interim shape — bespoke `docker run` — is not a long-term resting state.
+- The discipline test walks `bin/` and flags any `docker run` string outside `bin/genomeclaw` itself or an explicit allow-list (`_ALLOWED_BESPOKE_DOCKER_RUN`, empty by design).
+
+**Where it applies**:
+- Every executable script under [bin/](../../bin/). Today: `bin/genomeclaw` (the shim itself, exempt) and `bin/genomeclaw-prs-smoke` (the Phase 5 smoke driver — migrated in Phase 6 to use the shim exclusively).
+- Future drivers / CI scripts that need to invoke the toolkit (gated by the discovery test).
+
+**How to verify**:
+- [packages/toolkit/tests/invariants/test_invD007_seam_singularity.py](../../packages/toolkit/tests/invariants/test_invD007_seam_singularity.py) — discovery test that walks `bin/` (excluding the shim itself and any allow-listed scripts) and asserts no `docker run` strings appear.
+- [packages/toolkit/tests/integration/test_smoke_driver_canonical.py](../../packages/toolkit/tests/integration/test_smoke_driver_canonical.py) — driver-specific regression covering the canonical migration (no bespoke docker run; DooD-bound flags use host-form variables).
+
+---
+
+## INV-D008: Copy-Stage for DooD-Spawning Pipelines
+
+**Rule** *(v1.14)*: Pipelines that spawn DooD sibling containers (currently only ``pgsc_calc`` via Nextflow) MUST stage tool inputs into per-task work-dirs via COPY, not symlink. The default symlink staging creates symlinks pointing at parent-container-only paths (e.g., ``/opt/nextflow/assets/...``) that don't exist in the sibling's namespace; the sibling dereferences the symlink and fails to open the file. For Nextflow this is ``process.stageInMode = 'copy'``; the equivalent setting applies to other DooD-spawning pipeline runners.
+
+**Requirements**:
+- The wrapper for any DooD-spawning pipeline writes the staging configuration into the work-dir (or passes it via the tool's config-file flag) BEFORE invoking the tool.
+- The configuration MUST be effective for ALL of the pipeline's tasks (not just the ones we currently know about). A whole-pipeline default like Nextflow's ``process { stageInMode = 'copy' }`` covers future pipeline-revision changes.
+- New DooD-spawning pipeline wrappers added under ``packages/toolkit/src/genomeclaw_toolkit/prep/`` MUST include this configuration as part of their first commit.
+
+**Where it applies**:
+- [packages/toolkit/src/genomeclaw_toolkit/prep/pgs.py](../../packages/toolkit/src/genomeclaw_toolkit/prep/pgs.py) — ``_write_pgsc_calc_nextflow_config`` materialises ``nextflow.config`` with ``process.stageInMode = 'copy'``; ``_build_pgsc_calc_argv`` passes ``-c <config>`` to nextflow.
+- Future wrappers for other DooD-spawning pipelines (e.g. nf-core/sarek, hypothetical custom pipelines) inherit this rule.
+
+**How to verify**:
+- [packages/toolkit/tests/integration/test_pgsc_calc_wrapper.py::test_compute_pgs_writes_nextflow_config_redirecting_tmpdir](../../packages/toolkit/tests/integration/test_pgsc_calc_wrapper.py) asserts the generated ``nextflow.config`` contains ``stageInMode = 'copy'`` AND the argv carries ``-c <config>``.
+- Smoke-time signal: a regression to symlink-staging surfaces as the canonical Phase-7-v14 error: ``plink2: Failed to open <staged-asset>.txt: No such file or directory``.
 
 ---
 
@@ -262,6 +356,30 @@ Other remote integrations (alternative annotators, telemetry, crash reporting) a
 - Determinism tests: run a pipeline twice on a fixture, compare outputs byte-for-byte.
 - Provenance tests: every derived row has the required provenance columns populated (`source_path`, `source_sha256`, `tool`, `tool_version`, `params_json`, `schema_version`, `created_at`).
 - Schema-version tests: the host service refuses to load a derived store whose schema version is missing or unknown.
+
+---
+
+## INV-R002: Never Cache a Degenerate Result
+
+**Rule** *(v1.14)*: Any wrapper that caches a derived artifact MUST validate that the artifact is non-degenerate before promoting it to the cache. A degenerate result (e.g., a bgzipped VCF with zero non-header records, a TSV with zero data rows, a JSON with the meaningful payload empty) MUST raise a typed error AND MUST NOT be cached. The error message MUST enumerate the most-likely root causes so the next debugger can resolve them fast.
+
+**Requirements**:
+- Wrappers that produce derived artifacts via external tools (bcftools, plink2, etc.) MUST count the result's meaningful payload AFTER the tool exits but BEFORE `atomic_promote` (or equivalent commit-to-cache step).
+- The degeneracy check is wrapper-specific: count of variant records for VCFs, count of data rows for TSVs, count of populated fields for JSON summaries. The wrapper defines what "meaningful payload" means for its artifact.
+- Degenerate results MUST raise a typed error of the wrapper's pre-existing error class (e.g., `BcftoolsError`). The error message MUST name 3+ plausible root causes (chromosome-prefix mismatch, reference-build mismatch, empty input, no coverage at target sites, etc.) AND MUST end with "NOT caching empty result; resolve the underlying issue and rerun." — surfacing the failure loudly + steering the debugger.
+- This rule applies to all wrappers in `packages/toolkit/src/genomeclaw_toolkit/prep/` going forward. Existing wrappers gain the guard incrementally as their callers discover the failure mode.
+
+**Where it applies**:
+- [packages/toolkit/src/genomeclaw_toolkit/prep/coverage_fill.py](../../packages/toolkit/src/genomeclaw_toolkit/prep/coverage_fill.py) — `_force_genotype_tier1` + `_force_genotype_tier2` use `_count_vcf_records()` to refuse 0-record promotion.
+- Future bcftools/plink2/similar wrappers inherit this rule on first commit.
+- `INV-R001` is strengthened indirectly — without `INV-R002`, a degenerate cache poisons all subsequent rebuilds against the same key.
+
+**How to verify**:
+- [packages/toolkit/tests/integration/test_prs_coverage_fill_integration.py::test_force_genotype_tier1_refuses_to_cache_empty_vcf](../../packages/toolkit/tests/integration/test_prs_coverage_fill_integration.py) — fake bcftools writes header-only VCF; asserts `BcftoolsError` raised + `output_vcf` does NOT exist on disk + error message enumerates the root-cause categories.
+- [packages/toolkit/tests/integration/test_prs_coverage_fill_tier2.py::test_force_genotype_tier2_refuses_to_cache_empty_vcf](../../packages/toolkit/tests/integration/test_prs_coverage_fill_tier2.py) — same shape; also asserts the error names the input PGS site count for context.
+- Smoke-time signal: the canonical surfacing is `tier2 force-genotype produced ZERO output records despite N input PGS sites against <CRAM>. The bcftools pipe exited cleanly but produced a header-only VCF. Common causes: ... NOT caching empty result; resolve the underlying issue and rerun.` (Phase-7 smoke v17, 2026-05-20).
+
+**Not to be confused with — low-but-valid downstream match rates**: `INV-R002` is the guard against caching a **degenerate** artifact (0 records, structurally empty payload). It is NOT a guard against *expected* downstream low-but-valid match rates on healthy artifacts. The canonical example is `pgsc_calc`'s match rate between a non-imputed single-sample WGS and a dense imputed PGS Catalog scoring file (e.g. snpnet / LASSO models): the empirical ceiling on this input class is **45–65%** per [docs/reports/prs-real-data-smoke-research-findings.md](../reports/prs-real-data-smoke-research-findings.md). A 47%-match-rate Tier 2 VCF that yields a 47% pgsc_calc match is a healthy artifact that pgsc_calc's *own* `--min_overlap 0.75` default rejects — the mitigation is to lower `--min_overlap` to ~`0.5` for non-imputed single-sample WGS (persisted in `pgs_scores.params_json` per `INV-R001`), not to widen `INV-R002`'s degenerate-cache definition. The two failure modes look superficially similar (both surface as "no usable PRS row") but have different root causes and different mitigations.
 
 ---
 
@@ -439,6 +557,28 @@ When the user switches default model (e.g. to `openai/o3` for higher-stakes depl
 
 ---
 
+## INV-T001: External-Tool Conventions Captured as Typed Wrappers
+
+**Rule**: When GenomeClaw integrates an external bioinformatics tool (pgsc_calc, plink2, bcftools, VEP, etc.), the tool's path / argv / samplesheet / file-format conventions are captured in a typed `<Tool>Conventions` frozen dataclass at the wrapper layer. Each field's value is cited to upstream documentation OR to an empirical probe against the tool's actual binary; wrapper tests assert against the captured conventions, never against hand-rolled hardcoded strings.
+
+**Requirements**:
+- One `<Tool>Conventions` dataclass per integrated tool, located alongside the wrapper (`packages/toolkit/src/genomeclaw_toolkit/prep/_<tool>_conventions.py`).
+- The dataclass is `frozen=True` and carries `verified_against_version: str` matching the pin in `_versions.py` (verified by a unit test that fails if the pin moves without the conventions being re-verified).
+- Each field has a docstring with a citation: either a URL to upstream docs OR a path to a captured `tools/<tool>/probe-output.txt` file showing the empirical behaviour.
+- Wrapper tests construct the tool's argv / samplesheet using the conventions dataclass and assert the wrapper consumes the field, not a hardcoded literal (parametrize via `dataclasses.replace` with a stubbed field value and assert the emitted argv carries the stubbed value).
+- New tool integrations: write the conventions dataclass FIRST, then the wrapper.
+- Existing wrappers: backfill the conventions dataclass during the next breaking change to the tool (e.g., when bumping the tool's pin in `_versions.py`). The discovery test enumerates the backfill queue (warn-only) so it stays visible.
+
+**Where it applies**:
+- Every external-tool wrapper in [packages/toolkit/src/genomeclaw_toolkit/prep/](../../packages/toolkit/src/genomeclaw_toolkit/prep/). The Phase-2 deliverable shipped `pgsc_calc` (strict); `bcftools`, `bgzip`, `mosdepth`, `vcfanno`, `vep` are warn-only (queued for backfill).
+- The `INV-T` category is created for this rule; future tool-integration invariants land under this prefix.
+
+**How to verify**:
+- [packages/toolkit/tests/invariants/test_invT001_tool_conventions_exist.py](../../packages/toolkit/tests/invariants/test_invT001_tool_conventions_exist.py) — strict-tools test asserts every wrapper in `_STRICT_TOOLS` has a `<Tool>Conventions` frozen dataclass with `verified_against_version` populated; warn-tools test enumerates the backfill queue (currently bcftools, bgzip, mosdepth, vcfanno, vep).
+- [packages/toolkit/tests/unit/test_pgsc_calc_conventions.py](../../packages/toolkit/tests/unit/test_pgsc_calc_conventions.py) — `pgsc_calc`'s dataclass field values match the recorded [tools/pgsc_calc/probe-output.txt](../../tools/pgsc_calc/probe-output.txt) baseline; wrapper-generated argv matches [tools/pgsc_calc/golden-argv.txt](../../tools/pgsc_calc/golden-argv.txt); regression-guard tests for known breakage modes (smoke v2 `--target` → `--input`; smoke v6 `path_prefix` suffix).
+
+---
+
 ## Promoting a New Invariant
 
 When a development plan proposes a new invariant:
@@ -464,12 +604,18 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 | INV-D002 | Raw Genomic Artifacts Are Host-Side Only | Data |
 | INV-D003 | Heavy Scratch Is Separated From Authoritative Outputs | Data |
 | INV-D004 | Destructive Operations Require Explicit Confirmation | Data |
+| INV-D005 | Identical-Path Bind Mounts for Sibling Containers | Data |
+| INV-D006 | DooD-Safe Path Annotation | Data |
+| INV-D007 | Shim Seam Singularity | Data |
+| INV-D008 | Copy-Stage for DooD-Spawning Pipelines | Data |
 | INV-E001 | Assistant Claims Must Be Traceable to Evidence | Evidence |
 | INV-P001 | Privacy Is the Default Operating Mode | Privacy |
 | INV-P002 | Agent Egress Is a Named, Minimal-Sufficient Boundary | Privacy |
 | INV-R001 | Derived Assistant Stores Must Stay Rebuildable | Rebuildability |
+| INV-R002 | Never Cache a Degenerate Result | Rebuildability |
 | INV-C001 | Separate Clinical Advice from Lifestyle and Research Assistance | Clinical Boundary |
 | INV-C002 | CLI Output Contract Stability | Communication |
 | INV-A001 | Agent Memory Provenance | Agent Cognition |
 | INV-A002 | Synthesis Reasoning Floor | Agent Cognition |
 | INV-A003 | Agent-Curated Compute Provenance | Agent Cognition |
+| INV-T001 | External-Tool Conventions Captured as Typed Wrappers | Tool Integration |

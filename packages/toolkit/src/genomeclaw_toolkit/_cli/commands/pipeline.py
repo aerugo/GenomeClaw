@@ -48,7 +48,9 @@ from genomeclaw_toolkit._cli.renderers.pipeline import (
     make_pipeline_rich_renderer,
 )
 from genomeclaw_toolkit.prep._events import PhaseFailed, PipelineComplete
+from genomeclaw_toolkit.prep._paths import as_sibling_mountable
 from genomeclaw_toolkit.prep.annotate import annotate as annotate_impl
+from genomeclaw_toolkit.prep.coverage_fill import compute_prs_with_coverage_fill
 from genomeclaw_toolkit.prep.ingest import ingest as ingest_impl
 from genomeclaw_toolkit.prep.materialize import materialize as materialize_impl
 from genomeclaw_toolkit.prep.normalize import normalize as normalize_impl
@@ -557,7 +559,14 @@ class _PgsComputePayload(BaseModel):
     calibration_warning: str | None
 
 
-def _stamp_pgs_row(run_dir: Path, row: PgsRow, *, vcf: Path) -> None:
+def _stamp_pgs_row(
+    run_dir: Path,
+    row: PgsRow,
+    *,
+    vcf: Path,
+    min_overlap_used: float | None = None,
+    keep_ambiguous_used: bool | None = None,
+) -> None:
     """INSERT the `PgsRow` into `pgs_scores` with INV-R001 provenance + matching finding row.
 
     Provenance: `source_path` is the VCF; `source_sha256` is unset for the
@@ -566,6 +575,14 @@ def _stamp_pgs_row(run_dir: Path, row: PgsRow, *, vcf: Path) -> None:
     "pgsc_calc"; `tool_version` is "agent-driven" (the precise pgsc_calc
     version is captured in the work-dir manifest by Nextflow itself; for
     INV-R001 the canonical record is the run's manifest.json).
+
+    ``min_overlap_used`` + ``keep_ambiguous_used`` are persisted into
+    ``params_json`` so a future debugger / report reader can tell, from the
+    stored row alone, what threshold pgsc_calc was invoked against. Both
+    are optional for backwards compat with prior callers; the CLI's
+    ``pipeline_pgs_compute`` resolves them once via
+    :func:`genomeclaw_toolkit.prep.pgs._resolve_min_overlap` and threads
+    the value through.
     """
     import json as _json
     from datetime import UTC, datetime
@@ -575,7 +592,12 @@ def _stamp_pgs_row(run_dir: Path, row: PgsRow, *, vcf: Path) -> None:
 
     store_path = run_dir / "variants.duckdb"
     now = datetime.now(tz=UTC)
-    params = _json.dumps({"pgs_id": row.pgs_id, "vcf": str(vcf)})
+    params_dict: dict[str, object] = {"pgs_id": row.pgs_id, "vcf": str(vcf)}
+    if min_overlap_used is not None:
+        params_dict["min_overlap_used"] = min_overlap_used
+    if keep_ambiguous_used is not None:
+        params_dict["keep_ambiguous_used"] = keep_ambiguous_used
+    params = _json.dumps(params_dict)
 
     conn = duckdb.connect(str(store_path))
     try:
@@ -584,10 +606,11 @@ def _stamp_pgs_row(run_dir: Path, row: PgsRow, *, vcf: Path) -> None:
             INSERT INTO pgs_scores (
                 pgs_id, trait_label, percentile_in_user_ancestry, raw_score,
                 study_population, calibration_warning,
-                agent_choice_rationale, requested_for_question, superseded_by,
+                agent_choice_rationale, requested_for_question,
+                calibration_status, decline_reason, superseded_by,
                 source_path, source_sha256, tool, tool_version,
                 params_json, schema_version, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
                       ?, '', 'pgsc_calc', 'agent-driven',
                       ?, ?, ?)
             """,
@@ -600,6 +623,8 @@ def _stamp_pgs_row(run_dir: Path, row: PgsRow, *, vcf: Path) -> None:
                 row.calibration_warning,
                 row.agent_choice_rationale,
                 row.requested_for_question,
+                row.calibration_status,
+                row.decline_reason,
                 str(vcf),
                 params,
                 SCHEMA_VERSION,
@@ -729,12 +754,35 @@ def pipeline_pgs_compute(
     ctx: AppContext = typer_ctx.obj
     resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
 
+    # INV-D006: validate every path that may flow into a DooD sibling at
+    # the orchestrator boundary BEFORE the wrapper subprocess fires.
+    # Typer parses CLI args as plain ``Path``; `as_sibling_mountable(p)`
+    # promotes them to ``SiblingMountablePath`` (the validated subtype
+    # the wrapper annotates), raising ``DooDPathError`` on container-
+    # local paths (`/tmp/genomeclaw-scratch/...`) instead of letting a
+    # non-host-visible path reach pgsc_calc.
+    vcf_smp = as_sibling_mountable(vcf)
+    reference_root_smp = as_sibling_mountable(reference_root)
+    work_dir_smp = as_sibling_mountable(work_dir)
+
+    # Resolve the input-class-appropriate --min_overlap once at the top so
+    # the value threaded into pgsc_calc (via compute_pgs_impl →
+    # _build_pgsc_calc_argv → _resolve_min_overlap) matches the value
+    # persisted to pgs_scores.params_json (INV-R001 rebuildability).
+    # `keep_ambiguous_used` is False — load-bearing per the research
+    # findings doc; flipping it to True would recover ~15% match rate at
+    # the cost of systematic strand-error on ~half of recovered weights.
+    from genomeclaw_toolkit.prep.pgs import _resolve_min_overlap
+
+    min_overlap_used = _resolve_min_overlap()
+    keep_ambiguous_used = False
+
     try:
         row = compute_pgs_impl(
-            vcf=vcf,
+            vcf=vcf_smp,
             pgs_id=pgs_id,
-            reference_root=reference_root,
-            work_dir=work_dir,
+            reference_root=reference_root_smp,
+            work_dir=work_dir_smp,
             agent_choice_rationale=rationale,
             requested_for_question=question,
             trait_label=trait_label,
@@ -742,7 +790,13 @@ def pipeline_pgs_compute(
     except PgsReferenceMissingError as exc:
         raise PreconditionError(str(exc)) from exc
 
-    _stamp_pgs_row(resolved_dir, row, vcf=vcf)
+    _stamp_pgs_row(
+        resolved_dir,
+        row,
+        vcf=vcf,
+        min_overlap_used=min_overlap_used,
+        keep_ambiguous_used=keep_ambiguous_used,
+    )
 
     payload = _PgsComputePayload(
         run_dir=str(resolved_dir),
@@ -907,6 +961,244 @@ def pipeline_prs_prepare_coverage(
         payload=payload,
         rich_renderer=lambda p: get_console().print(
             f"{p.cache_status} tier1 cache: {p.tier1_vcf}"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4c — `prs-compute` end-to-end orchestrator subcommand
+# ---------------------------------------------------------------------------
+#
+# Single CLI entry point for the agent's compute path: chains Tier 1 + Tier 2
+# + merge + pgsc_calc into one call. Cache-aware — warm Tier 1/Tier 2 caches
+# skip the bcftools work entirely, so subsequent agent questions against the
+# same PGS run only pgsc_calc (~10-15 min) instead of the full ~50-60 min
+# Tier 1 build.
+# ---------------------------------------------------------------------------
+
+
+class _PrsComputeDeclineBlock(BaseModel):
+    """Decline-payload nested block (INV-C001 v1.7 + INV-A003).
+
+    Populated only when the orchestrator's calibration step raised
+    :class:`PRSDeclineError`; ``None`` on the clean/warning path.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str  # snake_case ``DeclineReason.value``
+    two_named_reasons: tuple[str, str]
+
+
+class _PrsComputePayload(BaseModel):
+    """`--json` payload for `pipeline prs-compute` per INV-C002.
+
+    Phase 3b3b2: extended with ``calibration_status`` + ``decline``. The
+    decline block is populated on the ``calibration_status="decline"``
+    branch; the clean/warning branches leave ``decline=None`` and
+    surface the score normally.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: str
+    pgs_id: str
+    trait_label: str
+    percentile_in_user_ancestry: float | None
+    raw_score: float | None
+    calibration_warning: str | None
+    calibration_status: str | None = None
+    decline: _PrsComputeDeclineBlock | None = None
+
+
+@app.command("prs-compute")
+def pipeline_prs_compute(
+    typer_ctx: typer.Context,
+    sample_id: Annotated[
+        str,
+        typer.Option(
+            "--sample",
+            help="Sample identifier; used as the Tier 1 + Tier 2 cache key.",
+        ),
+    ],
+    cram: Annotated[
+        Path,
+        typer.Option(
+            "--cram",
+            help="User CRAM (read-only). Must have a sibling .crai index.",
+        ),
+    ],
+    sites: Annotated[
+        Path,
+        typer.Option(
+            "--sites",
+            help="PCA-eligible sites TSV (chrom, pos) from "
+            "`refs materialize --target prs_pca_sites`.",
+        ),
+    ],
+    alleles: Annotated[
+        Path,
+        typer.Option(
+            "--alleles",
+            help="PCA-eligible alleles TSV (chrom, pos, ref,alt).",
+        ),
+    ],
+    scorefile: Annotated[
+        Path,
+        typer.Option(
+            "--scorefile",
+            help="PGS Catalog hmPOS_GRCh38 scoring file (gzipped). "
+            "The wrapper extracts the PGS ID + per-row sites from this; "
+            "the SHA256 keys the Tier 2 cache.",
+        ),
+    ],
+    fasta: Annotated[
+        Path,
+        typer.Option(
+            "--fasta",
+            help="GRCh38 reference FASTA (bgzipped, with .fai + .gzi sidecars).",
+        ),
+    ],
+    panel_version: Annotated[
+        str,
+        typer.Option(
+            "--panel-version",
+            help="HGDP+1kGP panel release tag (e.g. `v1`).",
+        ),
+    ],
+    reference_root: Annotated[
+        Path,
+        typer.Option(
+            "--reference-root",
+            help="Reference root containing pgs_catalog_ancestry/<panel>/ — "
+            "consumed by pgsc_calc --run_ancestry.",
+        ),
+    ],
+    output_root: Annotated[
+        Path,
+        typer.Option(
+            "--output-root",
+            help="Derived root for Tier 1 + Tier 2 caches.",
+        ),
+    ],
+    work_dir: Annotated[
+        Path,
+        typer.Option(
+            "--work-dir",
+            help="Nextflow work directory for pgsc_calc heavy intermediates.",
+        ),
+    ],
+    rationale: Annotated[
+        str,
+        typer.Option(
+            "--rationale",
+            help="Agent's reasoning for picking this PGS (alternatives + why). "
+            "Persisted to the result row per INV-A003. Required >= 50 chars.",
+        ),
+    ],
+    question: Annotated[
+        str,
+        typer.Option(
+            "--question",
+            help="Verbatim user question that triggered the compute (INV-A003).",
+        ),
+    ],
+    trait_label: Annotated[
+        str | None,
+        typer.Option(
+            "--trait-label",
+            help="Optional human-readable trait label. Defaults to "
+            "`PGS Catalog <id>`.",
+        ),
+    ] = None,
+) -> None:
+    """End-to-end PRS compute: Tier 1 + Tier 2 + merge + pgsc_calc.
+
+    Single entry point for the agent's compute path. Warm caches turn this
+    into a ~10-15 min pgsc_calc-only run; cold caches add the per-sample
+    Tier 1 (~50-60 min on 2-CPU Colima) and the per-PGS Tier 2 (~5-10 min
+    for a typical scoring file).
+    """
+    if len(rationale) < 50:
+        raise UsageError(
+            f"--rationale must be >= 50 chars (per INV-A003); got {len(rationale)}. "
+            "Include the alternative PGS scorefiles you considered + why this one."
+        )
+
+    ctx: AppContext = typer_ctx.obj
+
+    # INV-D006: validate sibling-mountable paths at the CLI boundary
+    # before any DooD-spawning wrapper runs. Mirrors `pipeline_pgs_compute`.
+    reference_root_smp = as_sibling_mountable(reference_root)
+    work_dir_smp = as_sibling_mountable(work_dir)
+
+    from genomeclaw_toolkit.prep._pgs_qc import PRSDeclineError
+    from genomeclaw_toolkit.prep.coverage_fill import _extract_pgs_id_from_scorefile
+
+    try:
+        row = compute_prs_with_coverage_fill(
+            sample_id=sample_id,
+            cram_path=cram,
+            sites_tsv=sites,
+            alleles_tsv=alleles,
+            scorefile_path=scorefile,
+            fasta=fasta,
+            panel_version=panel_version,
+            reference_root=reference_root_smp,
+            output_root=output_root,
+            work_dir=work_dir_smp,
+            agent_choice_rationale=rationale,
+            requested_for_question=question,
+            trait_label=trait_label,
+        )
+    except PgsReferenceMissingError as exc:
+        raise PreconditionError(str(exc)) from exc
+    except PRSDeclineError as exc:
+        # INV-C001 v1.7: decline is a legitimate outcome, not a failure.
+        # Emit a typed decline payload + exit 0 so the agent layer can
+        # render the two-named-reasons explanation to the user.
+        pgs_id_resolved = _extract_pgs_id_from_scorefile(scorefile)
+        decline_payload = _PrsComputePayload(
+            sample_id=sample_id,
+            pgs_id=pgs_id_resolved,
+            trait_label=trait_label or f"PGS Catalog {pgs_id_resolved}",
+            percentile_in_user_ancestry=None,
+            raw_score=None,
+            calibration_warning=None,
+            calibration_status="decline",
+            decline=_PrsComputeDeclineBlock(
+                reason=exc.reason.value,
+                two_named_reasons=exc.two_named_reasons,
+            ),
+        )
+        emit(
+            ctx=ctx,
+            command="pipeline.prs-compute",
+            payload=decline_payload,
+            rich_renderer=lambda p: get_console().print(
+                f"declined {p.pgs_id} ({p.decline.reason}): "
+                f"{p.decline.two_named_reasons[0]}"
+                if p.decline is not None
+                else f"declined {p.pgs_id}"
+            ),
+        )
+        return
+
+    payload = _PrsComputePayload(
+        sample_id=sample_id,
+        pgs_id=row.pgs_id,
+        trait_label=row.trait_label,
+        percentile_in_user_ancestry=row.percentile_in_user_ancestry,
+        raw_score=row.raw_score,
+        calibration_warning=row.calibration_warning,
+        calibration_status=row.calibration_status,
+    )
+    emit(
+        ctx=ctx,
+        command="pipeline.prs-compute",
+        payload=payload,
+        rich_renderer=lambda p: get_console().print(
+            f"computed {p.pgs_id}: {p.percentile_in_user_ancestry}th percentile"
         ),
     )
 

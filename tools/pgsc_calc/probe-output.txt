@@ -1,0 +1,53 @@
+# pgsc_calc convention baseline — KEY=VALUE; one field per ``PgscCalcConventions``.
+#
+# Verified against pgsc_calc v2.2.0 on 2026-05-19. Sources:
+#   - README & RTD docs (https://pgsc-calc.readthedocs.io/en/v2.2.0/)
+#   - ``nextflow run pgscatalog/pgsc_calc -r v2.2.0 --help`` (captured inside
+#     the toolkit image)
+#   - Phase-5 real-data smoke (MPNRGLQ2K CRAM, rc=0 run on 2026-05-19)
+#
+# Re-run ``./tools/pgsc_calc/probe.sh`` after a pin bump and update both this
+# file AND the dataclass field defaults; the unit test
+# ``test_invT001_pgsc_calc_conventions_field_values_match_probe_output`` cross-
+# checks them.
+
+# --- Version pin -------------------------------------------------------------
+verified_against_version=v2.2.0
+
+# --- Argv flags (from nextflow --help + README) ------------------------------
+input_flag=--input
+target_build_flag=--target_build
+pgs_id_flag=--pgs_id
+run_ancestry_flag=--run_ancestry
+profile_flag=-profile
+revision_flag=-r
+work_dir_flag=-work-dir
+
+# --- Argv value-type semantics (prs-runtime-hardening plan, INV-T001 tighten)
+# Patterns the wrapper's emitted argv VALUE must match for each path-typed
+# flag. Captures "what KIND of artifact does this flag accept" — caught
+# in addition to the flag name itself. Smoke v10 (2026-05-19) surfaced
+# that pgsc_calc's --run_ancestry wants a tarball, not a directory; the
+# pattern below pins that semantic.
+input_value_pattern=.*\.csv$
+run_ancestry_value_pattern=.*\.tar\.zst$
+
+# --- Samplesheet schema (from README §"Input samplesheet") -------------------
+# Comma-joined tuple; order is positional in pgsc_calc.
+samplesheet_columns=sampleset,path_prefix,chrom,format,vcf_genotype_field
+
+# Smoke v6 (2026-05-19): path_prefix is a basename PREFIX, not a filename.
+# pgsc_calc auto-appends ``.vcf``; passing ``merged.vcf.gz`` makes pgsc_calc
+# look for ``merged.vcf.gz.vcf``. Strip the suffix.
+path_prefix_strips_extension=true
+
+# Default genotype field. ``DS`` (dosage) is the alternative; we always emit
+# hard-call GT throughout the pipeline.
+vcf_genotype_field_default=GT
+
+# --- Accession naming (from PGS Catalog hmPOS_GRCh38 convention) -------------
+accession_format={pgs_id}_hmPOS_GRCh38
+
+# --- Output paths under -work-dir --------------------------------------------
+aggregated_scores_relpath=score/aggregated_scores.txt.gz
+match_log_filename_template={sampleset}_log.csv.gz

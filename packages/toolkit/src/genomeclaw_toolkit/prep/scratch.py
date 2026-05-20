@@ -44,6 +44,18 @@ _EPHEMERAL_SCRATCH_BASE_DEFAULT = Path("/tmp/genomeclaw-scratch")
 def ephemeral_scratch_base() -> Path:
     """Return the configured ephemeral scratch base.
 
+    Returns a plain :class:`pathlib.Path` — explicitly **NOT** a
+    :class:`SiblingMountablePath`. This path is **NOT sibling-mountable**:
+    it lives inside the toolkit container (default
+    ``/tmp/genomeclaw-scratch``, off virtiofs to avoid the 2026-05-14
+    EBADF tripwire). DooD-spawned sibling containers cannot see it. Per
+    INV-D006: any wrapper that hands a path into a sibling container's
+    ``-v <host>:<container>`` mount MUST receive a
+    :class:`SiblingMountablePath` — use :func:`shard_scratch` with a
+    canonical-mount-rooted base, or pass the orchestrator's ``work_dir``,
+    instead. The Phase-5 smoke v3 surfaced the DooD-unsafe placement as
+    a silent ``rc=1`` from pgsc_calc.
+
     Reads ``GENOMECLAW_EPHEMERAL_SCRATCH_DIR`` from the environment at
     call time (not import time) so tests can override per-fixture via
     ``monkeypatch.setenv``. Falls back to
@@ -51,10 +63,12 @@ def ephemeral_scratch_base() -> Path:
     when unset.
 
     The orchestrators (``annotate_vcfanno``, ``annotate_vep``,
-    ``materialize``) pass this as ``base=`` to ``shard_scratch(...)``.
-    Persistent caches under ``_cache/`` keep using the bind-mounted
-    ``_SCRATCH_BASE`` — they're read sequentially across runs and don't
-    suffer the concurrent-FD pressure that surfaced EBADF on virtiofs.
+    ``materialize``) pass this as ``base=`` to ``shard_scratch(...)``;
+    those tools run in the SAME container (no DooD) so ephemeral scratch
+    is safe for them. Persistent caches under ``_cache/`` keep using the
+    bind-mounted ``_SCRATCH_BASE`` — they're read sequentially across
+    runs and don't suffer the concurrent-FD pressure that surfaced EBADF
+    on virtiofs.
     """
     override = os.environ.get("GENOMECLAW_EPHEMERAL_SCRATCH_DIR")
     if override is not None:

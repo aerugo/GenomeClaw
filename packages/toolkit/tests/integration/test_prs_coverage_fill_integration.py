@@ -127,6 +127,66 @@ def synthetic_fasta(tmp_path: Path) -> Path:
     return fasta
 
 
+def test_force_genotype_tier1_refuses_to_cache_empty_vcf(
+    tmp_path: Path,
+    synthetic_panel_tsvs: dict[str, Path],
+    synthetic_cram: Path,
+    synthetic_fasta: Path,
+) -> None:
+    """Tier 1 MUST raise ``BcftoolsError`` if the bcftools pipe produces
+    a header-only VCF (0 records), instead of silently promoting it.
+
+    Phase 7 smoke v15 regression guard: the original Tier 2 ran with
+    bcftools exiting 0 but producing only headers; the wrapper happily
+    cached the empty result and every subsequent smoke iteration
+    inherited it. The actual symptom (pgsc_calc match-rate 2.9%)
+    surfaced 4 layers downstream. Same class of failure could affect
+    Tier 1 — guard applies there too defensively.
+
+    Verifies the guard text names the actionable diagnostic categories
+    (chr-prefix mismatch, build mismatch, etc.)."""
+    from genomeclaw_toolkit.prep.coverage_fill import (
+        BcftoolsError,
+        _force_genotype_tier1,
+    )
+
+    # Fake bcftools pipe that produces a HEADER-ONLY VCF.
+    def _empty_runner(cmd: list[str] | tuple[str, ...], **_kwargs: object):
+        cmd_str = " ".join(str(x) for x in cmd)
+        match = _NORM_OUTPUT_RE.search(cmd_str)
+        if match:
+            out_path = Path(match.group(1))
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(out_path, "wt") as fh:
+                fh.write("##fileformat=VCFv4.2\n")
+                fh.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tMPNRGLQ2K\n")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=b"", stderr=b"")
+
+    output_vcf = tmp_path / "derived" / "tier1.vcf.gz"
+    with patch(
+        "genomeclaw_toolkit.prep.coverage_fill.subprocess.run",
+        MagicMock(side_effect=_empty_runner),
+    ):
+        with pytest.raises(BcftoolsError) as exc_info:
+            _force_genotype_tier1(
+                cram_path=synthetic_cram,
+                sites_tsv=synthetic_panel_tsvs["sites"],
+                alleles_tsv=synthetic_panel_tsvs["alleles"],
+                fasta=synthetic_fasta,
+                output_vcf=output_vcf,
+            )
+
+    msg = str(exc_info.value)
+    assert "ZERO output records" in msg, msg
+    assert "chr" in msg.lower(), f"diagnostic must mention chromosome prefix mismatch; got: {msg}"
+    assert "NOT caching" in msg, msg
+
+    # And critically: the output_vcf MUST NOT exist on disk (no promote).
+    assert not output_vcf.exists(), (
+        f"empty tier1 VCF must NOT be cached; found at {output_vcf}"
+    )
+
+
 def test_force_genotype_tier1_invokes_correct_bcftools_pipe(
     tmp_path: Path,
     synthetic_panel_tsvs: dict[str, Path],

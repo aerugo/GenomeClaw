@@ -67,6 +67,8 @@ markers = [
     "needs_bio: requires real bcftools / mosdepth / samtools — runs inside the genomeclaw/toolkit image, skipped on the bare host venv unless GENOMECLAW_HAS_BIO=1.",
     "needs_sandbox: requires a built nemoclaw-plugin sandbox image — skipped unless GENOMECLAW_SANDBOX_IMAGE points at a docker-pullable tag.",
     "needs_prs_runtime: requires a toolkit image carrying the PRS runtime stack (Nextflow + JRE 17 + mamba + pre-warmed pgsc_calc source). Skipped unless GENOMECLAW_TOOLKIT_PRS_IMAGE points at a docker-pullable tag AND `docker` is on PATH.",
+    "needs_phase5_smoke_artifacts: requires GENOMECLAW_PHASE5_SMOKE_DIR pointing at a directory produced by `bin/genomeclaw-prs-smoke`. Tests in this marker verify the recorded smoke artifacts; they auto-skip without the env var so CI stays green without a real smoke run.",
+    "needs_prod_python: runs a probe inside the toolkit image via `docker run` to catch dev/prod Python version skew. Gated by GENOMECLAW_TOOLKIT_PRS_IMAGE pointing at a built image + `docker` on PATH. Closes the Phase 3 misstep where a Python-3.13-only `Path` subclass form survived to smoke-time (toolkit image runs Python 3.11).",
     "live_llm: makes a real (paid) LLM call through the gateway in the sandbox image — skipped unless OPENAI_API_KEY AND GENOMECLAW_SANDBOX_IMAGE are both set. Each test costs one real OpenAI call; use sparingly.",
 ]
 

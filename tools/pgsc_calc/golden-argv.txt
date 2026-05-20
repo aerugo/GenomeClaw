@@ -1,0 +1,29 @@
+# Successful pgsc_calc argv from the 2026-05-19 Phase-5 real-data smoke (post-
+# smoke-v6 fix). Captured against pgsc_calc v2.2.0 with the MPNRGLQ2K CRAM.
+# Each token on its own line for diff stability.
+#
+# The wrapper ``pgs.py:_build_pgsc_calc_argv`` reproduces this argv by
+# consuming ``PgscCalcConventions``; if the wrapper's emitted argv stops
+# matching this golden (modulo path tokens, which are deployment-specific),
+# either the dataclass field defaults or the wrapper logic has drifted.
+#
+# Lines starting with ``#`` are comments; ``<PATH>`` placeholders mark tokens
+# whose absolute value depends on the host invocation.
+
+nextflow
+run
+pgscatalog/pgsc_calc
+-r
+v2.2.0
+-profile
+docker
+--input
+<PATH>/samplesheet.csv
+--target_build
+GRCh38
+--pgs_id
+PGS000018
+--run_ancestry
+<PATH>/reference/pgs_catalog_ancestry/v1
+-work-dir
+<PATH>/work

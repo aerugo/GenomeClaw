@@ -1,10 +1,12 @@
 # Meta-Plan: PRS Bootstrap — Sequencing & Integration
 
-**Status**: Draft
+**Status**: Stage 1 + Stage 2 TDD axes complete; Stage 3 (integration smoke) in cascade — see "Cascade of follow-up plans (2026-05-18 → 2026-05-20)" below.
 **Created**: 2026-05-17
+**Last Audited**: 2026-05-20
 **Owner**: TBD
-**Children**: [`prs-reference-bootstrap/`](prs-reference-bootstrap/), [`prs-runtime-bootstrap/`](prs-runtime-bootstrap/)
-**Related**: [docs/plans/active/mvp/phases/phase-6-slice-e-v2.md](mvp/phases/phase-6-slice-e-v2.md)
+**Children (originally scoped)**: [`prs-reference-bootstrap/`](prs-reference-bootstrap/), [`prs-runtime-bootstrap/`](prs-runtime-bootstrap/)
+**Children (added during Stage 3 cascade, 2026-05-18 → 2026-05-20)**: [`prs-input-coverage-fill/`](prs-input-coverage-fill/), [`path-crossing-discipline/`](../completed/path-crossing-discipline/) (closed), [`prs-runtime-hardening/`](../completed/prs-runtime-hardening/) (closed), [`pgs-allele-orientation/`](../completed/pgs-allele-orientation/) (closed 2026-05-20), [`prs-non-imputed-wgs/`](prs-non-imputed-wgs/)
+**Related**: [docs/plans/active/mvp/phases/phase-6-slice-e-v2.md](mvp/phases/phase-6-slice-e-v2.md), [docs/reports/prs-real-data-smoke-research-findings.md](../../reports/prs-real-data-smoke-research-findings.md)
 
 ---
 
@@ -18,6 +20,8 @@ Slice E v2 closed out with "real-data smoke deferred to manual: needs Nextflow +
 This meta-plan sequences them, defines the cross-plan integration gate, and tracks the documentation cleanup neither child can do on its own.
 
 This meta-plan **owns no implementation code itself.** All TDD work lives in the children. It owns: sequencing, the integration smoke definition, and the cross-plan doc updates.
+
+**Audit note (2026-05-20)**: Stages 1 + 2's TDD axes closed cleanly. The Stage 3 integration smoke landed a real PRS score 2026-05-18 but the ancestry-calibrated `pgs_scores` row is still pending. Five downstream plans have run since then (see Cascade section below) — three closed and promoted invariants (INV-D005/D006/D007/D008, INV-R002, INV-T001 v1.14 tightening), two are active. The new Stage 3 GREEN gate is `prs-non-imputed-wgs` Phase 4 smoke v22.
 
 ---
 
@@ -98,7 +102,7 @@ Verify the two children compose: a fresh `host setup` host can run `genomeclaw p
 
 - [ ] **AC1**: From a host with toolkit-image-pulled-but-no-reference-data, running `genomeclaw refs fetch --all` materialises both the existing references (clinvar, gnomAD, VEP cache, etc.) **and** the new `pgs_catalog_ancestry` source under `reference/pgs_catalog_ancestry/v1/{1000g,hgdp}/`.
 - [ ] **AC2**: After AC1, `genomeclaw host doctor` reports both `ancestry_ready: true` **and** `prs_runtime_ready: true` in the same `--json` envelope.
-- [ ] **AC3**: `genomeclaw pipeline pgs-compute --pgs PGS000018 --vcf <NEBULA_VCF> --reference-root <ref> --rationale '<>=50-char rationale>' --question 'my dad had a heart attack at 58' --work-dir <scratch>/pgsc_calc_work` returns exit 0 in ≤30 minutes wall-clock on the project owner's hardware.
+- [ ] **AC3**: `genomeclaw pipeline pgs-compute --pgs PGS000018 --vcf <NEBULA_VCF> --reference-root <ref> --rationale '<>=50-char rationale>' --question 'my dad had a heart attack at 58' --work-dir <scratch>/pgsc_calc_work` returns exit 0 on the project owner's hardware. **Wall-clock budget revised 2026-05-20**: the original ≤30 min target was set before the cold-start cost was empirical. Smoke v21 ran 7586s (2h 6m) at peak 7 GiB RSS before SIGTERM at the task-system's 2h cap. Revised target: ≤90 min cold (full Tier 2 force-genotyping + pgsc_calc PCA against the 16 GB HGDP+1kGP bundle) on the project owner's 16 GB-RAM M-series host; ≤15 min warm (Tier 1 + Tier 2 caches hit). Confirm against smoke v22 once `--min_overlap 0.5` lands per the [prs-non-imputed-wgs](prs-non-imputed-wgs/) plan.
 - [ ] **AC4**: The resulting `pgs_scores` row has populated `pgs_id="PGS000018"`, non-null `percentile_in_user_ancestry`, the agent rationale + question persisted, `tool="pgsc_calc"`, `tool_version` matching the pin in `_versions.py`, `params_json` recording `-profile standard` + `-r <tag>`.
 - [ ] **AC5**: The matching `findings` row carries `category="clinical-non-actionable"`, `evidence_ref="pgs_catalog:PGS000018"`, NULL `clinical_escalation` per `INV-C001` v1.7.
 - [ ] **AC6**: No stack traces in `_scratch/pgsc_calc_work/<run-id>/.nextflow.log`; the Nextflow `work/` lives under `_scratch/` and is safe to delete after the row lands (`INV-D003`).
@@ -173,8 +177,13 @@ After Stage 3 is green, this meta-plan owns these edits — none of which the in
 |-------|------|--------|---------|-----------|-------|
 | 1 | [prs-reference-bootstrap](prs-reference-bootstrap/) | Phase 1 + 2 complete on TDD axis; real-data smoke pending Stage 3 | 2026-05-17 | 2026-05-17 (TDD axis) | +9 tests; 602 pass / 99 skip; `zstandard` Python lib (not `zstd` binary); `host doctor` surfaces `ancestry_ready` (ready / partial / missing) per INV-C001 v1.7 |
 | 2 | [prs-runtime-bootstrap](prs-runtime-bootstrap/) | Phase 1 complete (both Sub-phases 1.A + 1.B green); Phase 2 partially landed | 2026-05-17 | 2026-05-17 (Phase 1) | +3 tests (2 doctor + 1 INV-R001 provenance) + 4 image-level smoke; 609 pass / 99 skip. **Architectural revision**: `-profile conda` (not `-profile standard` — doesn't exist in pgsc_calc); plink2/plink/R/Bioconductor materialise per-process at first run into `reference/nextflow-cache/conda/` instead of being baked into the image. Image delta ~1.07 GB (vs spec ~400 MB; mamba 2.x libmamba dominates). `genomeclaw/toolkit:prs-phase1` built + smoked locally on Apple Silicon |
-| 3 | Integration smoke (this plan) | Partial | 2026-05-17 | 2026-05-18 (basic chain) | **17 iterations** uncovered: hardcoded `_VALID_FETCH_SOURCES` bug, wrong upstream URL, wrong bundle layout assumption (flat not 1000g/+hgdp/), bundle size (16 GB not 5-7 GB), wrong `-profile standard` (doesn't exist; switched to `docker`), arm64 plink2 unavailable on conda → DooD path, host RAM constraint (16 GB), chrX/Y header strip needed, NXF_HOME bind-mount needed for DooD path translation, identical inside/outside container paths needed. **Real PRS score produced: PGS000018 SUM=9.476, AVG=9.56e-06 for sample MPNRGLQ2K.** Ancestry calibration (`--run_ancestry`) FAILED on the variant-only VCF — only 28% of PGS scoring weights matched (Nebula VCF lacks REF/REF sites). Documented as follow-up plan; basic PRS chain validated end-to-end |
-| 4 | Docs cleanup (this plan) | Pending | | | |
+| 3 | Integration smoke (this plan) | Partial | 2026-05-17 | 2026-05-18 (basic chain only) | **17 iterations** uncovered: hardcoded `_VALID_FETCH_SOURCES` bug, wrong upstream URL, wrong bundle layout assumption (flat not 1000g/+hgdp/), bundle size (16 GB not 5-7 GB), wrong `-profile standard` (doesn't exist; switched to `docker`), arm64 plink2 unavailable on conda → DooD path, host RAM constraint (16 GB), chrX/Y header strip needed, NXF_HOME bind-mount needed for DooD path translation, identical inside/outside container paths needed. **Real PRS score produced: PGS000018 SUM=9.476, AVG=9.56e-06 for sample MPNRGLQ2K.** Ancestry calibration (`--run_ancestry`) FAILED on the variant-only VCF — only 28% of PGS scoring weights matched (Nebula VCF lacks REF/REF sites). Basic PRS chain validated end-to-end; **ancestry-calibrated row still pending** — see "Cascade of follow-up plans (2026-05-18 → 2026-05-20)" below. |
+| 3.1 | [prs-input-coverage-fill](prs-input-coverage-fill/) (downstream of Stage 3) | Phases 1-4 complete; Phase 5 in progress | 2026-05-18 | (Phase 5 awaiting smoke close-out) | Tier 1 + Tier 2 force-genotyping closes the variant-only-VCF gap. 5-named-reasons decline taxonomy + `PRSDeclineError` + INV-A003 wiring. `-profile docker` switch landed. CLI `prs-compute` catches declines as typed envelopes. |
+| 3.2 | [path-crossing-discipline](../completed/path-crossing-discipline/) (closed) | Complete | 2026-05-18 | 2026-05-19 | Surfaced 4 distinct gaps during Phase 5 real-data smoke (stale `docker run` bypass, 3.11/3.13 dev-prod skew, shim socket / user / case-statement bugs, fourth path-crossing layer). Promoted INV-D005/D006/D007 + INV-T001 (INVARIANTS v1.12 → v1.13). Closed the path-crossing class. |
+| 3.3 | [prs-runtime-hardening](../completed/prs-runtime-hardening/) (closed) | Complete | 2026-05-19 | 2026-05-20 | Captured the 11 smoke iterations v7–v17 ledger that followed path-crossing close. Promoted INV-R002 (Never Cache a Degenerate Result) + INV-D008 (Copy-Stage for DooD-Spawning Pipelines) (INVARIANTS v1.13 → v1.14). Tightened INV-T001 with per-flag value-type descriptors. Carried F3–F7 follow-ups forward (F7 = allele orientation; spawned pgs-allele-orientation). |
+| 3.4 | [pgs-allele-orientation](../completed/pgs-allele-orientation/) (F7 of 3.3; closed) | Complete | 2026-05-20 | 2026-05-20 | Per-site reference lookup via `samtools faidx -r <regions>`; orientation runs inside `prepare_coverage_tier2`. tier2.qc.json schema v1 → v2 with orientation counts. Smoke v20 caught sort-order bug + landed regression test; v21 ran 7586s (peak 7 GiB RSS) before SIGTERM at the 2h cap (input-class-mismatch with `--min_overlap 0.75`, not an orientation bug). **Smoke-gate for "real `pgs_scores` row" transferred to 3.5 Phase 4.** |
+| 3.5 | [prs-non-imputed-wgs](prs-non-imputed-wgs/) (closes the smoke-v21 gate) | Plan opened (spec + dev-plan + Phase 1) | 2026-05-20 | | External research validation ([findings](../../reports/prs-real-data-smoke-research-findings.md)) confirmed the 52.97% match rate is bioinformatically standard for non-imputed single-sample WGS. Plan exposes `--min_overlap` as per-input-class (default 0.5, was hardcoded 0.75), adds `bcftools norm -m -any` upstream, encodes HapMap3+/C+T scorefile preference, adds fifth named PRS-decline reason. Smoke v22 is the new Stage 3 GREEN gate. |
+| 4 | Docs cleanup (this plan) | Blocked on Stage 3 fully greening (i.e., Stage 3.5 Phase 4 smoke v22) | | | |
 
 ---
 
@@ -219,6 +228,58 @@ To make `--run_ancestry` actually work for the project owner's Nebula data, a ne
 - Feed that into pgsc_calc
 
 This is a non-trivial pipeline addition (~1-2 weeks effort) but is the correct production fix for INV-C001 v1.7 ancestry-calibrated PRS. The current smoke validates that everything else in the chain works.
+
+---
+
+## Cascade of follow-up plans (2026-05-18 → 2026-05-20)
+
+The single "prs-input-coverage-fill" follow-up referenced above didn't stay singular. Each plan in this cascade closed gaps surfaced by the previous plan's real-data smoke; each promoted invariants where the gap reflected a cross-cutting rule the project had been missing.
+
+```text
+prs-bootstrap-meta (this plan, Stage 3)
+  │
+  └─► prs-input-coverage-fill (closes variant-only-VCF ancestry gap; Tier 1 + Tier 2 force-genotype)
+        │   2026-05-18; Phases 1-4 complete; Phase 5 (real-data smoke) in flight
+        │
+        ├─► path-crossing-discipline (closes DooD path-translation class; INV-D005 / D006 / D007 + INV-T001)
+        │     2026-05-18 → 2026-05-19; closed; INVARIANTS v1.12 → v1.13
+        │
+        └─► prs-runtime-hardening (captures smoke v7–v17 ledger; INV-R002 + INV-D008)
+              │   2026-05-19 → 2026-05-20; closed; INVARIANTS v1.13 → v1.14
+              │
+              └─► pgs-allele-orientation (F7 — per-site reference lookup before force-genotype)
+                    │   2026-05-20; Phase 1 GREEN; smoke v18–v21 cooking
+                    │
+                    └─► prs-non-imputed-wgs (closes the 0.75 vs 45–65% gate; --min_overlap as per-input-class)
+                          2026-05-20; plan opened; smoke v22 is the new Stage 3 GREEN gate
+```
+
+### What landed structurally
+
+- **Tier 1 + Tier 2 force-genotyping** (prs-input-coverage-fill Phases 1-2): the per-PGS-site genotyping path that was the original gap. Tier 1 covers the LD-thinned PCA-eligible variant subset (~6.8K sites); Tier 2 covers the scorefile-specific sites (~1.7M for PGS000018). bcftools mpileup → call -C alleles -T alleles → norm pipeline, sharded by chromosome.
+- **5-named-reasons PRS-decline taxonomy** (prs-input-coverage-fill Phase 3): `PRSDeclineError` + the 5 enum values (LOW_OVERLAP_VARIANTS, LOW_OVERLAP_RECORDS, ANCESTRY_CALIBRATION_FAILED, INSUFFICIENT_BIOLOGICAL_BASIS, IMPUTATION_DEPENDENT_SCOREFILE_ONLY). Wired into the CLI as typed envelopes (exit 0; not a stack-trace failure).
+- **INV-R002** (Never Cache a Degenerate Result): `_count_vcf_records()` guard refuses to `atomic_promote` an empty Tier 1 / Tier 2 VCF. Smoke v15 was the canonical case — a degenerate Tier 2 cache had poisoned 4 layers downstream.
+- **INV-D008** (Copy-Stage for DooD-Spawning Pipelines): pgsc_calc's nextflow.config now writes `process.stageInMode = 'copy'` into the work-dir; the parent-container symlink-staging failure mode (smoke v14: `plink2: Failed to open high-LD-regions-hg38-GRCh38.txt`) is dead.
+- **INV-D005 / D006 / D007** + **INV-T001 tightening**: the path-crossing class is closed at three layers (shim, wrapper, tool contract). Per-flag value-type descriptors on `PgscCalcConventions` (v1.14) catch flag-value-type drift, not just flag-name drift.
+- **Allele orientation** (pgs-allele-orientation Phase 1): scorefiles assume `other_allele` is REF; per-site reference lookup against the fasta corrects orientation (KEEP / SWAP / SKIP) before bcftools sees the alleles file. tier2.qc.json schema v1 → v2 carries orientation counts.
+
+### What's still ahead of Stage 3 going green
+
+1. **Smoke v22** with `--min_overlap 0.5` per the [prs-non-imputed-wgs](prs-non-imputed-wgs/) plan — Phase 4 of that plan is the new Stage 3 GREEN gate.
+2. **Wall-clock confirmation**: validate the revised ≤90 min cold / ≤15 min warm budget against smoke v22.
+3. **AC1–AC8 reverification**: many of the original ACs need to be re-checked against the post-cascade pipeline shape (e.g., AC4's `params_json` now also records `min_overlap_used` + `keep_ambiguous_used` + `norm_decompose_multi_allelics`; AC5's `clinical_escalation` semantics are unchanged but the decline-pattern wiring is now via `PRSDeclineError`).
+
+### Open follow-ups carried forward across the cascade
+
+| ID | From | Description | Status |
+|----|------|-------------|--------|
+| F3 | prs-runtime-hardening | Host doctor checks for VM resource budget | Open |
+| F4 | prs-runtime-hardening | Sex-info handling for chrX scoring | Open |
+| F5 | prs-runtime-hardening | `bin/genomeclaw refs materialize` CLI subcommand | Open |
+| F6 | prs-runtime-hardening | CI gate on `tools/pgsc_calc/probe.sh` pin bumps | Open |
+| F1 | prs-non-imputed-wgs | bcftools / bgzip / mosdepth / vcfanno / vep conventions dataclass backfill (INV-T001 warn queue) | Open |
+| F5' | prs-non-imputed-wgs | Zero-dosage local imputation at high-confidence reference sites | Open (closes a portion of the 22% coverage-dropout share without violating INV-P001) |
+| F6' | prs-non-imputed-wgs | HapMap3+ / C+T scorefile metadata index (curated lookup for agent scorefile selection) | Open |
 
 ### Infrastructure follow-ups (separate from input-coverage)
 

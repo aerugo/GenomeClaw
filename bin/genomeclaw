@@ -52,6 +52,53 @@ case "${1:-}" in
     ;;
 esac
 
+# Subcommands that spawn Docker-out-of-Docker (DooD) sibling containers
+# from inside the toolkit container. For these, the canonical
+# /mnt/genomeclaw/... mount targets are insufficient — sibling containers
+# spawned by the host docker daemon must see paths at their identical
+# absolute paths on the host filesystem. Phase 1 of the
+# path-crossing-discipline plan adds an additive identical-path overlay
+# mount when GENOMECLAW_DOOD=1.
+#
+# INV-D005 (Identical-Path Bind Mounts for Sibling Containers): every host
+# path that may flow into a sibling's -v mount must be bind-mounted into
+# this container at its identical absolute path. The gate is per-subcommand
+# so non-DooD subcommands keep today's mount shape.
+#
+# Scan ALL positional args (skipping known global flags + their values) for
+# the subcommand pair. Earlier versions checked only `$1 $2` and missed
+# invocations like `genomeclaw --json pipeline prs-compute ...` (the Phase 5
+# smoke driver style); the auto-DooD never fired, the docker socket wasn't
+# mounted, and nextflow exited rc=1 with no diagnostic.
+_dood_scan_args() {
+  local prev=""
+  local cur=""
+  local skip_next=0
+  for cur in "$@"; do
+    if (( skip_next )); then
+      skip_next=0
+      prev="$cur"
+      continue
+    fi
+    case "$cur" in
+      # Global flags that take a value — skip the value too.
+      --json|--no-json|-h|--help|--version)
+        prev="$cur"
+        continue
+        ;;
+    esac
+    if [[ "$prev" == "pipeline" && ( "$cur" == "prs-compute" || "$cur" == "prs-prepare-coverage" ) ]]; then
+      return 0
+    fi
+    prev="$cur"
+  done
+  return 1
+}
+
+if _dood_scan_args "$@"; then
+  : "${GENOMECLAW_DOOD:=1}"
+fi
+
 if [[ "${GENOMECLAW_NATIVE:-0}" == "1" || "${GENOMECLAW_NO_DOCKER:-0}" == "1" ]]; then
   # Find a `genomeclaw` on PATH that isn't this shim. If none is on
   # PATH, fall back to running it via uv from the toolkit checkout next
@@ -145,8 +192,127 @@ else
   mounts+=("--mount" "type=bind,source=${ref_dir},target=/mnt/genomeclaw/reference")
 fi
 
+# INV-D005 — additive identical-path overlay for DooD subcommands.
+#
+# When the inside-container code spawns sibling containers via the host
+# docker daemon (DooD), it passes host paths to those siblings' -v mount
+# args. Without an identical-path overlay, the host daemon resolves those
+# paths against the host filesystem where /mnt/genomeclaw/... doesn't
+# exist → sibling can't see the file. The overlay mounts the host's
+# canonical roots at THEIR HOST ABSOLUTE PATHS inside the toolkit
+# container, so when the inside-container code references a host path it
+# resolves both inside (via the overlay) and outside (via the host fs).
+#
+# Strategy: compute the longest common prefix of the four *_DIR paths.
+# If found (canonical layout has /Volumes/Genome_Work/genomeclaw as the
+# common root), mount that single path. If no common prefix above /,
+# mount each of the four separately. Never mount / itself.
+build_dood_overlay_mounts() {
+  local p1=$1 p2=$2 p3=$3 p4=$4
+
+  # Compute longest common prefix of four paths via shortest-pair walk.
+  local common
+  common=$(printf '%s\n%s\n%s\n%s\n' "$p1" "$p2" "$p3" "$p4" \
+    | awk 'NR==1{c=$0; next} {
+        n=length(c); while (substr($0,1,n) != c) { c=substr(c,1,n-1); n--; if (n==0) break; }
+        if (n==0) { c=""; exit }
+      } END {
+        # Trim trailing slash for clean directory boundary.
+        sub(/\/$/, "", c);
+        # Ensure the common prefix is a real directory boundary, not a
+        # mid-component substring (e.g., "/a/foo" and "/a/foobar" share
+        # "/a/foo" textually but not as a directory).
+        while (length(c) > 0 && index($0, c"/") != 1 && c != $0) c=substr(c,1,length(c)-1);
+        print c;
+      }')
+
+  if [[ -n "$common" && "$common" != "/" ]]; then
+    # Single overlay covers all four. RO required because raw/ is inside.
+    # Subsequent RW overlays for derived/ + scratch/ + reference/ (during
+    # refs fetch) layer on top; docker resolves source-first so the inner
+    # RW mounts take precedence on those paths.
+    printf -- "--mount\ntype=bind,source=%s,target=%s,readonly\n" "$common" "$common"
+    printf -- "--mount\ntype=bind,source=%s,target=%s\n" "$p3" "$p3"  # derived RW
+    printf -- "--mount\ntype=bind,source=%s,target=%s\n" "$p4" "$p4"  # scratch RW
+    if [[ -z "$ref_mount_opts" ]]; then
+      printf -- "--mount\ntype=bind,source=%s,target=%s\n" "$p2" "$p2"  # ref RW (refs fetch)
+    fi
+  else
+    # No common prefix above /. Mount each separately at its identical
+    # absolute path. raw + ref RO; derived + scratch RW.
+    printf -- "--mount\ntype=bind,source=%s,target=%s,readonly\n" "$p1" "$p1"
+    if [[ -n "$ref_mount_opts" ]]; then
+      printf -- "--mount\ntype=bind,source=%s,target=%s,readonly\n" "$p2" "$p2"
+    else
+      printf -- "--mount\ntype=bind,source=%s,target=%s\n" "$p2" "$p2"
+    fi
+    printf -- "--mount\ntype=bind,source=%s,target=%s\n" "$p3" "$p3"
+    printf -- "--mount\ntype=bind,source=%s,target=%s\n" "$p4" "$p4"
+  fi
+}
+
+dood_env_args=()
+dood_socket_mounts=()
+if [[ "${GENOMECLAW_DOOD:-0}" == "1" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && mounts+=("$line")
+  done < <(build_dood_overlay_mounts "$raw_dir" "$ref_dir" "$derived_dir" "$scratch_dir")
+
+  # INV-D006 — make the deployment's host roots visible to as_sibling_mountable.
+  #
+  # The inside-container factory _paths.as_sibling_mountable validates a path
+  # against the colon-separated GENOMECLAW_HOST_ROOTS env var. Without it, a
+  # path under the deployment's actual host root (e.g., /Volumes/Genome_Work/
+  # genomeclaw/...) gets rejected even though the Phase-1 overlay made it
+  # visible. Surface every canonical *_DIR root so the factory accepts paths
+  # under any of them.
+  dood_host_roots="${raw_dir}:${ref_dir}:${derived_dir}:${scratch_dir}"
+  dood_env_args+=("--env" "GENOMECLAW_HOST_ROOTS=${dood_host_roots}")
+
+  # Phase 6 INV-D006 tightening — publish per-subdir mappings.
+  #
+  # The factory rejects canonical-mount paths (/mnt/genomeclaw/<sub>/...)
+  # with a translated hint naming the host-form equivalent. The translation
+  # table comes from these four env vars; threading them lets the inside-
+  # container error message say "use ${GENOMECLAW_SCRATCH_DIR}/foo instead"
+  # with the real host-side path filled in.
+  dood_env_args+=("--env" "GENOMECLAW_RAW_DIR=${raw_dir}")
+  dood_env_args+=("--env" "GENOMECLAW_REF_DIR=${ref_dir}")
+  dood_env_args+=("--env" "GENOMECLAW_DERIVED_DIR=${derived_dir}")
+  dood_env_args+=("--env" "GENOMECLAW_SCRATCH_DIR=${scratch_dir}")
+
+  # INV-D005 corollary — bind-mount the host docker socket so the inside-
+  # container Nextflow / pgsc_calc orchestrator can spawn sibling containers
+  # via the host daemon (DooD). Phase 5 smoke 2026-05-19 surfaced this: the
+  # pre-discipline smoke driver bypassed the shim with its own
+  # `--user 0:0 -v /var/run/docker.sock:...` because the shim had never
+  # mounted the socket. Phase 1 added the path overlay but left the
+  # socket gap.
+  dood_socket_mounts+=("--mount" "type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock")
+fi
+
 uid="$(id -u)"
 gid="$(id -g)"
+
+# DooD subcommands need write access to /var/run/docker.sock. The socket
+# inside the toolkit container is owned by `root` + the engine VM's docker
+# group (e.g., GID 991 on colima, 999 on most Linux distros, varying on
+# others). Matching the group inside the container reliably requires knowing
+# the engine's GID at runtime — the cleanest portable answer is `--user 0:0`
+# for DooD subcommands, which always has socket access. The trade-off is
+# that files the toolkit writes during a DooD run land root-owned on the
+# host; this surfaces on the host as files under `_scratch/` and `derived/`
+# the user must clean with `sudo rm`. Power users on strict-permission
+# environments can override with GENOMECLAW_DOOD_USER=<uid:gid> to keep
+# host-side ownership (provided they ensure socket-group membership).
+# Phase 5 smoke 2026-05-19 surfaced the original default ${uid}:${gid}
+# silently failing with `permission denied` on the socket and an empty
+# nextflow stderr.
+if [[ "${GENOMECLAW_DOOD:-0}" == "1" ]]; then
+  dood_user="${GENOMECLAW_DOOD_USER:-0:0}"
+else
+  dood_user="${uid}:${gid}"
+fi
 
 network_args=()
 if [[ "${GENOMECLAW_OFFLINE:-0}" == "1" ]]; then
@@ -170,9 +336,11 @@ fi
 
 cmd=(
   docker run --rm
-  --user "${uid}:${gid}"
+  --user "${dood_user}"
   ${tty_args[@]+"${tty_args[@]}"}
   ${network_args[@]+"${network_args[@]}"}
+  ${dood_env_args[@]+"${dood_env_args[@]}"}
+  ${dood_socket_mounts[@]+"${dood_socket_mounts[@]}"}
   ${mounts[@]+"${mounts[@]}"}
   "$image"
   genomeclaw

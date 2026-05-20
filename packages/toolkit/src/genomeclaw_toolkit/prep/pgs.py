@@ -22,19 +22,30 @@ the project owner's host install.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from genomeclaw_toolkit.prep._paths import SiblingMountablePath, as_sibling_mountable
+from genomeclaw_toolkit.prep._pgsc_calc_conventions import PgscCalcConventions
 
 
 @dataclass(frozen=True)
 class PgsRow:
     """The agent-triggered compute output, ready for INSERT into `pgs_scores`.
 
-    Carries the 6 domain fields + 2 INV-A003 provenance fields. The 7
-    canonical INV-R001 provenance columns (source_path, source_sha256,
-    tool, tool_version, params_json, schema_version, created_at) are
-    stamped by the CLI subcommand at INSERT time, not by the wrapper.
+    Carries the 6 domain fields + 2 INV-A003 provenance fields + 2
+    optional INV-C001 v1.7 calibration fields. The 7 canonical INV-R001
+    provenance columns (source_path, source_sha256, tool, tool_version,
+    params_json, schema_version, created_at) are stamped by the CLI
+    subcommand at INSERT time, not by the wrapper.
+
+    The calibration fields default to ``None`` for backwards compatibility
+    with existing callers; the Phase 3a classifier in
+    :mod:`genomeclaw_toolkit.prep._pgs_qc` produces a
+    :class:`CalibrationDecision` that :func:`apply_calibration_decision`
+    attaches to a row.
     """
 
     pgs_id: str
@@ -45,6 +56,47 @@ class PgsRow:
     calibration_warning: str | None
     agent_choice_rationale: str
     requested_for_question: str
+    calibration_status: str | None = None  # "clean" | "warning" | "decline" | None
+    decline_reason: str | None = None  # DeclineReason.value when status == "decline"
+
+
+def apply_calibration_decision(row: "PgsRow", decision: object) -> "PgsRow":
+    """Return a new :class:`PgsRow` with the calibration decision attached.
+
+    Pure function — never mutates ``row``; returns a new frozen instance via
+    :func:`dataclasses.replace`. The decline-reason is stamped as the enum's
+    ``.value`` (snake_case string) so the future DuckDB column type stays
+    `TEXT` rather than requiring a custom enum.
+
+    Args:
+        row: The base :class:`PgsRow` (typically from :func:`compute_pgs`).
+        decision: A :class:`CalibrationDecision` from
+            :func:`_pgs_qc.classify_calibration`. Typed as ``object`` to
+            avoid a circular import on the optional classifier module;
+            attribute access is duck-typed.
+
+    Raises:
+        ValueError: when ``decision.status`` is ``DECLINE`` but
+            ``decision.decline_reason`` is ``None`` (structural invalid
+            state the classifier never produces but a buggy caller might).
+    """
+    import dataclasses
+
+    status_str = decision.status.value  # type: ignore[attr-defined]
+    decline_reason_value: str | None = None
+    if status_str == "decline":
+        if decision.decline_reason is None:  # type: ignore[attr-defined]
+            raise ValueError(
+                "CalibrationDecision with status=DECLINE must populate decline_reason "
+                "(INV-C001 v1.7)"
+            )
+        decline_reason_value = decision.decline_reason.value  # type: ignore[attr-defined]
+
+    return dataclasses.replace(
+        row,
+        calibration_status=status_str,
+        decline_reason=decline_reason_value,
+    )
 
 
 class PgsReferenceMissingError(RuntimeError):
@@ -80,14 +132,35 @@ _PGS_ANCESTRY_PRESENCE_FILES: tuple[str, ...] = (
 
 
 def _ancestry_reference_dir(reference_root: Path, release: str = _PGS_ANCESTRY_RELEASE) -> Path:
-    """Resolve the canonical post-fetch ancestry-reference layout root.
+    """Resolve the canonical post-fetch ancestry-reference directory.
 
     ``genomeclaw refs fetch --source pgs_catalog_ancestry --release <X>``
-    lands the extracted 1000G + HGDP panels under
-    ``reference/pgs_catalog_ancestry/<X>/{1000g,hgdp}/``. The directory
-    returned here is the path ``pgsc_calc --run_ancestry`` consumes.
+    lands the extracted bundle (Citation.txt, GRCh38_HGDP+1kGP_ALL.{pgen,
+    pvar.zst,psam}, the tarball itself, etc.) under
+    ``reference/pgs_catalog_ancestry/<X>/``. The directory returned here
+    is the parent that ``_check_ancestry_reference`` walks for presence;
+    pgsc_calc's ``--run_ancestry`` consumes the TARBALL inside it via
+    :func:`_ancestry_reference_bundle`.
     """
     return reference_root / "pgs_catalog_ancestry" / release
+
+
+def _ancestry_reference_bundle(
+    reference_root: Path, release: str = _PGS_ANCESTRY_RELEASE
+) -> Path:
+    """Resolve the ancestry-reference TARBALL ``pgsc_calc --run_ancestry`` consumes.
+
+    pgsc_calc's ``EXTRACT_DATABASE`` task runs ``tar -xf <path> ...`` against
+    the value of ``--run_ancestry``. It expects a tar (or zstd-tar) bundle,
+    not an extracted directory. Phase 7 smoke v10 (2026-05-19) surfaced this
+    as ``EXTRACT_DATABASE`` exit-2 (tar refusing to read a directory as a
+    tar archive).
+
+    The canonical PGS Catalog reference bundle is named
+    ``pgs_catalog_ancestry.tar.zst`` and ships inside the extracted release
+    dir alongside the per-build panel files.
+    """
+    return _ancestry_reference_dir(reference_root, release) / "pgs_catalog_ancestry.tar.zst"
 
 
 def _check_ancestry_reference(reference_root: Path) -> None:
@@ -116,64 +189,256 @@ def _check_ancestry_reference(reference_root: Path) -> None:
         )
 
 
+def _write_pgsc_calc_samplesheet(
+    *,
+    vcf: SiblingMountablePath,
+    sample_id: str,
+    work_dir: SiblingMountablePath,
+    conventions: PgscCalcConventions | None = None,
+) -> Path:
+    """Materialise a pgsc_calc samplesheet CSV at ``work_dir/samplesheet.csv``.
+
+    Header columns + the ``path_prefix`` suffix-stripping rule are read
+    from :class:`PgscCalcConventions`, NOT hardcoded — so a future pgsc_calc
+    pin bump that changes the schema is a typed-test failure rather than
+    a silent ``rc=1`` against real input.
+
+    Per the conventions (verified against pgsc_calc v2.2.0):
+
+    * header == ``conv.samplesheet_columns`` (column order matters).
+    * ``path_prefix`` is a file prefix WITHOUT the ``.vcf.gz`` / ``.vcf``
+      extension when ``conv.path_prefix_strips_extension`` is True. The
+      2026-05-19 smoke failed with ``No such file: merged.vcf.gz.vcf`` —
+      pgsc_calc auto-appends ``.vcf`` and re-detects ``.gz``.
+    * ``chrom`` is blank for the multi-chrom case.
+    * ``vcf_genotype_field`` defaults to ``conv.vcf_genotype_field_default``.
+    """
+    conv = conventions or PgscCalcConventions()
+    work_dir.mkdir(parents=True, exist_ok=True)
+    samplesheet = Path(work_dir / "samplesheet.csv")
+
+    if conv.path_prefix_strips_extension:
+        path_prefix = str(vcf).removesuffix(".gz").removesuffix(".vcf")
+    else:
+        path_prefix = str(vcf)
+
+    row_values: dict[str, str] = {
+        "sampleset": sample_id,
+        "path_prefix": path_prefix,
+        "chrom": "",
+        "format": "vcf",
+        "vcf_genotype_field": conv.vcf_genotype_field_default,
+    }
+    header = ",".join(conv.samplesheet_columns)
+    row = ",".join(row_values.get(col, "") for col in conv.samplesheet_columns)
+    samplesheet.write_text(f"{header}\n{row}\n")
+    return samplesheet
+
+
+_NEXTFLOW_CONFIG_FILENAME = "nextflow.config"
+
+# Deployment config nextflow reads at task-spawn time. Redirects each
+# sibling task's TMPDIR to its bind-mounted work-dir (which lives on the
+# host's 2 TB external drive). Without this, Python's tempfile module
+# inside a sibling defaults to /tmp — the container's writable layer,
+# which lives on the colima VM data disk (typically 98 GB). pgsc_calc's
+# ``INTERSECT_VARIANTS`` task writes ~8 GB of temp data while processing
+# the 82M-variant HGDP+1kGP panel; smoke v11 (2026-05-19) surfaced this
+# as ``OSError: [Errno 28] No space left on device``.
+#
+# Single-quoted in groovy so ``${PWD}`` is NOT groovy-interpolated; it
+# resolves at sibling-task time via bash, which sees each task's own
+# work-dir.
+_TMPDIR_REDIRECT_CONFIG = """\
+// Auto-generated by genomeclaw-toolkit (pgs.py:_write_pgsc_calc_nextflow_config)
+//
+// Two deployment overrides for DooD-spawning pipelines like pgsc_calc:
+//
+// 1. TMPDIR redirect: each sibling task's Python tempfile-style writes
+//    target ``${PWD}`` (the bind-mounted work-dir on the host external
+//    scratch drive) rather than ``/tmp`` (the container writable layer
+//    on the small colima VM data disk). Closes the smoke-v11 disk-
+//    exhaustion gap (``INTERSECT_VARIANTS`` ENOSPC).
+//
+// 2. stageInMode = 'copy': nextflow's default 'symlink' staging breaks
+//    in DooD setups — symlinks created by the parent container point at
+//    parent-container-local paths (e.g., /opt/nextflow/assets/...) which
+//    don't exist in the sibling's namespace. Copy-mode physically
+//    materialises input files into the work-dir, which IS bind-mounted
+//    to the sibling. Closes the smoke-v14 gap
+//    (FILTER_VARIANTS couldn't open high-LD-regions-hg38-GRCh38.txt
+//     because the symlink dereferenced to /opt/nextflow/... inside the
+//     parent — invisible to the plink2 sibling).
+process {
+    beforeScript = 'export TMPDIR="${PWD}"'
+    stageInMode = 'copy'
+}
+"""
+
+
+def _write_pgsc_calc_nextflow_config(work_dir: SiblingMountablePath) -> Path:
+    """Materialise the deployment-specific ``nextflow.config`` at ``work_dir/nextflow.config``.
+
+    Picked up by nextflow via the ``-c`` flag in
+    :func:`_build_pgsc_calc_argv`. The config sets ``process.beforeScript``
+    to export ``TMPDIR=${PWD}`` inside every sibling task, redirecting
+    Python's tempfile module from the VM-resident container writable
+    layer (typically 98 GB) onto the bind-mounted external scratch drive
+    (typically multi-TB).
+
+    The work-dir mkdir is idempotent; the file is overwritten on each
+    compute_pgs call so deployment changes pick up without manual cleanup.
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    # mypy can't narrow ``SiblingMountablePath / str`` through the dynamic
+    # ``type(Path())`` base; the result IS a Path at runtime — cast to make
+    # the return-type contract explicit.
+    config_path = Path(work_dir / _NEXTFLOW_CONFIG_FILENAME)
+    config_path.write_text(_TMPDIR_REDIRECT_CONFIG)
+    return config_path
+
+
+def _resolve_min_overlap(conventions: PgscCalcConventions | None = None) -> float:
+    """Resolve the ``--min_overlap`` value for pgsc_calc invocation.
+
+    Precedence:
+
+    1. Env var ``GENOMECLAW_PGSC_CALC_MIN_OVERLAP`` (parsed as float).
+    2. ``PgscCalcConventions.min_overlap_default_for_non_imputed_wgs``
+       (0.5 for the non-imputed single-sample WGS input class).
+
+    Both the wrapper's argv emission and the CLI's ``params_json``
+    persistence call this helper, so the value passed to pgsc_calc and
+    the value persisted to ``pgs_scores`` are guaranteed to match
+    (INV-R001 rebuildability).
+
+    Pre-flight gate: unparseable or out-of-range values raise
+    ``ValueError`` BEFORE pgsc_calc spawns. pgsc_calc would reject the
+    same input downstream, but as a deep Nextflow rc=1 — the typed
+    error surface beats hours of debugging.
+
+    Args:
+        conventions: optional :class:`PgscCalcConventions` instance.
+            Defaults to ``PgscCalcConventions()`` (canonical defaults).
+            Tests use ``dataclasses.replace`` to stub the default value;
+            the env var still wins over the stub if set.
+
+    Returns:
+        The resolved ``--min_overlap`` value as a float in ``[0.0, 1.0]``.
+
+    Raises:
+        ValueError: when the env-var value is not a valid float OR is
+            outside the ``[0.0, 1.0]`` range that pgsc_calc accepts.
+    """
+    conv = conventions or PgscCalcConventions()
+    raw = os.environ.get("GENOMECLAW_PGSC_CALC_MIN_OVERLAP")
+    if raw is None:
+        return conv.min_overlap_default_for_non_imputed_wgs
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"GENOMECLAW_PGSC_CALC_MIN_OVERLAP={raw!r} is not a valid float; "
+            "must be a number in [0.0, 1.0] per pgsc_calc --min_overlap "
+            "contract."
+        ) from exc
+    if not (0.0 <= value <= 1.0):
+        raise ValueError(
+            f"GENOMECLAW_PGSC_CALC_MIN_OVERLAP={raw!r} = {value} is outside "
+            "[0.0, 1.0]; pgsc_calc would reject this with a deep Nextflow "
+            "rc=1. Set to a proportion (e.g. 0.5 for non-imputed single-"
+            "sample WGS; 0.75 for cohort-imputed inputs)."
+        )
+    return value
+
+
 def _build_pgsc_calc_argv(
     *,
-    vcf: Path,
+    samplesheet: SiblingMountablePath,
     pgs_id: str,
-    work_dir: Path,
-    reference_root: Path,
+    work_dir: SiblingMountablePath,
+    reference_root: SiblingMountablePath,
+    nextflow_config: Path | None = None,
+    conventions: PgscCalcConventions | None = None,
 ) -> list[str]:
     """Build the `nextflow run pgscatalog/pgsc_calc` invocation argv.
 
-    Uses ``--target_build GRCh38`` (canonical reference build per
-    architecture.md) + ``--run_ancestry`` (mandatory per ``INV-C001`` v1.7
-    ancestry calibration) + ``--pgs_id <id>`` (single-PGS run) +
-    ``-profile conda`` (the only profile that stays inside GenomeClaw's
-    image-or-volume boundary; per PRS Runtime Bootstrap Phase 1).
+    All flag strings come from :class:`PgscCalcConventions` — the dataclass
+    is the typed contract against pgsc_calc v2.2.0. The wrapper reads
+    ``conv.input_flag`` rather than hardcoding ``"--input"`` so a future
+    pgsc_calc pin bump that flips the flag produces a typed-test failure
+    (in :mod:`tests.unit.test_pgsc_calc_conventions`) rather than a silent
+    ``rc=1`` against the real tool.
 
-    Per-process scoring deps (plink2/plink/R/Bioconductor) are materialised
-    by Nextflow into ``$NXF_CONDA_CACHEDIR`` on first run; the caller's
-    environment must set:
+    Composition:
 
-        NXF_HOME=/mnt/genomeclaw/reference/nextflow-cache
-        NXF_CONDA_CACHEDIR=/mnt/genomeclaw/reference/nextflow-cache/conda
-
-    so the materialised envs persist on the bind-mounted reference volume
-    across container restarts (``INV-D003``: heavy scratch separated from
-    authoritative outputs; conda envs are reference-data-like and live in
-    ``reference/``, not ``_scratch/``).
-
-    The pipeline revision (``-r v2.2.0``) is pinned to the value in
-    ``_versions.PRS_RUNTIME_VERSIONS["pgsc_calc"]`` so the wrapper's
-    ``pgs_scores.params_json`` provenance trail records exactly which
-    pgsc_calc release scored the user's variants.
-
-    The samplesheet is implicit in the v0 wrapper — pgsc_calc's ``--target``
-    accepts a single VCF directly when no samplesheet is supplied, which
-    keeps the wrapper interface narrow. A future multi-sample / multi-trait
-    variant can build the samplesheet CSV explicitly.
+    * ``-r <version>`` from ``conv.revision_flag`` + ``PRS_RUNTIME_VERSIONS``
+    * ``-profile docker`` from ``conv.profile_flag`` — the 2026-05-17 smoke
+      proved ``-profile conda`` fails on linux/arm64 (pgsc_calc pins
+      plink2 2.0a5.10, not packaged for aarch64).
+    * ``--input <samplesheet>`` from ``conv.input_flag`` — pgsc_calc v2.2.0
+      retired the pre-2.2 ``--target <vcf>`` shorthand (smoke v2 regression).
+    * ``--target_build GRCh38`` from ``conv.target_build_flag``.
+    * ``--pgs_id <id>`` from ``conv.pgs_id_flag``.
+    * ``--run_ancestry <dir>`` from ``conv.run_ancestry_flag`` — INV-C001
+      v1.7 mandatory for ancestry-calibrated PRS.
+    * ``-work-dir <dir>`` from ``conv.work_dir_flag``.
     """
     from genomeclaw_toolkit.prep._versions import PRS_RUNTIME_VERSIONS
 
-    return [
+    conv = conventions or PgscCalcConventions()
+    # Resource caps for the hardware ceiling. pgsc_calc defaults to
+    # max_memory=128.GB / max_cpus=16; on a typical colima VM (12 GiB / 2 CPU
+    # by default), individual processes' static memory requests (e.g.,
+    # ANCESTRY_PROJECT:EXTRACT_DATABASE at 16 GB) exceed available causing
+    # nextflow to refuse submission with "Default resources exceed
+    # availability". The caps below shrink every request to the engine's
+    # actual capacity. Read from env vars so deployments with bigger VMs
+    # don't pay the cap; default to conservative values that fit a 12 GiB
+    # macOS host's VZ.framework ceiling.
+    import os as _os
+    max_memory = _os.environ.get("GENOMECLAW_PGSC_CALC_MAX_MEMORY", "10.GB")
+    max_cpus = _os.environ.get("GENOMECLAW_PGSC_CALC_MAX_CPUS", "2")
+    argv = [
         "nextflow",
         "run",
         "pgscatalog/pgsc_calc",
-        "-r",
+        conv.revision_flag,
         PRS_RUNTIME_VERSIONS["pgsc_calc"],
-        "-profile",
-        "conda",
-        "--target",
-        str(vcf),
-        "--target_build",
+        conv.profile_flag,
+        "docker",
+    ]
+    # Optional deployment config (TMPDIR redirect; see
+    # :func:`_write_pgsc_calc_nextflow_config`). nextflow's ``-c`` flag is
+    # additive — it merges with the upstream pgsc_calc config rather than
+    # replacing it. Inserted BEFORE pgsc_calc params so the params block
+    # stays grouped.
+    if nextflow_config is not None:
+        argv += ["-c", str(nextflow_config)]
+    # --min_overlap value: env var > conventions default (0.5 for non-imputed
+    # single-sample WGS per docs/reports/prs-real-data-smoke-research-findings.md).
+    # The same helper feeds the CLI's params_json persistence so the value
+    # threaded into pgsc_calc and the value persisted to pgs_scores match.
+    min_overlap = _resolve_min_overlap(conv)
+    argv += [
+        conv.input_flag,
+        str(samplesheet),
+        conv.target_build_flag,
         "GRCh38",
-        "--pgs_id",
+        conv.pgs_id_flag,
         pgs_id,
-        "--run_ancestry",
-        str(_ancestry_reference_dir(reference_root)),
-        "-work-dir",
+        "--max_memory",
+        max_memory,
+        "--max_cpus",
+        max_cpus,
+        "--min_overlap",
+        str(min_overlap),
+        conv.run_ancestry_flag,
+        str(_ancestry_reference_bundle(reference_root)),
+        conv.work_dir_flag,
         str(work_dir),
     ]
+    return argv
 
 
 def _parse_aggregated_scores(work_dir: Path, pgs_id: str) -> tuple[float | None, str]:
@@ -238,10 +503,10 @@ def _parse_aggregated_scores_norm(work_dir: Path, pgs_id: str) -> tuple[float | 
 
 def compute_pgs(
     *,
-    vcf: Path,
+    vcf: SiblingMountablePath,
     pgs_id: str,
-    reference_root: Path,
-    work_dir: Path,
+    reference_root: SiblingMountablePath,
+    work_dir: SiblingMountablePath,
     agent_choice_rationale: str,
     requested_for_question: str,
     trait_label: str | None = None,
@@ -277,11 +542,39 @@ def compute_pgs(
             missing (clean install hint instead of a Nextflow trace).
         subprocess.CalledProcessError: when `pgsc_calc` exits non-zero.
     """
+    # INV-D006 boundary check: every path that may flow into a DooD sibling
+    # (pgsc_calc spawns siblings via nextflow + docker) gets validated here.
+    # Passing a container-local path (e.g., `/tmp/genomeclaw-scratch/...`)
+    # raises DooDPathError BEFORE any subprocess runs.
+    vcf = as_sibling_mountable(vcf)
+    work_dir = as_sibling_mountable(work_dir)
+    reference_root = as_sibling_mountable(reference_root)
+
     _check_ancestry_reference(reference_root)
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # pgsc_calc v2.2.0 requires --input <samplesheet.csv>; materialise one
+    # from the single-VCF caller contract. The samplesheet lives in
+    # work_dir so it's discoverable for INV-R001 audit + co-resides with
+    # the Nextflow intermediates pgsc_calc generates.
+    # Sampleset identifier MUST NOT contain `.` — pgsc_calc derives downstream
+    # filenames as ``GRCh38_<sampleset>_<chrom>.<ext>``, and the intersect_cli
+    # step parses those back by stripping a single ``_<chrom>`` suffix.
+    # ``Path("merged.vcf.gz").stem == "merged.vcf"`` keeps the dot; pgsc_calc
+    # then mismatches the derived filename. Strip all VCF-related suffixes
+    # for a periodless sampleset. Phase 7 smoke v13 (2026-05-19) regression.
+    sample_id = vcf.name.removesuffix(".gz").removesuffix(".vcf")
+    samplesheet = _write_pgsc_calc_samplesheet(vcf=vcf, sample_id=sample_id, work_dir=work_dir)
+    # Deployment config: redirect sibling-task TMPDIR to the external
+    # scratch drive (see _write_pgsc_calc_nextflow_config). Without this,
+    # pgsc_calc's INTERSECT_VARIANTS fills the colima VM data disk.
+    nextflow_config = _write_pgsc_calc_nextflow_config(work_dir)
     argv = _build_pgsc_calc_argv(
-        vcf=vcf, pgs_id=pgs_id, work_dir=work_dir, reference_root=reference_root
+        samplesheet=as_sibling_mountable(samplesheet),
+        pgs_id=pgs_id,
+        work_dir=work_dir,
+        reference_root=reference_root,
+        nextflow_config=nextflow_config,
     )
     proc = subprocess.run(argv, capture_output=True, check=False)
     if proc.returncode != 0:
@@ -306,5 +599,6 @@ def compute_pgs(
 __all__ = [
     "PgsReferenceMissingError",
     "PgsRow",
+    "apply_calibration_decision",
     "compute_pgs",
 ]

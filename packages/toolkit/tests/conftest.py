@@ -91,11 +91,93 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             if "needs_prs_runtime" in item.keywords:
                 item.add_marker(skip_prs)
 
+    # Phase 6 — `needs_prod_python` tests execute a probe inside the toolkit
+    # image via `docker run` to catch dev/prod Python version skew. Gated by
+    # GENOMECLAW_TOOLKIT_PRS_IMAGE pointing at a built image + docker on PATH.
+    # On a bare host venv without docker these auto-skip cleanly. Closes the
+    # Phase 3 misstep where Path-subclass `_flavour` AttributeError on the
+    # image's Python 3.11 wasn't caught by host-venv (3.13) tests.
+    prod_python_image = os.environ.get("GENOMECLAW_TOOLKIT_PRS_IMAGE")
+    if not prod_python_image or shutil.which("docker") is None:
+        skip_prod_python = pytest.mark.skip(
+            reason=(
+                "needs_prod_python test requires GENOMECLAW_TOOLKIT_PRS_IMAGE pointing "
+                "at a built toolkit image + docker on PATH. The probe inside the image "
+                "exercises the prep/ source against the production Python (3.11), "
+                "catching dev/prod version skew at phase-completion time."
+            )
+        )
+        for item in items:
+            if "needs_prod_python" in item.keywords:
+                item.add_marker(skip_prod_python)
+
+    # Phase 5 — needs_phase5_smoke_artifacts tests verify the recorded outputs
+    # of `bin/genomeclaw-prs-smoke`. They auto-skip when the env var isn't set,
+    # which is the normal CI state. To run them: invoke the smoke driver, then
+    # export GENOMECLAW_PHASE5_SMOKE_DIR=<the driver's output dir>.
+    smoke_dir = os.environ.get("GENOMECLAW_PHASE5_SMOKE_DIR")
+    if not smoke_dir or not Path(smoke_dir).is_dir():
+        skip_smoke = pytest.mark.skip(
+            reason=(
+                "needs_phase5_smoke_artifacts test requires GENOMECLAW_PHASE5_SMOKE_DIR "
+                "pointing at a directory produced by `bin/genomeclaw-prs-smoke`. "
+                "Run the driver against the real CRAM (~50–60 min on 2-CPU Colima), then "
+                "export the env var pointing at the timestamped output dir."
+            )
+        )
+        for item in items:
+            if "needs_phase5_smoke_artifacts" in item.keywords:
+                item.add_marker(skip_smoke)
+
+
+@pytest.fixture(autouse=True)
+def _autouse_genomeclaw_host_roots(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Make ``tmp_path`` a sibling-mountable prefix for the duration of each test.
+
+    Production wraps every DooD-bound path with :func:`as_sibling_mountable`
+    (INV-D006); the factory only accepts paths under
+    ``/mnt/genomeclaw/...`` or under a prefix listed in
+    ``GENOMECLAW_HOST_ROOTS``. Tests that build fixture files under
+    ``tmp_path`` need ``tmp_path`` in that list so the factory accepts them.
+
+    Autouse + no-op when ``tmp_path`` isn't requested. Tests can override by
+    monkeypatching the env var to a different value (or deleting it) inside
+    the test body — the autouse fixture only sets the prefix, it doesn't
+    enforce it.
+    """
+    if "tmp_path" in request.fixturenames:
+        tmp_path = request.getfixturevalue("tmp_path")
+        existing = os.environ.get("GENOMECLAW_HOST_ROOTS", "")
+        # Always include /private/var (macOS tmp_path resolves through /private).
+        new_roots = ":".join(filter(None, [str(tmp_path), "/private", existing]))
+        monkeypatch.setenv("GENOMECLAW_HOST_ROOTS", new_roots)
+
 
 @pytest.fixture(scope="session")
 def has_bio_binaries() -> Iterator[bool]:
     """Test-side flag matching the marker behaviour above."""
     yield os.environ.get("GENOMECLAW_HAS_BIO") == "1"
+
+
+@pytest.fixture(scope="session")
+def phase5_smoke_dir() -> Path:
+    """Return the Path to the Phase 5 smoke output dir.
+
+    Pre-resolved + existence-checked. ``needs_phase5_smoke_artifacts``-marked
+    tests are auto-skipped when ``GENOMECLAW_PHASE5_SMOKE_DIR`` isn't set
+    (see :func:`pytest_collection_modifyitems` above), so by the time this
+    fixture is consumed the env var is guaranteed to be present.
+    """
+    smoke_dir = os.environ.get("GENOMECLAW_PHASE5_SMOKE_DIR")
+    if smoke_dir is None:
+        pytest.skip("GENOMECLAW_PHASE5_SMOKE_DIR not set")
+    path = Path(smoke_dir)
+    if not path.is_dir():
+        pytest.skip(f"GENOMECLAW_PHASE5_SMOKE_DIR does not exist: {path}")
+    return path
 
 
 # ---------------------------------------------------------------------------

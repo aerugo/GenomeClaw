@@ -25,7 +25,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 _NORM_OUTPUT_RE = re.compile(r"bcftools norm[^|&]*?--output\s+(\S+)")
 
 

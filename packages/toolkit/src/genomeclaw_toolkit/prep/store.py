@@ -213,6 +213,11 @@ CREATE TABLE pgs_scores (
     -- INV-A003 provenance: agent's choice rationale + originating user question.
     agent_choice_rationale          TEXT NOT NULL,
     requested_for_question          TEXT NOT NULL,
+    -- INV-C001 v1.7 calibration decision (Phase 3b3b1).
+    -- ``calibration_status`` ∈ {"clean", "warning", "decline", NULL}.
+    -- ``decline_reason`` is the snake_case DeclineReason.value when status == "decline".
+    calibration_status              TEXT,
+    decline_reason                  TEXT,
     -- Supersession audit trail (mirrors INV-A001's prior-note-stays-on-disk pattern).
     superseded_by                   TEXT,
     -- Provenance (the canonical seven; INV-R001)

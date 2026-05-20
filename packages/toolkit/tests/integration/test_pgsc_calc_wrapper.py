@@ -135,6 +135,39 @@ def test_compute_pgs_invokes_pgsc_calc_with_run_ancestry(tmp_path: Path) -> None
     assert "--target_build" in argv and argv[argv.index("--target_build") + 1] == "GRCh38"
     assert "--pgs_id" in argv and argv[argv.index("--pgs_id") + 1] == "PGS000018"
     assert "--run_ancestry" in argv_str, "INV-C001 v1.7 requires ancestry calibration"
+    # Phase 5 smoke regression guard: pgsc_calc v2.2.0 retired the `--target`
+    # flag in favor of `--input <samplesheet.csv>`. The 2026-05-18 smoke
+    # failed silently when the wrapper still used `--target`; this assertion
+    # prevents a regression to the old shape.
+    assert "--input" in argv, f"pgsc_calc v2.2.0 requires --input, not --target. argv={argv}"
+    assert "--target" not in argv, (
+        "pgsc_calc v2.2.0 dropped --target; the smoke driver failed silently "
+        "with `Please provide an input samplesheet`. Use --input <samplesheet.csv> instead."
+    )
+    samplesheet_path = argv[argv.index("--input") + 1]
+    assert samplesheet_path.endswith(".csv")
+    # Samplesheet file was materialised under work_dir.
+    from pathlib import Path as _Path
+
+    assert _Path(samplesheet_path).exists()
+    csv_content = _Path(samplesheet_path).read_text()
+    assert "sampleset,path_prefix,chrom,format,vcf_genotype_field" in csv_content
+    assert "vcf,GT" in csv_content
+    # Phase 5 smoke regression guard: pgsc_calc's path_prefix is a basename
+    # PREFIX (no extension). The 2026-05-19 smoke failed with
+    # `No such file: merged.vcf.gz.vcf` because the wrapper was writing the
+    # full path including .vcf.gz instead of stripping it.
+    for line in csv_content.splitlines()[1:]:  # skip header
+        if not line.strip():
+            continue
+        path_prefix = line.split(",")[1]
+        assert not path_prefix.endswith(".vcf.gz"), (
+            f"path_prefix must NOT carry the .vcf.gz suffix (pgsc_calc auto-"
+            f"appends .vcf); got {path_prefix!r}"
+        )
+        assert not path_prefix.endswith(".vcf"), (
+            f"path_prefix must be a bare prefix; got {path_prefix!r}"
+        )
 
 
 def test_compute_pgs_parses_aggregated_scores_into_pgs_row(tmp_path: Path) -> None:
@@ -212,17 +245,19 @@ def test_compute_pgs_raises_pgs_reference_missing_when_ancestry_data_absent(
         assert fake_run.call_count == 0
 
 
-def test_compute_pgs_pins_profile_conda_and_pgsc_calc_revision_invR001(tmp_path: Path) -> None:
-    """The wrapper argv records ``-profile conda`` + ``-r v2.2.0`` so the
+def test_compute_pgs_pins_profile_docker_and_pgsc_calc_revision_invR001(tmp_path: Path) -> None:
+    """The wrapper argv records ``-profile docker`` + ``-r v2.2.0`` so the
     ``pgs_scores.params_json`` provenance trail captures exactly which
     execution mode + pipeline release scored the user's variants.
 
-    PRS Runtime Bootstrap Phase 1 picked ``-profile conda`` (verified against
-    pgsc_calc nextflow.config: no ``-profile standard`` exists; ``conda`` is
-    the only profile that stays inside GenomeClaw's image-or-volume boundary
-    without socket-mounting Docker into the container). The revision pin
-    lives in ``_versions.PRS_RUNTIME_VERSIONS["pgsc_calc"]`` — bumping it
-    rebuilds the argv automatically.
+    Phase 4a of the [prs-input-coverage-fill plan](../../../../docs/plans/active/prs-input-coverage-fill/development-plan.md)
+    flipped this from ``-profile conda`` to ``-profile docker``. The
+    2026-05-17 real-data smoke proved that ``-profile conda`` fails on
+    linux/arm64 because plink2 2.0a5.10 isn't packaged on conda-forge for
+    aarch64; ``-profile docker`` works via DooD against the pre-pulled
+    pgsc_calc images. The revision pin lives in
+    ``_versions.PRS_RUNTIME_VERSIONS["pgsc_calc"]`` — bumping it rebuilds
+    the argv automatically.
     """
     from genomeclaw_toolkit.prep._versions import PRS_RUNTIME_VERSIONS
 
@@ -245,8 +280,9 @@ def test_compute_pgs_pins_profile_conda_and_pgsc_calc_revision_invR001(tmp_path:
     argv = fake_run.call_args_list[0].args[0]
     assert argv[0] == "nextflow", f"argv[0] must be `nextflow`, got {argv[0]!r}"
     assert "-profile" in argv, "INV-R001: -profile pin must surface in the recorded argv"
-    assert argv[argv.index("-profile") + 1] == "conda", (
-        f"INV-R001: -profile must be `conda`, got {argv[argv.index('-profile') + 1]!r}"
+    assert argv[argv.index("-profile") + 1] == "docker", (
+        f"INV-R001: -profile must be `docker` (smoke-proven 2026-05-17 — "
+        f"-profile conda fails on arm64), got {argv[argv.index('-profile') + 1]!r}"
     )
     assert "-r" in argv, "INV-R001: pgsc_calc revision pin must surface in the recorded argv"
     assert argv[argv.index("-r") + 1] == PRS_RUNTIME_VERSIONS["pgsc_calc"], (
@@ -283,4 +319,215 @@ def test_compute_pgs_threads_invA003_provenance_into_row(tmp_path: Path) -> None
     assert row.agent_choice_rationale == rationale, "INV-A003: rationale must thread through"
     assert row.requested_for_question == question, (
         "INV-A003: requested_for_question must thread through"
+    )
+
+
+def test_compute_pgs_samplesheet_sampleset_has_no_period(tmp_path: Path) -> None:
+    """The samplesheet's ``sampleset`` column MUST NOT contain a ``.``.
+
+    pgsc_calc derives downstream filenames as ``GRCh38_<sampleset>_<chrom>.<ext>``
+    and the ``intersect_cli`` step parses those by stripping ``_<chrom>``.
+    ``Path("merged.vcf.gz").stem == "merged.vcf"`` keeps the dot; pgsc_calc
+    then mismatches the derived filename (Phase 7 smoke v13 regression:
+    ``FileNotFoundError: GRCh38_merged.afreq.gz`` because the file was actually
+    named ``GRCh38_merged.vcf_ALL.afreq.gz``).
+
+    Strip BOTH ``.gz`` and ``.vcf`` to land on a clean periodless sampleset."""
+    vcf = tmp_path / "merged.vcf.gz"
+    vcf.write_bytes(b"fake-vcf")
+    reference_root = _make_reference_root(tmp_path)
+    work_dir = tmp_path / "work"
+
+    fake_run = _fake_pgsc_calc_run(work_dir)
+    with patch("genomeclaw_toolkit.prep.pgs.subprocess.run", fake_run):
+        compute_pgs(
+            vcf=vcf,
+            pgs_id="PGS000018",
+            reference_root=reference_root,
+            work_dir=work_dir,
+            agent_choice_rationale="x" * 60,
+            requested_for_question="why?",
+        )
+
+    samplesheet_path = work_dir / "samplesheet.csv"
+    content = samplesheet_path.read_text()
+    # Parse the second line (data row) and inspect the sampleset column.
+    data_row = content.splitlines()[1]
+    sampleset = data_row.split(",")[0]
+    assert "." not in sampleset, (
+        f"sampleset must not contain '.' — pgsc_calc filename derivation "
+        f"breaks for dotted samplesets; got: {sampleset!r}"
+    )
+    assert sampleset == "merged", (
+        f"sampleset for merged.vcf.gz should be 'merged' (no extensions); "
+        f"got: {sampleset!r}"
+    )
+
+
+def test_compute_pgs_writes_nextflow_config_redirecting_tmpdir(tmp_path: Path) -> None:
+    """The wrapper materialises a ``nextflow.config`` in the work_dir that
+    redirects each sibling task's TMPDIR to its bind-mounted work-dir.
+
+    Smoke v11 (2026-05-19) surfaced this as ``INTERSECT_VARIANTS`` failing
+    with ``OSError: [Errno 28] No space left on device`` after Python's
+    tempfile filled the colima VM data disk (the container writable layer).
+    Redirecting TMPDIR to ``${PWD}`` (the sibling task's work-dir, which is
+    bind-mounted from the host external scratch drive) keeps tempfiles off
+    the VM data disk.
+
+    Regression contract:
+    1. ``work_dir/nextflow.config`` exists after ``compute_pgs``.
+    2. Its content sets ``process.beforeScript`` to export TMPDIR=``${PWD}``.
+    3. The argv passed to subprocess.run includes ``-c <config_path>``.
+    """
+    vcf = tmp_path / "user.vcf.gz"
+    vcf.write_bytes(b"fake-vcf")
+    reference_root = _make_reference_root(tmp_path)
+    work_dir = tmp_path / "work"
+
+    fake_run = _fake_pgsc_calc_run(work_dir)
+    with patch("genomeclaw_toolkit.prep.pgs.subprocess.run", fake_run):
+        compute_pgs(
+            vcf=vcf,
+            pgs_id="PGS000018",
+            reference_root=reference_root,
+            work_dir=work_dir,
+            agent_choice_rationale="x" * 60,
+            requested_for_question="why?",
+        )
+
+    # 1. Config file materialised under work_dir.
+    config_path = work_dir / "nextflow.config"
+    assert config_path.exists(), f"nextflow.config must be written to work_dir; not found at {config_path}"
+
+    # 2. Content sets process.beforeScript with TMPDIR redirect. The
+    #    `${PWD}` MUST be in single-quoted groovy (so bash expands at task
+    #    time, not groovy at config-load time).
+    content = config_path.read_text()
+    assert "process" in content, content
+    assert "beforeScript" in content, content
+    assert 'TMPDIR=' in content, content
+    assert '${PWD}' in content, (
+        f"TMPDIR redirect must use ${{PWD}} (bash-expanded at task time), "
+        f"not a groovy-resolved value. content:\n{content}"
+    )
+    # Groovy single-quote (not double-quote) so ${PWD} reaches bash literal.
+    assert "'export TMPDIR=" in content, (
+        f"TMPDIR redirect must be in single-quoted groovy string. content:\n{content}"
+    )
+    # stageInMode = 'copy' — DooD-safe file staging. Default 'symlink'
+    # creates parent-container-local symlinks that don't resolve in
+    # sibling containers (Phase 7 smoke v14 surfaced this as
+    # FILTER_VARIANTS failing on high-LD-regions-*.txt because the
+    # symlink dereferenced to /opt/nextflow/... — invisible to siblings).
+    assert "stageInMode = 'copy'" in content, (
+        f"DooD-safe staging requires process.stageInMode = 'copy'; "
+        f"got config:\n{content}"
+    )
+
+    # 3. Argv passed to subprocess.run includes -c <config_path>.
+    argv = fake_run.call_args_list[0].args[0]
+    assert "-c" in argv, f"argv must include -c flag for config; got: {argv}"
+    c_index = argv.index("-c")
+    assert argv[c_index + 1] == str(config_path), (
+        f"argv -c value must point at the materialised config; got: {argv[c_index + 1]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# prs-non-imputed-wgs Phase 1 — INV-T001: argv consumes the conventions field
+# ---------------------------------------------------------------------------
+
+
+def test_invT001_pgsc_calc_argv_consumes_min_overlap_from_conventions(
+    tmp_path: Path,
+) -> None:
+    """INV-T001: the wrapper emits ``--min_overlap <value>`` sourced from the
+    conventions dataclass field, NOT from a hardcoded literal.
+
+    Verified via ``dataclasses.replace`` — overriding the field on the
+    dataclass and confirming the emitted argv carries the overridden value.
+    A regression where the wrapper hardcoded ``"0.5"`` (or any literal)
+    would let the conventions field drift from what's actually passed to
+    pgsc_calc — defeating the typed-contract discipline.
+
+    Mirrors the existing ``run_ancestry_value_pattern`` argv-consumption
+    test pattern: pin the wrapper's behavior to the dataclass field, not
+    to a literal.
+    """
+    import dataclasses as _dc
+
+    from genomeclaw_toolkit.prep._paths import as_sibling_mountable
+    from genomeclaw_toolkit.prep._pgsc_calc_conventions import PgscCalcConventions
+    from genomeclaw_toolkit.prep.pgs import _build_pgsc_calc_argv
+
+    samplesheet = as_sibling_mountable(tmp_path / "samplesheet.csv")
+    samplesheet.write_text("sampleset,path_prefix,chrom,format,vcf_genotype_field\n")
+    work_dir = as_sibling_mountable(tmp_path / "work")
+    work_dir.mkdir(exist_ok=True)
+    reference_root = as_sibling_mountable(tmp_path / "ref")
+    (reference_root / "pgs_catalog_ancestry" / "v1").mkdir(parents=True)
+
+    # Stub the conventions field to a non-default value the wrapper would
+    # NOT pick up if it was hardcoding the literal 0.5.
+    stubbed_conv = _dc.replace(
+        PgscCalcConventions(), min_overlap_default_for_non_imputed_wgs=0.42
+    )
+
+    argv = _build_pgsc_calc_argv(
+        samplesheet=samplesheet,
+        pgs_id="PGS000018",
+        work_dir=work_dir,
+        reference_root=reference_root,
+        conventions=stubbed_conv,
+    )
+
+    # The argv MUST contain --min_overlap with the stubbed value.
+    assert "--min_overlap" in argv, (
+        f"--min_overlap MUST be emitted into the argv per prs-non-imputed-wgs "
+        f"Phase 1 spec; got argv={argv}"
+    )
+    flag_idx = argv.index("--min_overlap")
+    value = argv[flag_idx + 1]
+    assert value == "0.42", (
+        f"INV-T001: wrapper MUST consume conventions.min_overlap_default_for_"
+        f"non_imputed_wgs (stubbed to 0.42 here), not a hardcoded literal; got "
+        f"argv value={value!r} from argv={argv}"
+    )
+
+
+def test_pgsc_calc_argv_min_overlap_defaults_to_0_5_when_no_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """No env var, no conventions override → argv carries ``--min_overlap 0.5``.
+
+    This is the canonical non-imputed single-sample WGS default. The
+    research validation report (docs/reports/prs-real-data-smoke-research-
+    findings.md) is the doctrinal source; any future contributor who
+    wants to change this default must also update the report + the
+    conventions docstring + this test in the same commit.
+    """
+    monkeypatch.delenv("GENOMECLAW_PGSC_CALC_MIN_OVERLAP", raising=False)
+
+    from genomeclaw_toolkit.prep._paths import as_sibling_mountable
+    from genomeclaw_toolkit.prep.pgs import _build_pgsc_calc_argv
+
+    samplesheet = as_sibling_mountable(tmp_path / "samplesheet.csv")
+    samplesheet.write_text("sampleset,path_prefix,chrom,format,vcf_genotype_field\n")
+    work_dir = as_sibling_mountable(tmp_path / "work")
+    work_dir.mkdir(exist_ok=True)
+    reference_root = as_sibling_mountable(tmp_path / "ref")
+    (reference_root / "pgs_catalog_ancestry" / "v1").mkdir(parents=True)
+
+    argv = _build_pgsc_calc_argv(
+        samplesheet=samplesheet,
+        pgs_id="PGS000018",
+        work_dir=work_dir,
+        reference_root=reference_root,
+    )
+
+    assert "--min_overlap" in argv, f"--min_overlap missing; argv={argv}"
+    flag_idx = argv.index("--min_overlap")
+    assert argv[flag_idx + 1] == "0.5", (
+        f"non-imputed single-sample WGS default MUST be 0.5; got {argv[flag_idx + 1]!r}"
     )
