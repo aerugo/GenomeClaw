@@ -72,6 +72,43 @@ def test_lof_plugin_compiles_with_vep_perl_inside_image() -> None:
 
 
 @pytest.mark.needs_bio
+def test_dbd_sqlite_loadable_from_vep_perl_inside_image() -> None:
+    """``perl -MDBD::SQLite -e 1`` exits 0 — LoF's SQLite driver resolves.
+
+    LoF.pm reaches for ``DBD::SQLite`` indirectly via ``install_driver``
+    when instantiating the plugin (it queries LOFTEE's precomputed
+    splice-site / conservation lookup tables in SQLite). ``perl -c
+    LoF.pm`` doesn't trigger ``install_driver`` (only the actual plugin
+    instantiation does), so the regression hides behind a passing
+    syntax-compile.
+
+    The 2026-05-22 Phase 7 canonical real-data smoke surfaced this:
+    every variant's ``loftee_lof`` column was NULL because the
+    plugin emitted ``WARNING: Failed to instantiate plugin LoF:
+    install_driver(SQLite) failed: Can't locate DBD/SQLite.pm in
+    @INC``. Same class as the 2026-05-15 ``Bio::DB::BigFile``
+    regression caught by ``gerp_dist`` above; one more
+    runtime-loaded module to pin with an explicit ``-M`` check.
+
+    Plan: [from-scratch-setup-protections](../../../../docs/plans/active/from-scratch-setup-protections/).
+    """
+    proc = subprocess.run(
+        [_VEP_PERL, "-MDBD::SQLite", "-e", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"DBD::SQLite is not loadable from the VEP-bundled perl "
+        f"(rc={proc.returncode}):\n"
+        f"stderr:\n{proc.stderr}\n"
+        "Most likely cause: ``perl-dbd-sqlite`` missing from the VEP env. "
+        "Add to Dockerfile stage 1a's bioconda install (alongside "
+        "``perl-bioperl`` + ``perl-bio-bigfile``)."
+    )
+
+
+@pytest.mark.needs_bio
 def test_gerp_dist_helper_compiles_with_vep_perl_inside_image() -> None:
     """``perl -c gerp_dist.pl`` exits 0 — Bio::DB::BigFile + friends resolve.
 

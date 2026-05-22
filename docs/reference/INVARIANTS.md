@@ -1,10 +1,12 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.14
-**Last Updated**: 2026-05-20
+**Version**: 1.15
+**Last Updated**: 2026-05-23
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.15 (2026-05-23)** — **scope clarification on `INV-D006` (shim-side propagation) + `INV-T001` (plugin-load coverage)**. Two regressions during MVP Phase 7's canonical real-data run surfaced gaps in how the existing invariants were enforced. INV-D006 was only checked at the wrapper layer (paths annotated `SiblingMountablePath`); a meta-invariant test now also enforces that the shim's `_dood_scan_args` regex list is exhaustive over wrappers that import `as_sibling_mountable`. INV-T001 only covered argv-level pinning for external tools; the VEP plugin set (LOFTEE) loads perl modules at runtime via `do` + `install_driver` paths that `perl -c` syntax-check doesn't reach. The extended `test_vep_loftee_plugin.py` adds an explicit `perl -MDBD::SQLite -e 1`-style probe per runtime-loaded module. No new invariant IDs; the `INV-D006` + `INV-T001` rule text is unchanged. See [docs/plans/active/from-scratch-setup-protections/](../plans/active/from-scratch-setup-protections/) for the protections plan.
 
 **v1.14 (2026-05-20)** — **adds `INV-R002`** (Never Cache a Degenerate Result) and **`INV-D008`** (Copy-Stage for DooD-Spawning Pipelines). Both surfaced during the 11 smoke iterations (v7–v17) that followed the path-crossing-discipline plan's close-out: v15 hit `ZeroMatchesError` because Tier 2's bcftools cache held 0 records from an earlier degenerate run (every subsequent iteration inherited the empty cache; the eventual symptom was 4 layers downstream from the root cause), and v14 hit `plink2: Failed to open high-LD-regions-hg38-GRCh38.txt` because nextflow's default symlink-staging dereferenced to a parent-container-only path. INV-R002 closes the silent-degenerate-cache class; INV-D008 closes the symlink-into-DooD-sibling class. See [docs/plans/active/prs-runtime-hardening/](../plans/active/prs-runtime-hardening/) for the iteration ledger.
 
@@ -193,6 +195,7 @@ Numbers are assigned in order of introduction within a category and never reused
 - [packages/toolkit/tests/integration/test_shim_publishes_per_subdir_env.py](../../packages/toolkit/tests/integration/test_shim_publishes_per_subdir_env.py) *(v1.13)* — the shim's DooD env block threads all four `GENOMECLAW_<SUB>_DIR` env vars; non-DooD subcommands don't.
 - [packages/toolkit/tests/integration/test_compute_prs_rejects_non_sibling_path.py](../../packages/toolkit/tests/integration/test_compute_prs_rejects_non_sibling_path.py) asserts the orchestrator raises before any bcftools / pgsc_calc subprocess runs.
 - [packages/toolkit/tests/invariants/test_invD006_dood_safe_path_annotation.py](../../packages/toolkit/tests/invariants/test_invD006_dood_safe_path_annotation.py) walks the DooD-bound wrappers (parametrized over `_write_pgsc_calc_samplesheet`, `_build_pgsc_calc_argv`, `compute_pgs`, `compute_prs_with_coverage_fill`) and asserts the canonical path-typed parameters annotate `SiblingMountablePath`.
+- [packages/toolkit/tests/invariants/test_invD006_shim_dood_scan_exhaustive.py](../../packages/toolkit/tests/invariants/test_invD006_shim_dood_scan_exhaustive.py) *(v1.15)* — meta-invariant covering the shim-side propagation surface: every pipeline subcommand whose wrapper imports `as_sibling_mountable` from `prep._paths` MUST appear in `bin/genomeclaw`'s `_dood_scan_args()` regex list. Without this, a bare invocation runs in non-DooD mode → empty `GENOMECLAW_HOST_ROOTS` → the in-container `as_sibling_mountable` rejects every path with a confusing error. Surfaced during MVP Phase 7 close session 1 (`pgs-compute` missing from the scan list).
 - [packages/toolkit/tests/integration/test_prod_python_smoke.py](../../packages/toolkit/tests/integration/test_prod_python_smoke.py) *(v1.13)* — the rejection works in the toolkit image's Python 3.11 (closes the dev/prod skew gap that Phase 5 surfaced).
 
 ---
@@ -576,6 +579,7 @@ When the user switches default model (e.g. to `openai/o3` for higher-stakes depl
 **How to verify**:
 - [packages/toolkit/tests/invariants/test_invT001_tool_conventions_exist.py](../../packages/toolkit/tests/invariants/test_invT001_tool_conventions_exist.py) — strict-tools test asserts every wrapper in `_STRICT_TOOLS` has a `<Tool>Conventions` frozen dataclass with `verified_against_version` populated; warn-tools test enumerates the backfill queue (currently bcftools, bgzip, mosdepth, vcfanno, vep).
 - [packages/toolkit/tests/unit/test_pgsc_calc_conventions.py](../../packages/toolkit/tests/unit/test_pgsc_calc_conventions.py) — `pgsc_calc`'s dataclass field values match the recorded [tools/pgsc_calc/probe-output.txt](../../tools/pgsc_calc/probe-output.txt) baseline; wrapper-generated argv matches [tools/pgsc_calc/golden-argv.txt](../../tools/pgsc_calc/golden-argv.txt); regression-guard tests for known breakage modes (smoke v2 `--target` → `--input`; smoke v6 `path_prefix` suffix).
+- [packages/toolkit/tests/integration/test_vep_loftee_plugin.py](../../packages/toolkit/tests/integration/test_vep_loftee_plugin.py) *(v1.15)* — VEP plugin-load coverage: extends the existing `perl -c LoF.pm` + `perl -c gerp_dist.pl` syntax checks with explicit `perl -M<runtime-loaded-module>` probes (`Bio::Perl`, `Bio::DB::BigFile`, `DBD::SQLite`). LoF.pm loads its SQLite driver at plugin-instantiate time via `install_driver`; the missing `DBD::SQLite` regression surfaced during MVP Phase 7's canonical real-data smoke (silent NULL on every `loftee_lof` column). The `-M` probes catch this class at unit-test time + run in milliseconds.
 
 ---
 

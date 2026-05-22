@@ -87,7 +87,15 @@ _dood_scan_args() {
         continue
         ;;
     esac
-    if [[ "$prev" == "pipeline" && ( "$cur" == "prs-compute" || "$cur" == "prs-prepare-coverage" ) ]]; then
+    # DooD-spawning subcommands — those whose wrappers use
+    # `as_sibling_mountable(...)` and therefore require host-form paths +
+    # the identical-path overlay mount + the host-roots env var to be
+    # propagated. Enforced mechanically by
+    # tests/invariants/test_invD006_shim_dood_scan_exhaustive.py.
+    if [[ "$prev" == "pipeline" && ( \
+          "$cur" == "prs-compute" || \
+          "$cur" == "prs-prepare-coverage" || \
+          "$cur" == "pgs-compute" ) ]]; then
       return 0
     fi
     prev="$cur"

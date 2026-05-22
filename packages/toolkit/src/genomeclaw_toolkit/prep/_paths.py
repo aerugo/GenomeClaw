@@ -216,6 +216,25 @@ def as_sibling_mountable(p: Path) -> SiblingMountablePath:
 
     prefixes: list[Path] = list(_host_roots_from_env())
     if not any(_is_relative_to(p_resolved, prefix) for prefix in prefixes):
+        if not prefixes:
+            # Empty allowlist = shim ran in non-DooD mode. The most common
+            # cause is the subcommand not being in `bin/genomeclaw`'s
+            # `_dood_scan_args()` regex list. Surface that diagnosis
+            # directly so users + future agents don't have to debug
+            # backwards from "empty allowlist" to "shim detection drift".
+            raise DooDPathError(
+                f"GENOMECLAW_HOST_ROOTS=[] is empty, meaning the shim ran in "
+                f"non-DooD mode and didn't propagate the host-roots allowlist. "
+                f"This subcommand spawns DooD siblings + needs DooD mode. "
+                f"Fix one of:\n"
+                f"  - Set GENOMECLAW_DOOD=1 explicitly before invoking: "
+                f"GENOMECLAW_DOOD=1 bin/genomeclaw pipeline <subcmd> ...\n"
+                f"  - Add the subcommand to bin/genomeclaw's "
+                f"`_dood_scan_args()` regex list so the shim auto-detects it "
+                f"(verified mechanically by "
+                f"`test_invD006_shim_dood_scan_exhaustive.py`).\n"
+                f"Path that triggered the check: {p_resolved}."
+            )
         raise DooDPathError(
             f"{p_resolved} is not under any sibling-mountable prefix "
             f"(GENOMECLAW_HOST_ROOTS={[str(x) for x in prefixes]}). "

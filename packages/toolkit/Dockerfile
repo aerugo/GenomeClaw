@@ -139,9 +139,22 @@ RUN micromamba create -y -p /opt/conda-vep \
         "ensembl-vep=${VEP_VERSION}" \
         perl-bioperl \
         perl-bio-bigfile \
+        perl-dbd-sqlite \
     && micromamba clean -a -y \
     && printf 'package Bio::Perl;\nuse strict;\nuse warnings;\n# Empty shim — see Dockerfile comment.\n1;\n' \
        > /opt/conda-vep/lib/perl5/site_perl/Bio/Perl.pm
+
+# perl-dbd-sqlite provides DBD::SQLite — used by LOFTEE's LoF.pm via
+# `install_driver('SQLite')` at plugin-instantiate time. Without this
+# dep, VEP loads + runs but LOFTEE silently fails to instantiate and
+# every variant's `loftee_lof` column ends up NULL. The 2026-05-22
+# Phase 7 canonical real-data smoke surfaced this regression — same
+# class as the 2026-05-15 `perl-bio-bigfile` fix (which closed
+# `Bio::DB::BigFile`); both are loaded by `do '...'` at runtime so
+# `perl -c LoF.pm` syntax-compile doesn't catch them. The extended
+# `test_loftee_lof_plugin_instantiates_inside_image` test enforces
+# this dep at plugin-load time per
+# docs/plans/active/from-scratch-setup-protections/.
 
 # ---------------------------------------------------------------------------
 # Stage 1b — VEP plugins (LOFTEE + Ensembl/VEP_plugins) git-cloned in

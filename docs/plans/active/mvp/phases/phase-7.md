@@ -357,6 +357,10 @@ git push origin main
 - [ ] Plan moved from `docs/plans/active/mvp/` to `docs/plans/completed/mvp/`.
 - [ ] Final commit + push to `origin/main`.
 
+### Phase-7-companion plans landed in close session 1
+
+- **[from-scratch-setup-protections](../../from-scratch-setup-protections/)** *(2026-05-23)* — closes two regressions the canonical real-data run surfaced: (a) `bin/genomeclaw`'s `_dood_scan_args` was missing `pgs-compute` → bare invocation fails the path-crossing pre-flight (fixed + meta-invariant test landed); (b) toolkit image was missing `perl-dbd-sqlite` → LOFTEE plugin silently NULL-ed every `loftee_lof` row (Dockerfile fix + `perl -M`-probe test landed). INVARIANTS.md → v1.15 with scope clarifications on INV-D006 + INV-T001.
+
 ### Carry-forward follow-ups (out of scope for Phase 7; tracked as post-MVP)
 
 - **Full Landlock+seccomp+netns SSRF probe** — author a dedicated post-MVP plan that ties OpenShell version pinning into INV-T001 + verifies kernel-level isolation primitives. The MVP's scoped probe verifies the L7 + policy-preset surface; the full probe verifies the syscall + filesystem isolation surface.
