@@ -56,8 +56,14 @@ def sandbox_image() -> str:
 
 
 @pytest.mark.needs_sandbox
-def test_compiled_plugin_registers_five_tools_inside_sandbox(sandbox_image: str) -> None:
-    """The compiled plugin loads + registers exactly 5 tools inside the sandbox image.
+def test_compiled_plugin_registers_nine_tools_inside_sandbox(sandbox_image: str) -> None:
+    """The compiled plugin loads + registers all 9 tools inside the sandbox image.
+
+    Slice D shipped 5 tools (status/findings/variant/evidence/gene);
+    Slice E.1 added 4 PGS tools (pgs_list/pgs_get/pgs_compute/
+    pgs_compute_status). Count is 9 through the prs-bootstrap-meta
+    cascade close-out + Slice D' (PharmCAT findings flow through the
+    existing ``genomeclaw_findings`` tool — no new plugin surface).
 
     Pipes [fixtures/sandbox_plugin_harness.mjs](fixtures/sandbox_plugin_harness.mjs)
     into the sandbox via stdin, runs it with Node, and asserts the
@@ -92,7 +98,7 @@ def test_compiled_plugin_registers_five_tools_inside_sandbox(sandbox_image: str)
     assert proc.returncode == 0, (
         f"plugin failed to load inside sandbox image (rc={proc.returncode}):\n{output}"
     )
-    assert "tools registered: 5" in output, f"expected 5 tools registered, got output:\n{output}"
-    assert "PASS: 5 tools registered with summary outputClass" in output, (
+    assert "tools registered: 9" in output, f"expected 9 tools registered, got output:\n{output}"
+    assert "PASS: 9 tools registered with summary outputClass" in output, (
         f"plugin loaded but contract check didn't pass:\n{output}"
     )

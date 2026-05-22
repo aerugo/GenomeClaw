@@ -145,12 +145,13 @@ async function callHostService(
     const method = body === undefined ? "GET" : "POST";
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const res = await fetch(url.toString(), {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: ctrl.signal,
-    });
+    // Build init step-by-step so `body` is only set when defined.
+    // tsconfig's `exactOptionalPropertyTypes: true` rejects passing
+    // `body: undefined` to `RequestInit` (which expects either a
+    // present `BodyInit` or the key absent).
+    const init: RequestInit = { method, headers, signal: ctrl.signal };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    const res = await fetch(url.toString(), init);
     if (!res.ok) {
       throw new Error(
         `genomeclaw-service ${path} -> HTTP ${String(res.status)}`,

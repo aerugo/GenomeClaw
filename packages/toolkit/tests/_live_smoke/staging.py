@@ -167,6 +167,36 @@ def stage_run_with_findings(
     return run_dir
 
 
+def stage_empty_run(
+    derived_root: Path,
+    *,
+    run_id: str = "2026-05-15T00-00-00Z-smoke",
+    sample_id: str = "live-smoke",
+) -> Path:
+    """Stage a `derived/<run-id>/` with manifest + empty store; no findings.
+
+    Story 2 ("what do you know about me?") asks for meta-introspection
+    before any finding has been queried — the agent's right move is to
+    call `genomeclaw_status` and surface the run-id, schema version, and
+    privacy framing rather than fabricate findings. An empty findings
+    table is the canonical staging shape for that turn.
+
+    Returns the run directory path.
+    """
+    derived_root.mkdir(parents=True, exist_ok=True)
+    run_dir = derived_root / run_id
+    run_dir.mkdir()
+
+    (run_dir / "manifest.json").write_text(
+        json.dumps({"run_id": run_id, "schema_version": SCHEMA_VERSION, "sample_id": sample_id})
+    )
+
+    store_path = run_dir / "variants.duckdb"
+    create_store(store_path)
+    update_current_symlink(derived_root, run_id)
+    return run_dir
+
+
 def _insert_findings(
     store_path: Path,
     findings: Sequence[dict[str, Any]],
@@ -274,5 +304,6 @@ __all__ = [
     "STORY9_CYP1A2_FINDINGS",
     "STORY9_WEAK_MEMORY_NOTE",
     "STORY10_CAD_PRS_FINDINGS",
+    "stage_empty_run",
     "stage_run_with_findings",
 ]

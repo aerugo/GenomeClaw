@@ -89,13 +89,19 @@ for (const t of tools) {
   console.log("  *", JSON.stringify(t));
 }
 
-// Assertions matching the Slice D contract.
+// Assertions matching the Slice E.1 contract (Slice D's 5 tools + the
+// 4 `genomeclaw_pgs_*` tools added when the agent-driven PRS surface
+// landed). The PRS bootstrap-meta cascade kept the count at 9.
 const expected = [
   "genomeclaw_status",
   "genomeclaw_findings",
   "genomeclaw_variant",
   "genomeclaw_evidence",
   "genomeclaw_gene",
+  "genomeclaw_pgs_list",
+  "genomeclaw_pgs_get",
+  "genomeclaw_pgs_compute",
+  "genomeclaw_pgs_compute_status",
 ];
 const actualNames = tools.map((t) => t.name).sort();
 const expectedSorted = [...expected].sort();
@@ -115,4 +121,4 @@ for (const t of tools) {
     process.exit(1);
   }
 }
-console.log("PASS: 5 tools registered with summary outputClass + TypeBox params + execute");
+console.log("PASS: 9 tools registered with summary outputClass + TypeBox params + execute");
