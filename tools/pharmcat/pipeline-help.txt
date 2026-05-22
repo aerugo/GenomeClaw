@@ -1,0 +1,95 @@
+usage: pharmcat_pipeline [-h] [-s <samples> | -S <txt_file>] [-sm <tsv_file>]
+                         [-0] [--absent-to-ref] [--unspecified-to-ref] [-G]
+                         [-R <bed_file>] [-matcher] [-g <genes>] [-ma]
+                         [-matcherHtml] [-research <type>] [-phenotyper]
+                         [-reporter] [-rs <sources>] [-re] [-reporterHtml]
+                         [-reporterJson] [-reporterCallsOnlyTsv] [-o <dir>]
+                         [-bf <name>] [-del] [-cp <num processes>]
+                         [-cm <size>] [-v] [-V]
+                         input file or directory
+
+Runs PharmCAT pipeline.
+
+options:
+  -h, --help            show this help message and exit
+  -v, --verbose         print more verbose messages
+  -V, --version         show program's version number and exit
+
+Input arguments:
+  input file or directory
+                        Path to a VCF file or a file of paths to VCF files
+                        (one file per line), sorted by chromosome position.
+  -s, --samples <samples>
+                        A comma-separated list of sample IDs. Only applicable
+                        if you have multiple samples and only want to work on
+                        specific ones.
+  -S, --sample-file <txt_file>
+                        A file containing a list of samples IDs, one sample
+                        per line. Only applicable if you have multiple samples
+                        and only want to work on specific ones.
+  -sm, --sample-metadata <tsv_file>
+                        A TSV file containing sample metadata.
+
+Preprocessor arguments:
+  -0, --missing-to-ref  Assume genotypes at absent or unspecified PGx sites
+                        are "0/0". DANGEROUS!
+  --absent-to-ref       Assume genotypes at absent PGx sites are "0/0".
+                        DANGEROUS!
+  --unspecified-to-ref  Assume unspecified genotypes ("./.") are "0/0" when
+                        every sample is "./.". DANGEROUS!
+  -G, --no-gvcf-check   Bypass check if VCF file is in gVCF format.
+  -R, --retain-specific-regions <bed_file>
+                        A sorted .bed file indicating regions to retain in
+                        VCF. For research use only. Additional variants are
+                        not used by PharmCAT and will slow PharmCAT down.
+
+Named allele matcher arguments:
+  -matcher              Run named allele matcher independently.
+  -g, --genes <genes>   Comma-separated list of genes.
+  -ma, --matcher-all-results
+                        Return all possible diplotypes, not just top hits.
+  -matcherHtml, --matcher-save-html
+                        Save named allele matcher results as HTML.
+  -research, --research-mode <type>
+                        Comma-separated list of research features to enable:
+                        [cyp2d6, combinations]
+
+Phenotyper arguments:
+  -phenotyper           Run phenotyper independently.
+
+Reporter arguments:
+  -reporter             Run reporter independently.
+  -rs, --reporter-sources <sources>
+                        Comma-separated list of sources to limit
+                        recommendations to: [CPIC, DPWG, FDA]
+  -re, --reporter-extended
+                        Write an extended report (includes all possible genes
+                        and drugs, even if no data is available).
+  -reporterHtml, --reporter-save-html
+                        Save reporter results as HTML. This is the default if
+                        no format is specified. If any format is specified,
+                        only the specified formats will be saved.
+  -reporterJson, --reporter-save-json
+                        Save reporter results as JSON.
+  -reporterCallsOnlyTsv, --reporter-save-calls-only-tsv
+                        Save calls results only as TSV.
+
+Output arguments:
+  -o, --output-dir <dir>
+                        Directory for outputs. Defaults to the directory of
+                        the input VCF.
+  -bf, --base-filename <name>
+                        Prefix for output file names. Defaults to the same
+                        base name as the input file.
+  -del, --delete-intermediate-pharmcat-files
+                        Delete intermediate PharmCAT files. Defaults to saving
+                        all files.
+
+Concurrency/Memory arguments:
+  -cp, --max-concurrent-processes <num processes>
+                        The maximum number of processes to use when concurrent
+                        mode is enabled.
+  -cm, --max-memory <size>
+                        The maximum memory PharmCAT should use (e.g. "64G").
+                        This is passed on using Javas -Xmx. Alternatively, set
+                        using the JAVA_MAX_HEAP environment variable.

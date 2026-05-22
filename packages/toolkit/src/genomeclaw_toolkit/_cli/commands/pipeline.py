@@ -590,7 +590,15 @@ def _stamp_pgs_row(
 
     import duckdb
 
+    from genomeclaw_toolkit.prep.store import create_store
+
     store_path = run_dir / "variants.duckdb"
+    # Bootstrap an empty store if one doesn't exist yet — lets `prs-compute`
+    # land its row in a fresh smoke dir without a preceding `host setup`/init
+    # step. Existing stores are left untouched (create_store raises on existing
+    # path; we catch that to keep this idempotent).
+    if not store_path.exists():
+        create_store(store_path)
     now = datetime.now(tz=UTC)
     params_dict: dict[str, object] = {"pgs_id": row.pgs_id, "vcf": str(vcf)}
     if min_overlap_used is not None:
@@ -1111,6 +1119,16 @@ def pipeline_prs_compute(
             "`PGS Catalog <id>`.",
         ),
     ] = None,
+    run_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--run-dir",
+            help="Derived run dir containing variants.duckdb. When supplied, "
+            "the computed PgsRow lands as a `pgs_scores` row + matching "
+            "`findings` row (AC4 + AC5 of prs-bootstrap-meta). Omit for "
+            "envelope-only mode.",
+        ),
+    ] = None,
 ) -> None:
     """End-to-end PRS compute: Tier 1 + Tier 2 + merge + pgsc_calc.
 
@@ -1118,6 +1136,11 @@ def pipeline_prs_compute(
     into a ~10-15 min pgsc_calc-only run; cold caches add the per-sample
     Tier 1 (~50-60 min on 2-CPU Colima) and the per-PGS Tier 2 (~5-10 min
     for a typical scoring file).
+
+    When ``--run-dir`` is supplied, the computed :class:`PgsRow` is INSERTed
+    into ``<run-dir>/variants.duckdb`` as a ``pgs_scores`` row + matching
+    ``findings`` row, carrying the INV-A003 rationale/question + INV-R001
+    provenance. Without ``--run-dir``, the CLI emits the envelope only.
     """
     if len(rationale) < 50:
         raise UsageError(
@@ -1184,6 +1207,25 @@ def pipeline_prs_compute(
         )
         return
 
+    if run_dir is not None:
+        # AC4 + AC5 — persist the computed row + matching finding row into the
+        # run's variants.duckdb. Min-overlap + keep-ambiguous flow into
+        # params_json via _stamp_pgs_row so the stored row records the
+        # threshold pgsc_calc was actually invoked against. Smoke v23
+        # (2026-05-22) exposed that prs-compute was envelope-only; this
+        # branch closes that gap.
+        from genomeclaw_toolkit.prep.pgs import _resolve_min_overlap
+
+        min_overlap_used = _resolve_min_overlap()
+        keep_ambiguous_used = False
+        _stamp_pgs_row(
+            run_dir,
+            row,
+            vcf=cram,
+            min_overlap_used=min_overlap_used,
+            keep_ambiguous_used=keep_ambiguous_used,
+        )
+
     payload = _PrsComputePayload(
         sample_id=sample_id,
         pgs_id=row.pgs_id,
@@ -1199,6 +1241,294 @@ def pipeline_prs_compute(
         payload=payload,
         rich_renderer=lambda p: get_console().print(
             f"computed {p.pgs_id}: {p.percentile_in_user_ancestry}th percentile"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 Slice D' — `pharmcat` subcommand (PharmCAT PGx pipeline)
+# ---------------------------------------------------------------------------
+
+
+class _PharmcatPayload(BaseModel):
+    """`--json` payload for `pipeline pharmcat` per INV-C002."""
+
+    model_config = ConfigDict(extra="forbid")
+    run_dir: str
+    findings_inserted: int
+
+
+def _stamp_pharmcat_findings(
+    run_dir: Path,
+    findings: list,
+    *,
+    vcf: Path,
+    cyp2d6_diplotype_json: Path | None,
+) -> int:
+    """INSERT one `findings` row per `PharmCATFinding` with INV-R001 provenance.
+
+    Each row: category='clinical-actionable' (per INV-C001 v1.5),
+    clinical_escalation='confirm_with_provider', evidence_ref='pharmgkb:<id>',
+    gene_symbols=[gene], drugs=[drugs from the recommendation],
+    tool='pharmcat', tool_version per `_versions.PGX_RUNTIME_VERSIONS["pharmcat"]`.
+
+    The VCF's SHA256 is computed once and stamped onto every finding row;
+    avoids the pgs-compute pattern of empty-string-defer-to-manifest since
+    PharmCAT's input contract is the VCF itself (the manifest may not
+    exist for ad-hoc invocations).
+
+    Returns the count inserted.
+    """
+    import hashlib
+    import json as _json
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    import duckdb
+
+    from genomeclaw_toolkit.prep._versions import PGX_RUNTIME_VERSIONS
+    from genomeclaw_toolkit.prep.store import create_store
+
+    store_path = run_dir / "variants.duckdb"
+    if not store_path.exists():
+        create_store(store_path)
+    now = datetime.now(tz=UTC)
+    params = _json.dumps(
+        {
+            "vcf": str(vcf),
+            "cyp2d6_diplotype_json": (
+                str(cyp2d6_diplotype_json) if cyp2d6_diplotype_json is not None else None
+            ),
+        },
+        sort_keys=True,
+    )
+
+    # Compute the VCF SHA256 once and stamp it onto every finding row.
+    digest = hashlib.sha256()
+    with vcf.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    vcf_sha256 = digest.hexdigest()
+
+    inserted = 0
+    conn = duckdb.connect(str(store_path))
+    try:
+        for f in findings:
+            finding_id = f"fnd-pharmcat-{f.gene}-{uuid4().hex[:8]}"
+            drugs_label = ", ".join(f.drugs) if f.drugs else "—"
+            title = f"{f.gene} {f.diplotype} — {f.phenotype} (re {drugs_label})"
+            conn.execute(
+                """
+                INSERT INTO findings (
+                    id, category, title, summary,
+                    evidence_ref, evidence_quality,
+                    gene_symbols, drugs, clinical_escalation,
+                    source_path, source_sha256, tool, tool_version,
+                    params_json, schema_version, created_at
+                ) VALUES (?, 'clinical-actionable', ?, ?, ?, 'high',
+                          ?, ?, 'confirm_with_provider',
+                          ?, ?, 'pharmcat', ?,
+                          ?, ?, ?)
+                """,
+                [
+                    finding_id,
+                    title,
+                    f.recommendation_summary,
+                    f"pharmgkb:{f.pharmgkb_id}",
+                    [f.gene],
+                    list(f.drugs) if f.drugs else None,
+                    str(vcf),
+                    vcf_sha256,
+                    PGX_RUNTIME_VERSIONS["pharmcat"],
+                    params,
+                    SCHEMA_VERSION,
+                    now,
+                ],
+            )
+            inserted += 1
+    finally:
+        conn.close()
+    return inserted
+
+
+@app.command("pharmcat")
+def pipeline_pharmcat(
+    typer_ctx: typer.Context,
+    vcf: Annotated[
+        Path,
+        typer.Option(
+            "--vcf",
+            help="Source VCF (read-only). PharmCAT's preprocessor opens it "
+            "host-side; no genomic data crosses any network boundary (INV-D001).",
+        ),
+    ],
+    cyp2d6_diplotype_json: Annotated[
+        Path | None,
+        typer.Option(
+            "--cyp2d6-diplotype-json",
+            help="Path to Slice D's `cyp2d6_diplotype.json` envelope. Converted "
+            "into PharmCAT's outside-call TSV format for the CYP2D6 row.",
+        ),
+    ] = None,
+    reference_fasta: Annotated[
+        Path | None,
+        typer.Option(
+            "--reference-fasta",
+            help="GRCh38 reference fasta. Essentially required: without it, "
+            "PharmCAT's preprocessor tries to download a copy from Zenodo into "
+            "the read-only image install dir + fails. Threaded via -refFna.",
+        ),
+    ] = None,
+    run_dir: Annotated[
+        str | None,
+        typer.Option("--run-dir", help="Derived run dir (or CURRENT autodetect)."),
+    ] = None,
+    derived_root: Annotated[
+        Path,
+        typer.Option("--derived-root", help="Derived root for CURRENT autodetect."),
+    ] = Path("/mnt/genomeclaw/derived"),
+) -> None:
+    """Run PharmCAT against `vcf`; INSERT a `findings` row per recommendation.
+
+    Wraps PharmGKB's PharmCAT v3 pipeline. Each emitted finding carries
+    `evidence_ref=pharmgkb:<id>` (INV-E001), `category=clinical-actionable`
+    + `clinical_escalation=confirm_with_provider` (INV-C001 v1.5), and the
+    seven canonical INV-R001 provenance columns. The CYP2D6 outside-call
+    from Slice D's `cyp2d6_diplotype.json` is threaded in via PharmCAT's
+    `--outside-call-file` flag.
+    """
+    from genomeclaw_toolkit.prep.pharmcat import run_pharmcat
+
+    ctx: AppContext = typer_ctx.obj
+    resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
+
+    findings = run_pharmcat(
+        vcf=vcf,
+        run_dir=resolved_dir,
+        cyp2d6_diplotype_json=cyp2d6_diplotype_json,
+        reference_fasta=reference_fasta,
+    )
+    inserted = _stamp_pharmcat_findings(
+        resolved_dir,
+        findings,
+        vcf=vcf,
+        cyp2d6_diplotype_json=cyp2d6_diplotype_json,
+    )
+
+    payload = _PharmcatPayload(
+        run_dir=str(resolved_dir),
+        findings_inserted=inserted,
+    )
+    emit(
+        ctx=ctx,
+        command="pipeline.pharmcat",
+        payload=payload,
+        rich_renderer=lambda p: get_console().print(
+            f"PharmCAT: inserted {p.findings_inserted} PGx finding(s) for {p.run_dir}",
+            markup=False,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 Slice D — `cyp2d6-call` subcommand (Cyrius CYP2D6 star-allele caller)
+# ---------------------------------------------------------------------------
+
+
+class _Cyp2d6CallPayload(BaseModel):
+    """`--json` payload for `pipeline cyp2d6-call` per INV-C002."""
+
+    model_config = ConfigDict(extra="forbid")
+    run_dir: str
+    sample_id: str
+    diplotype: str
+    filter_status: str
+
+
+@app.command("cyp2d6-call")
+def pipeline_cyp2d6_call(
+    typer_ctx: typer.Context,
+    bam: Annotated[
+        Path,
+        typer.Option(
+            "--bam",
+            help="Source BAM/CRAM (read-only). Cyrius opens it host-side; "
+            "no genomic data crosses any network boundary (INV-D001).",
+        ),
+    ],
+    sample_id: Annotated[
+        str,
+        typer.Option(
+            "--sample-id",
+            help="Sample identifier Cyrius keys its output JSON sub-dict under. "
+            "Typically the BAM header's SM-tag value.",
+        ),
+    ],
+    run_dir: Annotated[
+        str | None,
+        typer.Option("--run-dir", help="Derived run dir (or CURRENT autodetect)."),
+    ] = None,
+    derived_root: Annotated[
+        Path,
+        typer.Option("--derived-root", help="Derived root for CURRENT autodetect."),
+    ] = Path("/mnt/genomeclaw/derived"),
+    genome_build: Annotated[
+        str,
+        typer.Option(
+            "--genome-build",
+            help="Reference build. GRCh38 only in v0.",
+        ),
+    ] = "GRCh38",
+    threads: Annotated[
+        int | None,
+        typer.Option("--threads", help="Cyrius worker thread count (optional)."),
+    ] = None,
+    reference_fasta: Annotated[
+        Path | None,
+        typer.Option(
+            "--reference-fasta",
+            help="Reference fasta path. REQUIRED for CRAM input (pysam needs "
+            "it to decompress CRAM blocks); optional for BAM.",
+        ),
+    ] = None,
+) -> None:
+    """Run Cyrius against `bam`; write `cyp2d6_diplotype.json` under the run dir.
+
+    Wraps Illumina's Cyrius CYP2D6 star-allele caller. The resulting
+    diplotype (e.g. `*1/*4`) feeds PharmCAT's outside-call interface for
+    the `*1/*4`-class PGx finding the project owner's run depends on
+    (per spec Q6 / AC11). The output envelope carries the seven
+    canonical INV-R001 provenance columns inside its `provenance` block.
+    """
+    from genomeclaw_toolkit.prep.cyrius import call_cyp2d6
+
+    ctx: AppContext = typer_ctx.obj
+    resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
+
+    # INV-D006 boundary check happens inside call_cyp2d6 via
+    # as_sibling_mountable; the CLI layer just passes the Paths through.
+    row = call_cyp2d6(
+        bam=bam,
+        genome_build=genome_build,
+        run_dir=resolved_dir,
+        sample_id=sample_id,
+        threads=threads,
+        reference_fasta=reference_fasta,
+    )
+
+    payload = _Cyp2d6CallPayload(
+        run_dir=str(resolved_dir),
+        sample_id=row.sample_id,
+        diplotype=row.diplotype,
+        filter_status=row.filter_status,
+    )
+    emit(
+        ctx=ctx,
+        command="pipeline.cyp2d6-call",
+        payload=payload,
+        rich_renderer=lambda p: get_console().print(
+            f"CYP2D6 diplotype for {p.sample_id}: {p.diplotype} ({p.filter_status})",
+            markup=False,
         ),
     )
 

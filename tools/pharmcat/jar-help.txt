@@ -1,0 +1,88 @@
+usage: PharmCAT
+ -bf,--base-filename <name>                             The base name
+                                                        (without file
+                                                        extensions) used
+                                                        for output files,
+                                                        will default to
+                                                        base filename of
+                                                        input if not
+                                                        specified
+ -def,--definitions-dir <dir>                           Directory
+                                                        containing named
+                                                        allele definitions
+                                                        (JSON files)
+ -del,--delete-intermediate-files                       Delete
+                                                        intermediate
+                                                        PharmCAT files
+ -g,--genes <genes>                                     Comma-separated
+                                                        list of genes
+ -h,--help                                              print this message
+ -ma,--matcher-all-results                              Return all
+                                                        possible
+                                                        diplotypes, not
+                                                        just top hits
+ -matcher,--matcher                                     Run named allele
+                                                        matcher
+                                                        independently
+ -matcherHtml,--matcher-save-html                       Save named allele
+                                                        matcher results as
+                                                        HTML
+ -o,--output-dir <directory>                            Directory to
+                                                        output to
+                                                        (optional, default
+                                                        is input file
+                                                        directory)
+ -phenotyper,--phenotyper                               Run phenotyper
+                                                        independently
+ -pi,--phenotyper-input <file>                          JSON results from
+                                                        named allele
+                                                        matcher
+ -po,--phenotyper-outside-call-file <file>              Path to an outside
+                                                        call file (TSV)
+ -re,--reporter-extended                                Write an extended
+                                                        report (includes
+                                                        all possible genes
+                                                        and drugs, even if
+                                                        no data is
+                                                        available)
+ -reporter,--reporter                                   Run reporter
+                                                        independently
+ -reporterCallsOnlyTsv,--reporter-save-calls-only-tsv   Save calls results
+                                                        only as TSV
+ -reporterHtml,--reporter-save-html                     Save reporter
+                                                        results as HTML
+                                                        (the default if no
+                                                        format is
+                                                        specified)
+ -reporterJson,--reporter-save-json                     Save reporter
+                                                        results as JSON
+ -research,--research-mode <type>                       Comma-separated
+                                                        list of research
+                                                        features to
+                                                        enable: [cyp2d6,
+                                                        combinations]
+ -ri,--reporter-input <file>                            JSON results from
+                                                        phenotyper
+ -rs,--reporter-sources <sources>                       Comma-separated
+                                                        list of sources to
+                                                        limit
+                                                        recommendations
+                                                        to: [CPIC, DPWG,
+                                                        FDA]
+ -rt,--reporter-title <title>                           Text to add to the
+                                                        report title
+ -s,--samples <samples>                                 Comma-separated
+                                                        list of samples
+ -S,--sample-file <file>                                File containing a
+                                                        list of sample,
+                                                        one per line
+ -sm,--sample-metadata <file>                           TSV file
+                                                        containing sample
+                                                        metadata
+ -v,--verbose                                           enable verbose
+                                                        output
+ -vcf,--matcher-vcf <file>                              Input VCF file for
+                                                        named allele
+                                                        matcher
+ -version,--version                                     print version and
+                                                        exit

@@ -1,0 +1,61 @@
+# Cyrius v1.1.1 probe output — captured 2026-05-22 inside genomeclaw/toolkit:slice-d.
+# Source: `docker run --rm --entrypoint bash genomeclaw/toolkit:slice-d -c "star_caller.py --help"`
+# Verified against Illumina/Cyrius's GitHub README at the v1.1.1 tag.
+#
+# KEY=VALUE form, one convention per line, with notes on the source.
+# Update protocol: re-run probe.sh after PGX_RUNTIME_VERSIONS["cyrius"]
+# changes; for each diff, update CyriusConventions field + bump
+# verified_against_version.
+
+# Entrypoint script (resolved on PATH via /opt/cyrius)
+entrypoint=star_caller.py
+
+# Required argv flags (long form preferred for self-documenting argv)
+manifest_flag=--manifest
+genome_flag=--genome
+prefix_flag=--prefix
+output_dir_flag=--outDir
+
+# Optional argv flags
+threads_flag=--threads
+reference_flag=--reference  # required for CRAM input; optional for BAM
+
+# Genome build value mappings (per help text: "select from 19, 37, or 38")
+genome_build_grch37=37
+genome_build_grch38=38
+
+# Output JSON envelope (per Cyrius's README + per-sample JSON output)
+output_filename_template={prefix}.json
+output_genotype_key=Genotype
+output_filter_key=Filter
+
+# Output JSON shape (empirical 2026-05-22 against MPNRGLQ2K CRAM):
+# - Top-level dict keyed by **BAM file basename stem** (NOT by sample-id;
+#   Cyrius has no --sample-id flag). Single-BAM manifest → single entry.
+# - Per-sample block carries Genotype + Filter as **strings** (NOT lists).
+#   Example: {"MPNRGLQ2K.mm2.sortdup.bqsr": {"Genotype": "*1/*35",
+#                                            "Filter": "PASS", ...}}
+# - Other per-sample fields populated by v1.1.1: CNV_consensus, CNV_group,
+#   Call_info, Coverage_MAD, Exon9_CN, Median_depth, Raw_star_allele,
+#   Spacer_CN, Total_CN, Variant_raw_count, Variants_called, d67_snp_call.
+
+# Help text (verbatim from `star_caller.py --help` inside the image, for audit)
+# usage: star_caller.py [-h] -m MANIFEST -g GENOME -o OUTDIR -p PREFIX
+#                       [-t THREADS] [--countFilePath COUNTFILEPATH]
+#                       [-r REFERENCE]
+#
+# Call CYP2D6 genotypes from a WGS BAM file.
+#
+# options:
+#   -h, --help            show this help message and exit
+#   -m, --manifest MANIFEST
+#                         Manifest listing absolute paths to BAM/CRAM files
+#   -g, --genome GENOME   Reference genome, select from 19, 37, or 38
+#   -o, --outDir OUTDIR   Output directory
+#   -p, --prefix PREFIX   Prefix to output file
+#   -t, --threads THREADS
+#                         Optional, number of threads to use. Default is 1
+#   --countFilePath COUNTFILEPATH
+#                         Optional path to count files
+#   -r, --reference REFERENCE
+#                         Optional path to reference fasta file for CRAM

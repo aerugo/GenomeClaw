@@ -35,6 +35,16 @@ PRS_RUNTIME_VERSIONS: dict[str, str] = {
     "pgsc_calc": "v2.2.0",
 }
 
+# Phase 6 Slice D — pinned versions for the PGx runtime stack. Single
+# source of truth for the toolkit image's bioconda pin (when the Slice D
+# image rebuild lands) + the `CyriusConventions.verified_against_version`
+# field + the `cyp2d6_diplotype.json` envelope's `tool_version`
+# provenance field.
+PGX_RUNTIME_VERSIONS: dict[str, str] = {
+    "cyrius": "1.1.1",
+    "pharmcat": "3.2.0",
+}
+
 
 def collect_tool_versions() -> dict[str, str]:
     """Capture per-tool version strings for the manifest's ``tools`` block.

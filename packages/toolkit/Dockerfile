@@ -26,6 +26,24 @@ ARG MOSDEPTH_VERSION=0.3.10
 ARG SAMTOOLS_VERSION=1.21
 ARG HTSLIB_VERSION=1.21
 ARG VCFANNO_VERSION=0.3.5
+# Cyrius: Illumina's CYP2D6 star-allele caller. NOT packaged on bioconda
+# (verified 2026-05-22 via `mamba search -c bioconda cyrius` against the
+# phase6 image — "No entries matching cyrius found"). Cloned from
+# github.com/Illumina/Cyrius at the v<X> tag via Stage `cyrius`. Single
+# source of truth for the pin: src/genomeclaw_toolkit/prep/_versions.py
+# ``PGX_RUNTIME_VERSIONS``. CLI entrypoint is ``star_caller.py`` per
+# ``CyriusConventions``; Python deps (pysam, numpy, scipy, statsmodels)
+# install into Stage `bio`'s micromamba env.
+ARG CYRIUS_REPO=https://github.com/Illumina/Cyrius.git
+ARG CYRIUS_REF=v1.1.1
+# PharmCAT: PharmGKB's PGx recommendation engine. NOT packaged on bioconda
+# (verified 2026-05-22). Distributed as a `pharmcat-pipeline-X.Y.Z.tar.gz`
+# GitHub-releases artifact bundling the Python preprocessor + JAR. Single
+# source of truth for the pin: src/genomeclaw_toolkit/prep/_versions.py
+# ``PGX_RUNTIME_VERSIONS``. Entrypoint is ``pharmcat_pipeline`` per
+# ``PharmCATConventions``.
+ARG PHARMCAT_VERSION=3.2.0
+ARG PHARMCAT_RELEASE_URL=https://github.com/PharmGKB/PharmCAT/releases/download/v3.2.0/pharmcat-pipeline-3.2.0.tar.gz
 ARG VEP_VERSION=114.1
 # LOFTEE: konradjk/loftee. The ``master`` branch is GRCh37-era; the
 # ``grch38`` branch is the canonical GRCh38 build (Phase 4D ships
@@ -58,6 +76,10 @@ ARG SAMTOOLS_VERSION
 ARG HTSLIB_VERSION
 ARG VCFANNO_VERSION
 USER root
+# Cyrius's runtime Python deps (pysam, numpy, scipy, statsmodels) live in
+# this env so `/opt/conda/bin/python` (which Stage `cyrius` re-points the
+# `star_caller.py` shebang at) can resolve them. The Cyrius source tree
+# itself ships via Stage `cyrius`.
 RUN micromamba install -y -n base \
         -c conda-forge -c bioconda \
         "bcftools=${BCFTOOLS_VERSION}" \
@@ -65,6 +87,13 @@ RUN micromamba install -y -n base \
         "samtools=${SAMTOOLS_VERSION}" \
         "htslib=${HTSLIB_VERSION}" \
         "vcfanno=${VCFANNO_VERSION}" \
+        "pysam" \
+        "numpy" \
+        "scipy" \
+        "statsmodels" \
+        "pandas>=2.1.3" \
+        "colorama>=0.4.6" \
+        "packaging>=24.1" \
     && micromamba clean -a -y
 
 # ---------------------------------------------------------------------------
@@ -136,6 +165,52 @@ RUN mkdir -p /opt/vep/.vep/Plugins \
     && git clone --depth 1 --branch "${VEP_PLUGINS_REF}" "${VEP_PLUGINS_REPO}" /tmp/vep_plugins \
     && cp -R /tmp/vep_plugins/. /opt/vep/.vep/Plugins/ \
     && rm -rf /tmp/loftee /tmp/vep_plugins /opt/vep/.vep/Plugins/.git
+
+# ---------------------------------------------------------------------------
+# Stage `cyrius` — clone Illumina/Cyrius at the pinned tag into /opt/cyrius.
+#
+# Cyrius is NOT on bioconda (verified 2026-05-22). Cloning at a pinned tag
+# from github.com/Illumina/Cyrius mirrors the LOFTEE pattern in
+# Stage `vep-plugins` above. The runtime stage copies /opt/cyrius and adds
+# it to PATH; the `star_caller.py` shebang is re-pointed at
+# `/opt/conda/bin/python` so it resolves to Stage `bio`'s pysam-equipped
+# env regardless of which other Python interpreters precede it on PATH.
+# ---------------------------------------------------------------------------
+FROM debian:stable-slim AS cyrius
+ARG CYRIUS_REPO
+ARG CYRIUS_REF
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch "${CYRIUS_REF}" "${CYRIUS_REPO}" /opt/cyrius \
+    && rm -rf /opt/cyrius/.git \
+    && chmod +x /opt/cyrius/star_caller.py \
+    && sed -i '1s|^#!.*python.*$|#!/opt/conda/bin/python|' /opt/cyrius/star_caller.py
+
+# ---------------------------------------------------------------------------
+# Stage `pharmcat` — download + extract PharmCAT's pipeline release tarball.
+#
+# PharmCAT is NOT on bioconda (verified 2026-05-22). v3 ships as a tarball
+# from GitHub releases bundling the Python preprocessor (`pharmcat_pipeline`)
+# + the JAR (`pharmcat-X.Y.Z-all.jar`). The wrapper invokes the Python
+# entrypoint per ``PharmCATConventions.entrypoint``. Runtime stage COPYs
+# /opt/pharmcat and adds it to PATH; the entrypoint is a Python script that
+# the conda env's `python` will resolve (no shebang rewrite needed — the
+# upstream script uses `/usr/bin/env python3`, and the conda env injects
+# a python3 first on PATH inside the runtime stage).
+# ---------------------------------------------------------------------------
+FROM debian:stable-slim AS pharmcat
+ARG PHARMCAT_RELEASE_URL
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/pharmcat \
+    && curl -fsSL "${PHARMCAT_RELEASE_URL}" -o /tmp/pharmcat-pipeline.tar.gz \
+    && tar -xzf /tmp/pharmcat-pipeline.tar.gz -C /opt/pharmcat \
+    && rm /tmp/pharmcat-pipeline.tar.gz \
+    && chmod +x /opt/pharmcat/pharmcat /opt/pharmcat/pharmcat_pipeline /opt/pharmcat/pharmcat_vcf_preprocessor \
+    && sed -i '1s|^#!.*python.*$|#!/opt/conda/bin/python3|' \
+        /opt/pharmcat/pharmcat_pipeline /opt/pharmcat/pharmcat_vcf_preprocessor
 
 # ---------------------------------------------------------------------------
 # Stage prs-runtime — Nextflow + JRE 17 + mamba in an isolated micromamba env
@@ -289,6 +364,19 @@ COPY --from=vep /opt/conda-vep /opt/conda-vep
 # bind-mounted reference/vep_cache/Plugins/ volume per Q3.
 COPY --from=vep-plugins /opt/vep /opt/vep
 
+# Cyrius — Illumina's CYP2D6 star-allele caller. The script tree lives
+# at /opt/cyrius/. star_caller.py's shebang is re-pointed at
+# /opt/conda/bin/python so it picks up Stage `bio`'s pysam env regardless
+# of which Python interpreters PATH resolves first. Per Slice D (MVP
+# Phase 6); CyriusConventions.entrypoint pins the filename.
+COPY --from=cyrius /opt/cyrius /opt/cyrius
+
+# PharmCAT — PharmGKB's PGx recommendation engine. The pipeline tarball
+# extracts to /opt/pharmcat/ with `pharmcat_pipeline` (Python) +
+# `pharmcat-X.Y.Z-all.jar`. Per Slice D' (MVP Phase 6);
+# PharmCATConventions.entrypoint pins the filename.
+COPY --from=pharmcat /opt/pharmcat /opt/pharmcat
+
 # PRS runtime (Stage prs-runtime): nextflow + JRE 17 + mamba isolated at
 # /opt/conda-prs/ + the Nextflow framework + pgsc_calc assets cache at
 # /opt/nextflow/ + the canonical pgsc_calc pipeline-source marker at
@@ -316,7 +404,7 @@ COPY --from=pybuild /opt/genomeclaw/toolkit /opt/genomeclaw/toolkit
 # placed before /opt/conda-vep/bin so `mamba` from prs resolves before
 # any (transitive) mamba VEP might pull in. /opt/conda-vep/bin is last
 # so ``vep`` resolves but doesn't shadow the rest.
-ENV PATH="/opt/genomeclaw/toolkit/.venv/bin:/opt/conda/bin:/opt/conda-prs/bin:/opt/conda-vep/bin:${PATH}"
+ENV PATH="/opt/genomeclaw/toolkit/.venv/bin:/opt/conda/bin:/opt/conda-prs/bin:/opt/conda-vep/bin:/opt/cyrius:/opt/pharmcat:${PATH}"
 
 # VEP's perl interpreter (/opt/conda-vep/bin/perl) has its @INC default
 # pointing at /opt/conda/lib/perl5/... (the project-pinned env's perl

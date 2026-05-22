@@ -23,7 +23,9 @@ import pytest
 # a distinct external binary. Each row is the module stem (without leading
 # underscore in the conventions filename).
 _STRICT_TOOLS: list[str] = [
-    "pgsc_calc",  # Phase 2 — first conventions dataclass
+    "pgsc_calc",  # path-crossing-discipline Phase 2 — first conventions dataclass
+    "cyrius",  # MVP Phase 6 Slice D — Cyrius CYP2D6 caller
+    "pharmcat",  # MVP Phase 6 Slice D' — PharmCAT PGx pipeline
 ]
 
 _WARN_TOOLS: list[str] = [

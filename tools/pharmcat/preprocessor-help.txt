@@ -1,0 +1,72 @@
+usage: pharmcat_vcf_preprocessor [-h] -vcf <file> [-s <samples> |
+                                 -S <txt_file>] [-0] [--absent-to-ref]
+                                 [--unspecified-to-ref] [-G] [-o <dir>]
+                                 [-bf <name>] [-ss] [-k] [-c]
+                                 [-cp <num processes>] [-refVcf <vcf_file>]
+                                 [-refFna <fna_file>] [-R <bed_file>]
+                                 [-bcftools </path/to/bcftools>]
+                                 [-bgzip </path/to/bgzip>] [-v] [-V]
+
+Prepares a VCF file for use by PharmCAT.
+
+options:
+  -h, --help            show this help message and exit
+  -vcf, --vcf <file>    Path to a VCF file or a file of paths to VCF files
+                        (one file per line), sorted by chromosome position.
+  -s, --samples <samples>
+                        A comma-separated list of sample IDs. Only applicable
+                        if you have multiple samples and only want to work on
+                        specific ones.
+  -S, --sample-file <txt_file>
+                        A file containing a list of sample IDs, one sample at
+                        a line. Only applicable if you have multiple samples
+                        and only want to work on specific ones.
+  -0, --missing-to-ref  Assume genotypes at absent or unspecified PGx sites
+                        are "0/0". DANGEROUS!
+  --absent-to-ref       Assume genotypes at absent PGx sites are "0/0".
+                        DANGEROUS!
+  --unspecified-to-ref  Assume unspecified genotypes ("./.") are "0/0" when
+                        every sample is "./.". DANGEROUS!
+  -G, --no-gvcf-check   Bypass check if VCF file is in gVCF format.
+  -v, --verbose         print more verbose messages
+  -V, --version         show program's version number and exit
+
+Output arguments:
+  -o, --output-dir <dir>
+                        Directory for outputs. Defaults to the directory of
+                        the input VCF.
+  -bf, --base-filename <name>
+                        Prefix for output file names. Defaults to the same
+                        base name as the input file.
+  -ss, --single-samples
+                        Generate 1 VCF file per sample.
+  -k, --keep-intermediate-files
+                        Keep intermediate files, false by default.
+
+Concurrency arguments:
+  -c, --concurrent-mode
+                        Use multiple processes - maximum number of processes
+                        spawned will default to to two less than the number of
+                        cpu cores.
+  -cp, --max-concurrent-processes <num processes>
+                        The maximum number of processes to use when concurrent
+                        mode is enabled.
+
+Advanced arguments:
+  -refVcf, --reference-pgx-vcf <vcf_file>
+                        A sorted, compressed VCF of PharmCAT PGx variants.
+                        Defaults to "pharmcat_positions.vcf.bgz" in the
+                        current working directory or the directory the
+                        preprocessor is in.
+  -refFna, --reference-genome <fna_file>
+                        The Human Reference Genome GRCh38/hg38 in the fasta
+                        format.
+  -R, --retain-specific-regions <bed_file>
+                        A sorted .bed file indicating regions to retain in
+                        VCF. For research use only. Additional variants are
+                        not used by PharmCAT and will slow PharmCAT down.
+  -bcftools, --path-to-bcftools </path/to/bcftools>
+                        Path to the bcftools program. Defaults to bcftools in
+                        PATH.
+  -bgzip, --path-to-bgzip </path/to/bgzip>
+                        Path to the bgzip program. Defaults to bgzip in PATH.

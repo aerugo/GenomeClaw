@@ -1,0 +1,43 @@
+# PharmCAT v3.2.0 probe output — captured 2026-05-22 inside
+# genomeclaw/toolkit:slice-d-prime.
+#
+# KEY=VALUE form. Update protocol: re-run probe.sh after
+# PGX_RUNTIME_VERSIONS["pharmcat"] changes; for each diff, update
+# PharmCATConventions field + bump verified_against_version.
+
+# ---- Preprocessor (pharmcat_vcf_preprocessor) ----
+# Source: `pharmcat_vcf_preprocessor --help` inside slice-d-prime image
+preprocessor_entrypoint=pharmcat_vcf_preprocessor
+preprocessor_vcf_flag=-vcf  # also --vcf (argparse short+long)
+preprocessor_output_dir_flag=-o  # also --output-dir
+preprocessor_output_filename_template={base}.preprocessed.vcf.bgz
+
+# ---- Main PharmCAT JAR (invoked via the `pharmcat` bash wrapper) ----
+# Source: `java -jar /opt/pharmcat/pharmcat.jar --help` inside slice-d-prime image
+entrypoint=pharmcat
+vcf_flag=-vcf
+outside_call_flag=-po  # also --phenotyper-outside-call-file
+output_dir_flag=-o  # also --output-dir
+reporter_json_flag=-reporterJson  # also --reporter-save-json
+
+# ---- Outside-call TSV format ----
+# Source: docs/using/Outside-Call-Format.md at v3.2.0 tag.
+# Tab-separated, NO header line. Up to 4 columns:
+#   1. HGNC gene symbol (required)
+#   2. Diplotype or single allele call
+#   3. Phenotype (optional)
+#   4. Activity score (optional)
+# v0 emits just (gene, diplotype) — PharmCAT looks up phenotype + activity
+# score from its internal tables.
+outside_call_tsv_columns=gene,diplotype
+outside_call_tsv_separator=tab
+outside_call_tsv_has_header=false
+outside_call_tsv_comment_char=#
+
+# Example outside-call TSV for CYP2D6 *1/*35:
+# CYP2D6<TAB>*1/*35
+
+# ---- Output JSON ----
+# Source: `pharmcat ... -reporterJson` writes <base>.report.json under
+# the -o directory.
+report_filename_template={prefix}.report.json
