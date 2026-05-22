@@ -131,3 +131,29 @@ cat /Volumes/Genome_Work/genomeclaw/derived/$RUN_DIR/provenance.json \
 ## Why Not Filter Upstream Instead
 
 Pre-filtering at normalize (drop non-canonical contigs before annotate) was considered as an alternative. Rejected for v0: it imposes an opinion ("you shouldn't have decoy variants in your table") that future users might disagree with — e.g., someone debugging mapping artifacts might want to see exactly which decoys their reads called variants against. The audit-trail approach is opinion-free: the table is what VEP could annotate; provenance records what VEP couldn't. Pre-filtering remains a future option behind a flag if the use case appears.
+
+---
+
+## 2026-05-22 — Plan closed
+
+Implementation landed quietly alongside adjacent annotate work; this audit catches up the paperwork.
+
+**Code**:
+- `VepRunStats` dataclass: [packages/toolkit/src/genomeclaw_toolkit/prep/_vep.py:111](../../../packages/toolkit/src/genomeclaw_toolkit/prep/_vep.py)
+- `vep_run` returns `VepRunStats` (line 185); skip-counting loop populates `skipped_chroms` (line 203-216); regex matches the canonical "WARNING: line N skipped (chrom ..." pattern.
+- `annotate_vep.py:370-371` writes `vep_skipped_variants` + `vep_skipped_chroms` into the `vep` provenance step's `params` block.
+
+**Tests**:
+- `tests/unit/test_vep_wrapper.py` — `test_skipped_variant_regex_matches_canonical_vep_warning`, `test_skipped_variant_regex_ignores_other_warnings`, `test_vep_run_stats_counts_skipped_variants_from_stderr` (all 3 unit tests pinned in the plan).
+- `tests/integration/test_annotate_vep_invariants.py` — `stubbed_vep` fixture returns `VepRunStats`; INV-R001 provenance test extended; new `test_invR001_annotate_vep_records_skip_breakdown_in_provenance` pins the dict shape.
+- Combined: 27 tests pass; full toolkit suite 747 passed / 108 skipped / 0 failed.
+
+**Validation against a real-data run**: deferred to the next annotate end-to-end run (independent of the PRS smoke cascade). The code + tests gate the behaviour; the field-population check against `provenance.json` will run opportunistically.
+
+**Completion criteria — all met except the explicitly-deferred real-data verification**:
+- [x] `VepRunStats` dataclass shipped; `vep_run` returns it.
+- [x] `annotate_vep` writes the new fields into provenance.
+- [x] 3 unit tests + 2 integration tests pass.
+- [x] Full host suite green.
+- [ ] Next real-data run validation — carried as a passive check (no code work remaining; will surface organically next annotate run).
+- [x] Plan moved to `docs/plans/completed/`.

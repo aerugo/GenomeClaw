@@ -168,3 +168,16 @@ Acceptable for a single-user PoC. Optimisations to consider in a future plan: co
 - Meta-plan Stage 3 (cross-plan integration smoke) is now closer — both plans have working code paths; needs the project owner's real Nebula VCF + actual `refs fetch --source pgs_catalog_ancestry --release v1` against the upstream PGS Catalog FTP for the ~50-60 GB download
 
 **Blockers**: none.
+
+---
+
+## 2026-05-22 — Plan closed (scope-reduced; Phase 2 absorbed by the cascade)
+
+Phase 1 (both sub-phases) shipped 2026-05-17 and stayed green through 18 subsequent smoke iterations (v6-v23). The deferred Phase 2 work (shim NXF_HOME passthrough + further doctor wiring) was **absorbed by the downstream cascade**:
+
+- **NXF_HOME passthrough** — the path-crossing-discipline plan (closed 2026-05-19) generalised this into the INV-D005/D006/D007 seam: the shim now handles ALL host-root env-var passthrough (including `NXF_HOME` and `GENOMECLAW_HOST_ROOTS`) through the canonical Phase-1 overlay. The "Phase 2" deliverable became part of the broader DooD seam.
+- **Further doctor wiring** — `prs-smoke-resilience` Phase 1 (closed 2026-05-22) added three new doctor probes (`colima_mount_visible`, `external_drive_readable`, `leftover_smoke_containers`) covering the L4 brittleness layer that surfaced empirically during v22 iteration. The "further doctor wiring" deliverable was reshaped against the empirical failure data and landed in a separate plan.
+
+In retrospect, "Phase 2" wasn't a single coherent slice — it was a placeholder for whatever shim/doctor work emerged from real-data smoke iteration. The cascade absorbed both halves cleanly. Phase 1 stands on its own as the bootstrap deliverable.
+
+**Smoke v23 (2026-05-22) evidence**: the `prs-phase6` image (built from this plan's Dockerfile) runs `pgsc_calc` end-to-end against real data, producing `pgs_scores.percentile_in_user_ancestry=14.54` for MPNRGLQ2K PGS000018. Plan closed; moving to `docs/plans/completed/`.

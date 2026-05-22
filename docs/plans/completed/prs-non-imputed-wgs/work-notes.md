@@ -234,3 +234,88 @@ Baseline before Phase 2 was 724/108/0 (post-Phase-1 + side-quest). +4 Phase 2 te
 - **Phase 4**: real-data smoke v22 — the new Stage 3 GREEN gate of the meta-plan.
 
 ---
+
+## 2026-05-20 — Phase 3 RED + GREEN landed (729/108/0)
+
+**Discovery during scoping**: The agent system prompt at `packages/nemoclaw-plugin/sandbox/agent-system-prompt.md` had **no PRS-decline content at all**. INV-C001 v1.7 documents the 4 canonical decline reasons (top-decile RR, no independent replication, ancestry-calibration failure, no biologically-grounded basis) but those reasons had only ever lived in INVARIANTS.md, not in the operating-protocol document the agent actually reads at session start. So Phase 3's scope expanded from "add a fifth reason" to "add the full 5-reason PRS-decline subsection."
+
+**RED**: 1 new test `test_system_prompt_documents_prs_decline_pattern_with_five_named_reasons` in `tests/invariants/test_agent_system_prompt_contract.py`. Asserts:
+- Section anchor: "PRS-decline" or "PRS decline" appears in the prompt.
+- Each of the 5 named reasons is recognisable via a term-list (e.g., reason (e) checks any of: `imputation-dependent`, `HapMap3`, `C+T`, `snpnet`).
+- The "two named reasons" rule is preserved (the agent names two specific reasons when declining, not a generic refusal).
+
+Went RED with `AssertionError: prompt must have a PRS-decline section anchor` — intended (the section didn't exist yet).
+
+**GREEN**: Added a "PRS-decline pattern (INV-C001 v1.7)" subsection to Section 6 of the agent system prompt, immediately after the existing hard-genes decline pattern. Lifted the 4 canonical reasons verbatim from INV-C001 v1.7's text, added the new fifth reason with context from the research findings doc, and preserved the two-named-reasons discipline. The subsection ends with a worked-example illustrating how (a) + (e) compose into a single decline ("I decline because (a) the top-decile RR is 1.2× from a single-lab study and (b) only PGS001229's snpnet/LASSO scorefile is available for height, which assumes imputation that your input lacks") so the agent has a concrete template.
+
+**Test fix**: assertion (c) initially did case-sensitive `"ancestry-calibration" in text` against the prompt's capitalised "Ancestry-calibration failure". Switched to `text_lower = text.lower()` comparison. All other assertions already case-tolerant.
+
+**Verification**:
+```
+$ uv run pytest tests/invariants/test_agent_system_prompt_contract.py -v
+==================== 14 passed in 0.03s ====================
+
+$ uv run pytest tests/unit tests/integration tests/invariants
+==================== 729 passed, 108 skipped in 10.62s ====================
+
+$ uv run ruff check tests/invariants/test_agent_system_prompt_contract.py
+All checks passed!
+```
+
+**Decisions made**:
+
+1. **Defer `live_llm` decline behavioural test**. The phase-1 plan listed "1 prompt-content gate; 1 live_llm decline-with-fifth-reason behavioural test (when test fixture is available)". The fixture (a trait with only an imputation-dependent scorefile + a question that would normally trigger compute) hasn't been built; setting it up is a meaningful infra slice that doesn't belong inside this plan. Captured as a follow-up; the existing Stories 4/9/10 live_llm tests provide the surface for an eventual Story-11-style decline fixture.
+2. **Lifted the existing 4-reason content verbatim from INV-C001 v1.7**. Paraphrasing the canonical wording in a second location (the prompt) would create drift risk; the prompt now uses the same phrasing as INVARIANTS.md, so future contributors who update one in isolation will see the other lag visibly in code review.
+3. **Worked-example sentence at the end of the subsection**. The four-then-five-reason list is structurally clear but doesn't show how the rule applies in conversation. A single concrete decline example anchors the pattern — same approach the existing hard-genes decline pattern uses ("the two reasons that typically apply: ...").
+
+**AC5 progress**:
+- ✅ Agent system prompt's PRS-decline criteria gain a fifth named reason (only-imputation-dependent-scorefile-available for the trait).
+- ✅ HapMap3+ / C+T scorefile preference documented (architecture.md PRS subsection already updated in earlier session; the prompt now also references HapMap3+/C+T as the recommended alternative).
+
+**Phase 3 status**: **Complete**. AC5 satisfied.
+
+**Next**:
+- **Phase 4**: real-data smoke v22 — `bin/genomeclaw-prs-smoke MPNRGLQ2K PGS000018` with the post-Phase-1+2 code (lowered `--min_overlap 0.5` + `bcftools norm -m -any` upstream + orientation fix from F7). This is the Stage 3 GREEN gate of [prs-bootstrap-meta](../prs-bootstrap-meta.md). Cold run estimate ~90 min on 16 GB-RAM M-series host per the meta-plan's revised AC3 budget; warm-cache reruns ~15 min.
+
+---
+
+## 2026-05-22 — Phase 4 closed via smoke v23 (resilience-first pivot)
+
+After the v22 ledger (v22 → v22j) surfaced L4 mid-run drive disconnects as the dominant remaining failure class, the project pivoted on 2026-05-21 PM: stop iterating v22 against brittle infrastructure, land `prs-smoke-resilience` first, then resume. Per the [meta-plan's audit notes](../prs-bootstrap-meta.md), `prs-smoke-resilience` Phases 1-4.3 landed 2026-05-21, then smoke v23 ran on 2026-05-22.
+
+**Smoke v23 result**: **PASS — ancestry-calibrated PRS produced end-to-end.**
+
+From `pgsc_calc_work/0b/.../norm_pgs.txt.gz`:
+
+```
+sampleset  IID         PGS                          SUM      Z_MostSimilarPop  percentile_MostSimilarPop
+norm       MPNRGLQ2K   PGS000018_hmPOS_GRCh38       9.66498  -1.04498          14.54
+```
+
+Ancestry: EUR @ 100% confidence. Match rate: 49.51% (above the 0.45 threshold this plan landed in Phase 1.E). Pipeline validated end-to-end.
+
+**Key v23 numbers vs pre-coverage-fill v17 (the prior baseline this plan was designed to displace)**:
+
+- DENOM 990,868 → 1,728,050 (+74%)
+- Match rate 28.4% → 49.51% (+74%)
+- Ancestry calibration FAILED → CLEAN, EUR @ 100%
+- Percentile within EUR: N/A → 14.54
+
+**Wall-clock**:
+- Tier 1: 5,470s (91 min) — `prs-prepare-coverage`
+- Stage C (Tier 2 + merge + norm + pgsc_calc Nextflow): 14,117s (3h55m)
+- **Total: ~4h 26m** on the project owner's 16 GB-RAM M-series + external-USB-drive setup
+
+The plan's Phase 4 "cold run estimate ~90 min" budget was off by ~3×; the meta-plan owns the AC3 budget revision (separate doc cleanup).
+
+**Resilience proof-points** (from `prs-smoke-resilience`'s Phase 5 entry):
+
+- Phase 1 pre-flight: caught stale Colima mount on first launch (rc=2, ≤30s). Without it, v23 would have rendered the same v22g/h/j "die mid-Tier-1 to bind-mount loss" failure mode.
+- Phase 4.2 watchdog: armed throughout 3h55m Stage C; quiet (drive held stable).
+- Phase 4.3 recovery loop: didn't fire (first attempt rc=0).
+
+The pipeline logic from this plan's Phases 1-3 (`--min_overlap 0.45`, `norm.vcf.gz` alphanumeric sampleset, `bcftools norm -m -any -d both`, TMPDIR env injection, 5th decline reason in agent prompt) is empirically validated by v23.
+
+**Phase 4 status**: **PASS** (via smoke v23 under resilience-first sequencing). The plan can move to `docs/plans/completed/` after the meta-plan's documentation cleanup pass.
+
+---

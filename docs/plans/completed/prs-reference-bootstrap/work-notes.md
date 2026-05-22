@@ -137,3 +137,9 @@
 - Meta-plan Stage 1 is now complete on the TDD axis; pending real-data smoke. The user can move to Stage 2 (`prs-runtime-bootstrap`) when ready.
 
 **Blockers**: none.
+
+---
+
+## 2026-05-22 — Plan closed (real-data smoke green via Stage 3 v23)
+
+The deferred Phase-1 real-data smoke landed via [`prs-bootstrap-meta`](../prs-bootstrap-meta.md) Stage 3 integration smoke v23 (2026-05-22). `genomeclaw refs fetch --source pgs_catalog_ancestry --release v1` materialised the actual upstream bundle (URL + layout corrected by v17 architectural revisions: flat `GRCh38_HGDP+1kGP_ALL.{pgen,pvar.zst,psam}`, not subdir-split); `genomeclaw host doctor` reports `ancestry_ready: ready`; `_check_ancestry_reference` resolves the canonical path. AC1 of the meta-plan ticked on this evidence. Plan moving to `docs/plans/completed/`.

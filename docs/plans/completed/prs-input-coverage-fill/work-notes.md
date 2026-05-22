@@ -785,3 +785,24 @@ prs-coverage-prove/
 ```
 
 Keep this workspace until Phase 5 completes — it's the empirical anchor for the SLA conversations.
+
+---
+
+## 2026-05-22 — Phase 5 closed via Stage 3 smoke v23
+
+The deferred Phase 5 (real-data smoke close-out) landed via [`prs-bootstrap-meta`](../prs-bootstrap-meta.md) Stage 3 integration smoke v23 (2026-05-22). The end-to-end coverage-fill bridge worked exactly as designed:
+
+- **Tier 1**: 6,800 PCA-eligible sites force-genotyped (91 min wallclock on the project owner's external-USB-drive setup)
+- **Tier 2**: 838,962 PGS-relevant sites force-genotyped (~235 min wallclock as part of Stage C)
+- **Merge + norm**: tier1 + tier2 → `merged.vcf.gz` → `norm.vcf.gz` (`bcftools norm -m -any -d both` to decompose multi-allelics + dedup; per `prs-non-imputed-wgs` Phase 2/F upstream pipeline)
+- **pgsc_calc**: consumed the merged-normalised VCF; produced `aggregated_scores.txt.gz` (SUM=9.665, DENOM=1,728,050) + `norm_pgs.txt.gz` (percentile=14.54 within EUR @ 100% confidence)
+
+**The DENOM growth from v17→v23 is the canonical proof** that this plan's coverage-fill bridge works:
+- v17 (variant-only VCF, pre-coverage-fill): DENOM=990,868 (~28% match rate, ancestry calibration FAILED)
+- v23 (Tier 1+Tier 2 force-genotyped): DENOM=1,728,050 (~49.5% match rate, ancestry calibration CLEAN @ EUR 100%)
+
+That's a +74% increase in effective coverage of PGS scoring sites, pushing match rate from 28% to 49.5% (above the 0.45 threshold landed by `prs-non-imputed-wgs` Phase 1.E).
+
+**PRS-decline taxonomy** (the 5-named-reasons + `PRSDeclineError`) didn't fire on v23 (calibration was CLEAN). The decline path is exercised by unit + integration tests; the smoke confirms the happy path.
+
+**Phase 5 status**: **Complete**. Plan moving to `docs/plans/completed/`.
