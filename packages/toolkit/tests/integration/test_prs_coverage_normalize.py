@@ -89,6 +89,20 @@ def test_normalize_for_pgsc_calc_runs_bcftools_norm_with_correct_args(
         f"missing '-m -any' flags (the load-bearing decomposition flags); got: {cmd_str}"
     )
 
+    # Dedup flag — load-bearing. Tier 1 + Tier 2 can both cover the same site
+    # (a PGS scoring weight that's also PCA-eligible). bcftools concat
+    # --allow-overlaps in _merge_tier1_tier2 does NOT dedup, so the merged
+    # VCF can carry the same variant twice. PLINK2_SCORE later rejects the
+    # input with "variant ID '<chrom>:<pos>:<ref>:<alt>' appears multiple
+    # times in main dataset" (smoke v22i regression, 2026-05-21). `-d both`
+    # dedupes records matching on BOTH REF and ALT — the correct dedup
+    # semantic for our merge case (we want to drop exact duplicates, not
+    # collapse near-matches).
+    assert "-d both" in cmd_str, (
+        f"missing '-d both' (dedup flag); without it, Tier 1 + Tier 2 overlap "
+        f"produces duplicate variants that PLINK2_SCORE rejects. got: {cmd_str}"
+    )
+
     # Fasta reference must be passed via -f for the normalization to be
     # build-aware (bcftools needs the fasta to verify REF alleles).
     assert f"-f {fasta}" in cmd_str, f"missing '-f <fasta>'; got: {cmd_str}"
@@ -340,3 +354,139 @@ def test_compute_prs_with_coverage_fill_normalizes_before_compute_pgs(
     # And the normalize step's input is the merged VCF.
     assert "input_vcf" in norm_call, norm_call
     assert "fasta" in norm_call and norm_call["fasta"] == fasta
+
+
+def test_compute_prs_with_coverage_fill_normalized_vcf_basename_has_no_dot(
+    tmp_path: Path,
+) -> None:
+    """The normalized VCF's filename stem (between work_dir and ``.vcf.gz``)
+    MUST NOT contain ``.`` — pgsc_calc derives downstream sampleset filenames
+    from the basename and truncates at the first dot for some paths but not
+    others, producing ``FileNotFoundError: GRCh38_<truncated>.afreq.gz`` in
+    INTERSECT_VARIANTS.
+
+    Smoke v22 regression (2026-05-21): the original Phase 2 GREEN named the
+    output ``merged.norm.vcf.gz`` which decomposes via
+    ``compute_pgs``'s ``vcf.name.removesuffix(".gz").removesuffix(".vcf")``
+    to sampleset ``merged.norm`` — STILL period-bearing. Same class of bug
+    as smoke v13's sampleset-period failure; this guard pins the fix so a
+    future contributor renaming the file back to ``merged.norm.vcf.gz``
+    (or any other dot-bearing basename) gets caught at unit-test time.
+    """
+    from genomeclaw_toolkit.prep.coverage_fill import (
+        as_sibling_mountable,
+        compute_prs_with_coverage_fill,
+    )
+    from genomeclaw_toolkit.prep.pgs import PgsRow
+
+    cram = tmp_path / "user.cram"
+    cram.write_bytes(b"x")
+    sites = tmp_path / "sites.tsv"
+    sites.write_text("")
+    alleles = tmp_path / "alleles.tsv"
+    alleles.write_text("")
+    scorefile = tmp_path / "PGS000018.txt.gz"
+    scorefile.write_bytes(b"\x1f\x8b")
+    fasta = tmp_path / "ref.fa"
+    fasta.write_text("")
+    reference_root = tmp_path / "ref"
+    output_root = tmp_path / "derived"
+    work_dir = tmp_path / "work"
+    reference_root.mkdir()
+    output_root.mkdir()
+    work_dir.mkdir()
+    (reference_root / "pgs_catalog_ancestry" / "v1").mkdir(parents=True)
+    (reference_root / "pgs_catalog_ancestry" / "v1" / "pgs_catalog_ancestry.tar.zst").write_bytes(
+        b"x"
+    )
+
+    tier1_path = tmp_path / "tier1.vcf.gz"
+    tier1_path.write_bytes(b"\x1f\x8b")
+    tier2_path = tmp_path / "tier2.vcf.gz"
+    tier2_path.write_bytes(b"\x1f\x8b")
+
+    normalize_calls: list[dict] = []
+
+    def _fake_normalize(**kwargs):
+        normalize_calls.append(kwargs)
+        out = kwargs["output_vcf"]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\x1f\x8b")
+
+    def _fake_compute(**_kwargs):
+        return PgsRow(
+            pgs_id="PGS000018",
+            trait_label="x",
+            percentile_in_user_ancestry=50.0,
+            raw_score=0.0,
+            study_population="x",
+            calibration_warning=None,
+            agent_choice_rationale="r" * 60,
+            requested_for_question="q",
+        )
+
+    with (
+        patch(
+            "genomeclaw_toolkit.prep.coverage_fill.prepare_coverage_tier1",
+            side_effect=lambda **_kw: tier1_path,
+        ),
+        patch(
+            "genomeclaw_toolkit.prep.coverage_fill.prepare_coverage_tier2",
+            side_effect=lambda **_kw: tier2_path,
+        ),
+        patch(
+            "genomeclaw_toolkit.prep.coverage_fill._merge_tier1_tier2",
+            side_effect=lambda **kw: kw["output_vcf"].write_bytes(b"\x1f\x8b"),
+        ),
+        patch(
+            "genomeclaw_toolkit.prep.coverage_fill._normalize_for_pgsc_calc",
+            side_effect=_fake_normalize,
+        ),
+        patch("genomeclaw_toolkit.prep.coverage_fill.compute_pgs", side_effect=_fake_compute),
+        patch(
+            "genomeclaw_toolkit.prep.coverage_fill._extract_pgs_id_from_scorefile",
+            side_effect=lambda _: "PGS000018",
+        ),
+    ):
+        compute_prs_with_coverage_fill(
+            sample_id="test_sample",
+            cram_path=cram,
+            sites_tsv=sites,
+            alleles_tsv=alleles,
+            scorefile_path=scorefile,
+            fasta=fasta,
+            panel_version="v1",
+            reference_root=as_sibling_mountable(reference_root),
+            output_root=output_root,
+            work_dir=as_sibling_mountable(work_dir),
+            agent_choice_rationale="r" * 60,
+            requested_for_question="q",
+        )
+
+    assert len(normalize_calls) == 1
+    normalized_output = normalize_calls[0]["output_vcf"]
+    # The basename, after stripping .gz + .vcf (the suffixes compute_pgs
+    # strips when deriving sampleset), must be ALPHANUMERIC ONLY.
+    # pgsc_calc has TWO independent sampleset rules:
+    #   1. NO '.' — INTERSECT_VARIANTS truncates at the first dot when
+    #      deriving downstream filenames, producing FileNotFoundError
+    #      (smoke v22 regression, 2026-05-21).
+    #   2. NO '_' — pgsc_calc's filename convention is
+    #      ``GRCh38_<sampleset>_<chrom>.<ext>``; the parser strips the
+    #      last ``_<chrom>`` to recover sampleset, so internal '_' breaks
+    #      it. pgsc_calc fails fast at samplesheet validation with
+    #      "Reserved sampleset name/character detected. DO NOT ... use
+    #      underscores ('_') in the name" (smoke v22b regression,
+    #      2026-05-21 — discovered when the v22 dot-fix swapped one
+    #      forbidden char for another).
+    # Generalising to "alphanumeric only" pins the safe surface so a
+    # future contributor introducing ANY non-alphanumeric separator
+    # (hyphen, plus, etc.) is caught at unit-test time, not at the
+    # ~90-min mark of a real-data smoke.
+    stem = normalized_output.name.removesuffix(".gz").removesuffix(".vcf")
+    assert stem.isalnum(), (
+        f"normalized VCF basename produces sampleset {stem!r}; pgsc_calc "
+        f"requires sampleset to be alphanumeric only (NO '.', NO '_', "
+        f"and no other non-alphanumeric separators). Use a single-word "
+        f"name like 'norm.vcf.gz' (sampleset='norm')."
+    )

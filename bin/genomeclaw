@@ -334,6 +334,17 @@ if [[ "${GENOMECLAW_FORCE_TTY:-0}" == "1" ]] || { [[ "${GENOMECLAW_NO_TTY:-0}" !
   tty_args+=("-t")
 fi
 
+# prs-smoke-resilience Phase 2.2 — label the spawned container with the
+# smoke's run-id so the smoke driver's EXIT trap can find + clean up
+# leftover toolkit + sibling containers from this run. Closes the
+# v22e + v22g zombie pattern (Nextflow siblings outliving the parent).
+# Smoke driver exports GENOMECLAW_SMOKE_RUN_ID before invoking the shim;
+# the shim threads it through; cleanup pass filters by label.
+smoke_label_args=()
+if [[ -n "${GENOMECLAW_SMOKE_RUN_ID:-}" ]]; then
+  smoke_label_args+=("--label" "genomeclaw-smoke=${GENOMECLAW_SMOKE_RUN_ID}")
+fi
+
 cmd=(
   docker run --rm
   --user "${dood_user}"
@@ -342,6 +353,7 @@ cmd=(
   ${dood_env_args[@]+"${dood_env_args[@]}"}
   ${dood_socket_mounts[@]+"${dood_socket_mounts[@]}"}
   ${mounts[@]+"${mounts[@]}"}
+  ${smoke_label_args[@]+"${smoke_label_args[@]}"}
   "$image"
   genomeclaw
   "$@"

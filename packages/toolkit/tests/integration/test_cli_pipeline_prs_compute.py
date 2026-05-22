@@ -154,3 +154,59 @@ def test_cli_prs_compute_rationale_length_gate(
     assert result.exit_code != 0
     # Match the existing pgs-compute error wording for consistency.
     assert "rationale" in (result.stderr + result.stdout).lower()
+
+
+def test_cli_prs_compute_persists_pgs_scores_row_when_run_dir_supplied(
+    invoke_cli, prs_compute_fixture: dict[str, Path], tmp_path: Path
+) -> None:
+    """When ``--run-dir`` is supplied, the orchestrator's :class:`PgsRow` lands
+    in the run's ``variants.duckdb`` as a ``pgs_scores`` row + matching
+    ``findings`` row.
+
+    Closes the gap surfaced by smoke v23 (2026-05-22): ``prs-compute``
+    emitted only the envelope; AC4 + AC5 of the meta-plan require a
+    persisted row carrying the INV-A003 + INV-C001 v1.7 columns.
+
+    The smoke driver passes ``--run-dir`` explicitly so the row lands
+    alongside the smoke-dir outputs; without it the CLI emits the envelope
+    only (back-compat for callers that don't have a CURRENT-style derived
+    layout).
+    """
+    import duckdb
+
+    from genomeclaw_toolkit.prep.store import create_store
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    create_store(run_dir / "variants.duckdb")
+
+    argv = _common_argv(prs_compute_fixture) + ["--run-dir", str(run_dir)]
+    with patch(
+        "genomeclaw_toolkit._cli.commands.pipeline.compute_prs_with_coverage_fill",
+        return_value=_EXPECTED_ROW,
+    ):
+        result = invoke_cli(argv)
+
+    assert result.exit_code == 0, f"stderr={result.stderr!r}"
+
+    conn = duckdb.connect(str(run_dir / "variants.duckdb"))
+    try:
+        rows = conn.execute(
+            "SELECT pgs_id, percentile_in_user_ancestry, tool, "
+            "agent_choice_rationale FROM pgs_scores WHERE pgs_id = 'PGS000018'"
+        ).fetchall()
+        assert len(rows) == 1, f"expected 1 pgs_scores row, got {len(rows)}"
+        assert rows[0][0] == "PGS000018"
+        assert rows[0][1] == 87.0
+        assert rows[0][2] == "pgsc_calc"
+        assert rows[0][3] == "r" * 60
+
+        findings = conn.execute(
+            "SELECT category, evidence_ref FROM findings "
+            "WHERE evidence_ref = 'pgs_catalog:PGS000018'"
+        ).fetchall()
+        assert len(findings) == 1, f"expected 1 findings row, got {len(findings)}"
+        assert findings[0][0] == "clinical-non-actionable"
+        assert findings[0][1] == "pgs_catalog:PGS000018"
+    finally:
+        conn.close()

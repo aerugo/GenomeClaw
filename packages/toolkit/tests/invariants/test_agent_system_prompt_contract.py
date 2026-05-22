@@ -275,6 +275,86 @@ def test_system_prompt_documents_hard_genes_decline_pattern() -> None:
     )
 
 
+def test_system_prompt_documents_prs_decline_pattern_with_five_named_reasons() -> None:
+    """INV-C001 v1.7 + prs-non-imputed-wgs Phase 3: the prompt enumerates
+    five named reasons under which the agent should decline a PRS compute
+    request.
+
+    The first four lifted from INV-C001 v1.7 (top-decile RR < ~1.5×,
+    no independent replication, ancestry-calibration failure, no
+    biologically-grounded polygenic basis). The fifth — added by
+    prs-non-imputed-wgs Phase 3 — is: only an imputation-dependent
+    scorefile available for the trait, where the user's input is
+    non-imputed single-sample WGS and no HapMap3+ / C+T alternative
+    exists. (Computing against an imputation-dependent scorefile on
+    non-imputed single-sample WGS caps the match rate at the 45-65%
+    empirical ceiling documented in
+    docs/reports/prs-real-data-smoke-research-findings.md — better to
+    decline with named reasons than persist a degraded score.)
+
+    The pattern lives next to the existing hard-genes decline pattern
+    (Section 6) — both are reasoned-decline patterns the agent applies
+    after research, not hardcoded refusals.
+    """
+    text = _read_prompt()
+
+    # Section anchor — the PRS-decline pattern must live somewhere
+    # discoverable, not buried in a paragraph.
+    assert "PRS-decline" in text or "PRS decline" in text, (
+        "prompt must have a PRS-decline section anchor so the agent can "
+        "navigate to it under reasoning load"
+    )
+
+    # The five named reasons. Each is a phrase the prompt must include
+    # verbatim (or as a clearly-recognisable variant) so the prompt-content
+    # gate is robust against paraphrase drift.
+    reason_a_terms = ["top-decile", "1.5", "discriminative"]
+    assert any(t in text for t in reason_a_terms), (
+        f"reason (a) — top-decile RR < ~1.5× — must be in the prompt; "
+        f"looked for any of {reason_a_terms}"
+    )
+
+    reason_b_terms = ["independent replication", "no replication", "fail.*replicate"]
+    assert any(re.search(t, text) for t in reason_b_terms), (
+        f"reason (b) — no independent replication — must be in the prompt; "
+        f"looked for any of {reason_b_terms}"
+    )
+
+    text_lower = text.lower()
+    assert "ancestry-calibration" in text_lower or "ancestry calibration" in text_lower, (
+        "reason (c) — ancestry-calibration failure — must be in the prompt"
+    )
+
+    reason_d_terms = ["biologically-grounded", "biologically grounded", "heritability-only"]
+    assert any(t in text for t in reason_d_terms), (
+        f"reason (d) — no biologically-grounded polygenic basis — must be "
+        f"in the prompt; looked for any of {reason_d_terms}"
+    )
+
+    # The new fifth reason — the Phase 3 addition. The match-rate ceiling
+    # context is what motivates it; the prompt should name imputation-
+    # dependence explicitly so the agent's decline naming is precise.
+    reason_e_terms = [
+        "imputation-dependent",
+        "imputation dependent",
+        "HapMap3",
+        "HapMap3+",
+        "C+T",
+        "snpnet",
+    ]
+    assert any(t in text for t in reason_e_terms), (
+        f"reason (e) — only imputation-dependent scorefile available — "
+        f"must be in the prompt (prs-non-imputed-wgs Phase 3); looked for "
+        f"any of {reason_e_terms}"
+    )
+
+    # The two-named-reasons rule must still apply when the agent declines.
+    assert "two" in text.lower() and ("named reasons" in text or "specific reasons" in text), (
+        "prompt must preserve the 'two named reasons' decline-pattern rule "
+        "(the agent names two specific reasons when declining, not a generic refusal)"
+    )
+
+
 def test_system_prompt_documents_research_and_synthesis_steps_in_order() -> None:
     """The 7-step research-and-synthesis protocol must appear in order.
 

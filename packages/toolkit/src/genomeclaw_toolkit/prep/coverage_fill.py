@@ -1033,8 +1033,15 @@ def _normalize_for_pgsc_calc(
     content no-op (single-ALT records pass through unchanged).
     """
     output_vcf.parent.mkdir(parents=True, exist_ok=True)
+    # ``-d both`` deduplicates records matching on BOTH REF and ALT. Tier 1
+    # + Tier 2 can both cover the same site (a PGS scoring weight that's
+    # also PCA-eligible); ``bcftools concat --allow-overlaps`` in
+    # ``_merge_tier1_tier2`` does NOT dedup, so the merged VCF can carry
+    # the same variant twice. PLINK2_SCORE later rejects the input with
+    # ``variant ID '<chrom>:<pos>:<ref>:<alt>' appears multiple times in
+    # main dataset`` (smoke v22i regression, 2026-05-21).
     pipe = (
-        f"bcftools norm -m -any -f {fasta} "
+        f"bcftools norm -m -any -d both -f {fasta} "
         f"--output-type z --output {output_vcf} {input_vcf} "
         f"&& bcftools index --tbi --force {output_vcf}"
     )
@@ -1276,7 +1283,27 @@ def compute_prs_with_coverage_fill(
     # dropped by pgsc_calc's score-matching step. The `-m -any` flag
     # decomposes each multi-allelic site into N single-ALT records.
     # Stages alongside merged_vcf in work_dir (host-visible for DooD).
-    normalized_vcf = work_dir / "merged.norm.vcf.gz"
+    #
+    # Filename basename ``norm`` is ALPHANUMERIC — pgsc_calc has TWO
+    # independent sampleset rules:
+    #
+    #   1. NO '.' — INTERSECT_VARIANTS truncates at the first dot when
+    #      deriving downstream filenames (smoke v13 regression, 2026-05-19;
+    #      smoke v22 regression, 2026-05-21 when the original Phase 2
+    #      ``merged.norm.vcf.gz`` produced sampleset ``merged.norm``).
+    #   2. NO '_' — pgsc_calc's filename convention is
+    #      ``GRCh38_<sampleset>_<chrom>.<ext>``; the parser strips the last
+    #      ``_<chrom>`` to recover sampleset, so internal underscores break
+    #      it (smoke v22b regression, 2026-05-21, when the v22 dot-fix
+    #      renamed to ``merged_norm.vcf.gz`` and pgsc_calc rejected at
+    #      samplesheet-validation time with "Reserved sampleset name/
+    #      character detected").
+    #
+    # Generalised rule: sampleset (= VCF basename minus .vcf.gz) must be
+    # alphanumeric only. The single-word ``norm`` satisfies both rules
+    # without ambiguity. Regression guard:
+    # ``test_compute_prs_with_coverage_fill_normalized_vcf_basename_has_no_dot``.
+    normalized_vcf = work_dir / "norm.vcf.gz"
     _normalize_for_pgsc_calc(input_vcf=merged_vcf, fasta=fasta, output_vcf=normalized_vcf)
 
     # work_dir is already validated above; normalized_vcf is a child path

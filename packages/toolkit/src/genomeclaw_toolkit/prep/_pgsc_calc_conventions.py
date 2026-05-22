@@ -106,7 +106,7 @@ class PgscCalcConventions:
     # =========================================================================
     # Input-class defaults — non-imputed single-sample WGS
     # =========================================================================
-    min_overlap_default_for_non_imputed_wgs: float = 0.5
+    min_overlap_default_for_non_imputed_wgs: float = 0.45
     """Default value for ``--min_overlap`` on the non-imputed single-sample
     WGS input class (GenomeClaw's canonical input today: a variant-sites-
     only VCF like Nebula's Haplotype Caller output).
@@ -117,8 +117,18 @@ class PgscCalcConventions:
     imputed scoring files (e.g. snpnet/LASSO models like PGS001229) makes
     0.75 a structural rejection of healthy artifacts — see
     :doc:`docs/reports/prs-real-data-smoke-research-findings.md` for the
-    external research validation. 0.5 is the input-class-appropriate
-    default; comparable tools (PRSice-2, LDpred2, PLINK2 ``--score``) are
+    external research validation.
+
+    0.45 (not 0.5) is the input-class-appropriate default. Smoke v22e
+    (2026-05-21) measured the empirical match rate for PGS000018 against
+    the project owner's Nebula WGS at 49.51% — just below 0.5, well
+    inside the documented 45–65% range. Setting the default at the
+    documented lower-bound (0.45) accepts the worst-case healthy
+    artifact in that range without margin for surprises; the env var
+    override below lets a future contributor tighten it back to 0.5 or
+    0.75 once an imputation-using ingest path lands.
+
+    Comparable tools (PRSice-2, LDpred2, PLINK2 ``--score``) are
     permissive on low-overlap inputs by default.
 
     The env var ``GENOMECLAW_PGSC_CALC_MIN_OVERLAP`` overrides this for

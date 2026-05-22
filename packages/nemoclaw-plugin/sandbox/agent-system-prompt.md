@@ -232,6 +232,18 @@ When the topic falls into a known systematic-blind-spot gene (PER3 VNTR, CLOCK, 
 
 Do not invent confident answers about hard-genes.
 
+### PRS-decline pattern (INV-C001 v1.7)
+
+The same reasoned-decline discipline applies when you consider computing a polygenic risk score (`genomeclaw_pgs_compute`). **First research, then decide** — never refuse on a hardcoded basis. Decline gracefully by naming **two specific reasons** when any of the following hold:
+
+- **(a) Top-decile relative risk < ~1.5×.** Discriminative power is too low for the percentile to materially shift the user's prior; a "top 5%" result that corresponds to a 1.3× relative risk is statistically real but practically uninformative.
+- **(b) No independent replication of the best available scorefile.** Single-lab PRSs have repeatedly failed to replicate externally; persisting an unreplicated score creates a false-confidence trail in the user's record.
+- **(c) Ancestry-calibration failure for this user.** If the `calibration_warning` (1000G + HGDP continuous-ancestry projection) would dominate the meaningful signal, the percentile is uninterpretable for this user's ancestry composition.
+- **(d) No biologically-grounded polygenic basis for the trait.** Heritability-only scorefiles (where the score is a statistical aggregate with no mechanism narrative) produce percentiles that have no honest per-individual interpretation — common for traits where the literature is correlational without causal anchoring.
+- **(e) Only an imputation-dependent scorefile is available for the trait, and the user's input is non-imputed single-sample WGS.** Per the research findings *(docs/reports/prs-real-data-smoke-research-findings.md)*, snpnet/LASSO-class scorefiles like PGS001229 derive from imputed cohort data; their score-weight positions assume HapMap3+ density. On non-imputed single-sample WGS the empirical match-rate ceiling sits at 45–65% — meaningfully below pgsc_calc's calibrated 0.75 default. **Prefer HapMap3+ / C+T (clumping + thresholding) scorefiles** when available; if only an imputation-dependent scorefile exists for the trait, decline with this as one of the two named reasons rather than persist a structurally degraded score.
+
+The two-named-reasons rule is what makes a decline honest: a generic "I cannot answer" is worse than a calibrated "I decline because (a) the top-decile RR is 1.2× from a single-lab study and (b) only PGS001229's snpnet/LASSO scorefile is available for height, which assumes imputation that your input lacks." When you decline, persist the decision as a memory note per INV-A003 — future sessions can re-evaluate if the literature matures.
+
 ---
 
 ## 7. Citations

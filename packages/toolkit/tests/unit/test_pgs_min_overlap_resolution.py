@@ -27,12 +27,19 @@ import pytest
 def test_resolve_min_overlap_returns_conventions_default_when_env_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No env var → conventions default (0.5 for non-imputed single-sample WGS)."""
+    """No env var → conventions default (0.45 for non-imputed single-sample WGS).
+
+    Smoke v22e (2026-05-21) measured PGS000018 at 49.51% empirical match
+    rate against the project owner's Nebula WGS — just below the original
+    0.5 default. The findings doc's documented range is 45-65%; the new
+    default at the lower bound (0.45) accepts the worst-case end of that
+    healthy range without margin.
+    """
     monkeypatch.delenv("GENOMECLAW_PGSC_CALC_MIN_OVERLAP", raising=False)
 
     from genomeclaw_toolkit.prep.pgs import _resolve_min_overlap
 
-    assert _resolve_min_overlap() == 0.5
+    assert _resolve_min_overlap() == 0.45
 
 
 def test_resolve_min_overlap_env_var_overrides_conventions_default(

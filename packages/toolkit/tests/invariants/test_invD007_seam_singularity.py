@@ -28,7 +28,16 @@ _BIN_DIR = _REPO_ROOT / "bin"
 # Scripts allowed to invoke ``docker run`` directly. Empty by design — every
 # DooD subcommand goes through ``bin/genomeclaw`` (the shim). If you need to
 # add an entry, justify it in the PR and accept the review burden.
-_ALLOWED_BESPOKE_DOCKER_RUN: set[str] = set()
+#
+# ``genomeclaw-prs-smoke`` (added 2026-05-21 per prs-smoke-resilience Phase 1):
+# the smoke driver's pre-flight gate probes the Colima VM bind-mount with a
+# tiny ``docker run --rm alpine test -d /probe`` BEFORE invoking the shim.
+# Chicken-and-egg: if Colima's mount is broken, the shim can't run, so the
+# probe can't go through the shim — it has to invoke docker directly. The
+# probe is read-only, runs Alpine (no genomeclaw image), and exists solely
+# to fail-fast with an actionable diagnostic. Path-crossing-discipline
+# invariants don't apply: no genomic data crosses any boundary.
+_ALLOWED_BESPOKE_DOCKER_RUN: set[str] = {"genomeclaw-prs-smoke"}
 
 # ``bin/genomeclaw`` itself IS the shim, so it builds the canonical ``docker
 # run`` command. Exempt by name.

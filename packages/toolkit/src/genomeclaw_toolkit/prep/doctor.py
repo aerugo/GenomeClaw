@@ -737,6 +737,122 @@ def _collect_stale_colima_mounts(config_path: Path) -> list[dict[str, str]]:
     return stale
 
 
+def _collect_colima_mount_visible(raw_dir: Path, runner: _Runner) -> dict[str, Any]:
+    """Probe whether Colima's VM can bind-mount the canonical raw dir.
+
+    prs-smoke-resilience Phase 1 — closes the L4-at-startup brittleness
+    from the v22 ledger (v22h #2): host-side sees the drive, but Colima
+    VM's virtiofs view is stale (`bad file descriptor` / `mkdir: file
+    exists`). The smoke driver gates on this BEFORE INV-D001 pre-snapshot
+    so future iterations fail in ≤30s with an actionable hint instead of
+    after a futile docker run cascade.
+
+    Probe: ``docker run --rm -v <raw_dir>:/probe alpine test -d /probe``.
+    Informational only (doesn't change doctor exit code); the smoke
+    driver's pre-flight gate is the enforcement layer.
+    """
+    rc, _stdout, _stderr = runner.run(
+        ["docker", "run", "--rm", "-v", f"{raw_dir}:/probe", "alpine", "test", "-d", "/probe"]
+    )
+    if rc == 0:
+        return {
+            "status": "visible",
+            "probed_path": str(raw_dir),
+        }
+    return {
+        "status": "broken",
+        "probed_path": str(raw_dir),
+        "fix": (
+            "Colima VM cannot bind-mount the raw dir. Run: "
+            "`colima stop && colima start --mount /Volumes/Genome_Work:w` "
+            "(or whatever drive root your `host setup` chose) — the VM's "
+            "virtiofs view of the host bind is stale and needs a restart."
+        ),
+    }
+
+
+def _collect_external_drive_readable(raw_dir: Path) -> dict[str, Any]:
+    """Probe whether the external drive's raw dir is host-side readable.
+
+    prs-smoke-resilience Phase 1 — closes the L4-at-startup brittleness
+    from the v22 ledger (v22h #1): drive unmounted at smoke launch
+    surfaces as ``sha256sum: Device not configured``. This field surfaces
+    it earlier, in the readable structural shape the smoke driver's gate
+    checks.
+
+    Probe: ``raw_dir.exists() and raw_dir.is_dir() and bool(list(raw_dir.iterdir())) or
+    raw_dir.exists()`` — directory exists + accessible. Empty-but-readable
+    counts as readable; the smoke driver is responsible for sample-existence
+    checks separately.
+    """
+    if not raw_dir.exists():
+        return {
+            "status": "unreadable",
+            "probed_path": str(raw_dir),
+            "fix": (
+                "External drive not mounted (raw dir missing). Plug in the "
+                "drive + confirm it appears under `/Volumes/`, then verify "
+                "with `ls /Volumes/Genome_Work/genomeclaw/raw/`."
+            ),
+        }
+    try:
+        # Touch the directory to confirm it's not a stale FD.
+        list(raw_dir.iterdir())
+    except OSError as exc:
+        return {
+            "status": "unreadable",
+            "probed_path": str(raw_dir),
+            "error": str(exc),
+            "fix": (
+                "External drive read failed mid-probe (Device not configured / "
+                "I/O error). Unmount + remount the drive, then re-run the "
+                "smoke."
+            ),
+        }
+    return {
+        "status": "readable",
+        "probed_path": str(raw_dir),
+    }
+
+
+def _collect_leftover_smoke_containers(runner: _Runner) -> dict[str, Any]:
+    """List docker containers labeled ``genomeclaw-smoke`` left from prior runs.
+
+    prs-smoke-resilience Phase 1 — closes the L5-zombie-container
+    brittleness from the v22 ledger (v22e + v22g): pgsc_calc / Nextflow
+    sibling containers stayed running after the parent toolkit container
+    died; the next smoke conflicted on the same work-dir + on container
+    names. Phase 2 will auto-stop these; for now the doctor field
+    surfaces them so the user can `docker stop` manually.
+
+    Informational only (doesn't change doctor exit code). The smoke
+    driver's pre-flight gate (Phase 1.3) reads this and either
+    auto-cleans (default) or aborts with a list.
+    """
+    rc, stdout, _stderr = runner.run(
+        ["docker", "ps", "-a", "--filter", "label=genomeclaw-smoke", "--format", "{{.ID}}"]
+    )
+    if rc != 0:
+        # Docker daemon unreachable. Be conservative — say "unknown".
+        return {
+            "status": "unknown",
+            "container_ids": [],
+            "fix": "Docker daemon unreachable; ensure Colima is running before launching a smoke.",
+        }
+    ids = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if not ids:
+        return {"status": "clean", "container_ids": []}
+    return {
+        "status": "leftover",
+        "container_ids": ids,
+        "fix": (
+            f"Stop leftover smoke containers before launching a new smoke: "
+            f"`docker stop {' '.join(ids)}` "
+            f"(or wait for prs-smoke-resilience Phase 2's auto-cleanup to land)."
+        ),
+    }
+
+
 def doctor(
     *,
     paths: dict[str, Path] | None = None,
@@ -793,6 +909,11 @@ def doctor(
     pgs_scorefiles_ready = _collect_pgs_scorefiles_ready(paths["reference"])
     prs_runtime_ready = _collect_prs_runtime_ready(runner)
     prs_coverage_ready = _collect_prs_coverage_ready(paths["derived"])
+    # prs-smoke-resilience Phase 1 readiness probes (informational; gated by
+    # the smoke driver's pre-flight check before INV-D001 pre-snapshot).
+    colima_mount_visible = _collect_colima_mount_visible(paths["raw"], runner)
+    external_drive_readable = _collect_external_drive_readable(paths["raw"])
+    leftover_genomeclaw_containers = _collect_leftover_smoke_containers(runner)
 
     report = {
         "checks": checks,
@@ -805,6 +926,9 @@ def doctor(
         "pgs_scorefiles_ready": pgs_scorefiles_ready,
         "prs_runtime_ready": prs_runtime_ready,
         "prs_coverage_ready": prs_coverage_ready,
+        "colima_mount_visible": colima_mount_visible,
+        "external_drive_readable": external_drive_readable,
+        "leftover_genomeclaw_containers": leftover_genomeclaw_containers,
         "raw_sample": raw_sample,
         "derived_runs": derived_runs,
     }

@@ -1,8 +1,8 @@
 # Phase 6 Slice E (v2): Agent-driven PRS
 
-**Status**: In Progress (E.1 + E.2 complete 2026-05-17; E.3 + E.4 pending)
+**Status**: **Closed 2026-05-22** — E.1 + E.2 + E.3 all green via the [prs-bootstrap-meta](../../../completed/prs-bootstrap-meta.md) cascade (smoke v23 produced ancestry-calibrated PRS end-to-end on real data: MPNRGLQ2K PGS000018 percentile=14.54 within EUR, match rate 49.51%). E.4 stays deferred per the methodological-review pass.
 **Started**: 2026-05-17 (E.1)
-**Completed**:
+**Completed**: 2026-05-22 (E.3 via the cascade)
 **Parent Phase**: [phase-6.md](phase-6.md) (Slice E expansion)
 **Spec**: [MVP spec Q8 v1.6](../spec.md#q8--prs-via-pgsc_calc--fixed-three-trait-panel--genomeclaw_pgs-6th-tool--agent-driven-four-tool-surface-no-pre-curated-panel) (AC9 v1.6)
 **Architecture report**: [docs/reports/agent-driven-prs-computation.md](../../../../reports/agent-driven-prs-computation.md)
@@ -271,7 +271,9 @@ uv run pytest \
   tests/integration/test_cli_pipeline_pgs_compute.py \
   -v
 
-# E.2 real-data smoke (manual, against the project owner's Nebula VCF; needs pgsc_calc + 1000G/HGDP ancestry data installed)
+# E.2 real-data smoke — closed 2026-05-22 via [prs-bootstrap-meta](../../prs-bootstrap-meta.md) Stage 3 (smoke v23).
+# Run via `bin/genomeclaw-prs-smoke MPNRGLQ2K PGS000018` against the prs-phase6
+# toolkit image; the meta-plan documents the full walkthrough + AC verification.
 genomeclaw refs fetch --source pgs_catalog_ancestry --reference-root $REFS  # one-time
 genomeclaw pipeline pgs-compute \
   --pgs PGS000018 \
@@ -336,3 +338,27 @@ Slice E v2 is complete when:
 - **Provenance audit hard** → every layer carries the seven canonical provenance columns; `agent_choice_rationale` + `requested_for_question` columns on every row; memory-note cross-reference. Audit is reconstructible end-to-end.
 - **Agent PGS-selection quality not benchmarked against expert curation** → deferred to Slice E.4 per the methodological review. Personal-use PoC scope accepts the risk; production deployment requires the validation study before launch.
 - **User receives sensitive PRS result without pre-test counseling** → deferred to Slice E.4. Personal-use PoC scope accepts the risk; production deployment requires a pre-compute consent turn.
+
+---
+
+## 2026-05-22 — Slice E closed via the prs-bootstrap-meta cascade
+
+Sub-slice E.3 (async orchestration + concurrency + kill-switch + decline pattern + system-prompt update + sandbox image rebuild) was absorbed by the [`prs-bootstrap-meta`](../../../completed/prs-bootstrap-meta.md) cascade between 2026-05-18 and 2026-05-22. Mapping the E.3 sub-deliverables to where they actually landed:
+
+| E.3 deliverable | Where it landed |
+|----------------|-----------------|
+| Async orchestrator (`service/pgs_compute_orchestrator.py`) — concurrency cap + status transitions + supersession | Shipped during E.2/E.3 work + tested by `test_prs_compute_orchestrator_calibration.py` + `test_orchestrator_match_rate_auto_discovery.py` |
+| Kill-switch (`pgs.compute_enabled false`) | Shipped; the orchestrator honours the setting |
+| PRS-decline pattern (`PRSDeclineError` + 5-named-reasons) | [`prs-input-coverage-fill`](../../../completed/prs-input-coverage-fill/) Phase 3 + INV-C001 v1.7 |
+| Agent system-prompt §9 decline criteria | Initially landed in [`agent-research-and-synthesis`](../../../completed/agent-research-and-synthesis/) Slice 2; 5th reason added by [`prs-non-imputed-wgs`](../../../completed/prs-non-imputed-wgs/) Phase 3 |
+| Sandbox image rebuild (`genomeclaw/sandbox:phase-6e-v2`) | Image bake completed during `agent-research-and-synthesis`; canonical sandbox is `genomeclaw/sandbox:ars-phase-2d` |
+| `compute_decision` memory-note section | Memory-note validator extended via `agent-research-and-synthesis` to accept the `compute_decision: success | decline` shape |
+| INV-A003 provenance columns on `pgs_scores` | Schema landed in E.1 (2026-05-17); auto-INSERTed by `_stamp_pgs_row` |
+| Persistence wiring (`prs-compute --run-dir` INSERTs the row) | Landed 2026-05-22 in the meta-plan close-out (A1+A2+A3) |
+| Real-data smoke (Story 10 end-to-end) | **smoke v23** (2026-05-22) — PGS000018, percentile=14.54, EUR @ 100%, match rate 49.51% |
+
+**Live `live_llm` tests** (E.3 step 11–13): Story 10 PRS-compute end-to-end + decline + decline-rehydration tests landed structurally via the agent-research-and-synthesis live snapshot harness. Story 10 currently runs against a synthetic `clinical-non-actionable` finding; a v23-style re-staging against the *real* persisted PRS row is an optional Slice F polish item (not blocking).
+
+**E.4 stays deferred** per the methodological-review pass (validation study + pre-compute consent turn). Carried as a follow-up to a future production-prep plan; the personal-use PoC accepts the risk.
+
+**Slice E v2 is closed.** Phase 6 has Slice D (Cyrius CYP2D6) + Slice F Story 2 remaining.

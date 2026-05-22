@@ -61,6 +61,27 @@ SHIM="${GENOMECLAW_SHIM:-$(dirname "$0")/genomeclaw}"
 # Tell the shim which image to mount for `bin/genomeclaw pipeline ...` calls.
 export GENOMECLAW_IMAGE="$TOOLKIT_IMAGE"
 
+# prs-smoke-resilience Phase 2.2 — tag every container the shim spawns
+# with this smoke's run-id so the EXIT trap below can clean up
+# leftover sibling containers (Nextflow / pgsc_calc workers that
+# outlived the parent toolkit). Closes the v22e + v22g zombie pattern.
+GENOMECLAW_SMOKE_RUN_ID="${GENOMECLAW_SMOKE_RUN_ID:-$(date -u +"%Y%m%dT%H%M%SZ")}"
+export GENOMECLAW_SMOKE_RUN_ID
+
+genomeclaw_smoke_cleanup() {
+    local rc=$?
+    # Don't let cleanup itself break the exit code.
+    set +e
+    local leftover
+    leftover=$(docker ps -aq --filter "label=genomeclaw-smoke=${GENOMECLAW_SMOKE_RUN_ID}" 2>/dev/null)
+    if [[ -n "$leftover" ]]; then
+        echo "==> cleanup: stopping containers labeled genomeclaw-smoke=${GENOMECLAW_SMOKE_RUN_ID}" >&2
+        echo "$leftover" | xargs -n1 docker rm -f >/dev/null 2>&1 || true
+    fi
+    return "$rc"
+}
+trap genomeclaw_smoke_cleanup EXIT INT TERM
+
 # ---------------------------------------------------------------------------
 # Pre-flight
 # ---------------------------------------------------------------------------
@@ -85,6 +106,55 @@ if [[ ! -f "$SCOREFILE_PATH" ]]; then
       bin/genomeclaw refs fetch --source pgs_scorefile --release $PGS_ID
     Or stage everything at once with:
       bin/genomeclaw host setup --fetch-all"
+fi
+
+# ---------------------------------------------------------------------------
+# prs-smoke-resilience Phase 1 — L4 readiness probes
+#
+# Three structural checks BEFORE the expensive Tier 1 / pgsc_calc work
+# starts. v22 ledger showed L4 failures (Colima virtiofs stale FD,
+# external-drive disconnect, zombie containers from prior runs) cost
+# 25-90 minutes each before surfacing. These probes catch them in
+# ≤30 seconds with an actionable hint.
+#
+# Each probe mirrors a `host doctor` field of the same name. We probe
+# inline here (not through the shim) because if Colima itself is broken,
+# the shim can't run either — chicken-and-egg.
+# ---------------------------------------------------------------------------
+
+# 1. Colima mount visibility: can Docker's daemon (inside Colima's VM) see
+#    the bind-mount of the external drive? v22h #2 surfaced as Docker
+#    daemon returning "mkdir /Volumes/Genome_Work: file exists" — the
+#    host saw the drive but the VM's virtiofs view was stale.
+if ! timeout 30 docker run --rm -v "$DRIVE:/probe" alpine test -d /probe >/dev/null 2>&1; then
+    preflight_fail "Colima VM cannot bind-mount $DRIVE (stale virtiofs FD).
+    Fix:
+      colima stop
+      colima start --cpu 2 --memory 12 --disk 40 --mount $DRIVE:w
+    Then re-run this driver."
+fi
+
+# 2. External-drive readability: the drive itself is accessible from the
+#    host. v22h #1 surfaced as 'sha256sum: Device not configured' AFTER
+#    bind-mount worked — the drive's hardware connection was glitchy. The
+#    check above only proves the VM can see SOMETHING at the mount point;
+#    this proves the underlying drive is responsive.
+if ! ls "$RAW_DIR/$SAMPLE_ID/" >/dev/null 2>&1; then
+    preflight_fail "External drive read failed mid-probe (Device not configured / I/O error).
+    Fix: unmount + remount the drive, then re-run.
+    Diagnostic: ls $RAW_DIR/$SAMPLE_ID/ (just attempted; failed)."
+fi
+
+# 3. Leftover smoke containers from prior runs. v22e + v22g left
+#    pgsc_calc / Nextflow sibling containers running after the parent
+#    toolkit container died; the next smoke conflicted on the same
+#    work-dir. Auto-clean (smoke driver is a development tool; warn-and-
+#    abort would just add a manual step).
+LEFTOVER_IDS=$(docker ps -aq --filter "label=genomeclaw-smoke" 2>/dev/null || true)
+if [[ -n "$LEFTOVER_IDS" ]]; then
+    echo "==> pre-flight: stopping leftover smoke containers from prior runs:" >&2
+    echo "$LEFTOVER_IDS" | xargs >&2
+    echo "$LEFTOVER_IDS" | xargs -n1 docker rm -f >/dev/null 2>&1 || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -131,6 +201,10 @@ SCOREFILE_IN_CONTAINER="/mnt/genomeclaw/reference/pgs_scorefile/$PGS_ID/${PGS_ID
 REF_ROOT_HOST="$REF_DIR"
 OUTPUT_ROOT_HOST="$SMOKE_DIR/derived"
 WORK_DIR_HOST="$SMOKE_DIR/pgsc_calc_work"
+# Run dir is the smoke dir itself — variants.duckdb lives at $SMOKE_DIR/variants.duckdb
+# so the pgs_scores + findings row land alongside timings.json / invariant_audit.json
+# for the same iteration. AC4 + AC5 of prs-bootstrap-meta close on this row.
+SMOKE_DIR_HOST="$SMOKE_DIR"
 
 # ---------------------------------------------------------------------------
 # Helpers: SHA256, JSON emit, timed stage
@@ -284,6 +358,135 @@ run_timed_stage prepare_coverage_tier1 \
         --output-root "$OUTPUT_ROOT_HOST"
 
 # ---------------------------------------------------------------------------
+# prs-smoke-resilience Phase 4 — canary watchdog + bounded recovery loop
+#
+# Three pieces working together to recover from mid-run external-drive
+# bind-mount loss (v22g + v22j class — drive disconnect at ~25-90 min
+# costs the whole pgsc_calc DAG):
+#
+#   1. Canary file at <raw>/.canary the watchdog probes every 60s.
+#   2. Watchdog subshell that detects bind-mount loss + flags recovery
+#      + sends SIGTERM to the pgsc_calc subprocess.
+#   3. Recovery loop that waits for stable drive reconnect, runs
+#      `colima stop && colima start --mount $DRIVE:w` to refresh the
+#      VM's view, then re-invokes pgsc_calc. Phase 4.1's `-resume`
+#      flag makes the re-invocation pick up cached tasks instead of
+#      starting from scratch.
+#
+# Bounded retries (GENOMECLAW_MAX_RECOVERY_ATTEMPTS, default 3); past
+# that the smoke fails with a "drive too unstable" diagnostic.
+# ---------------------------------------------------------------------------
+
+GENOMECLAW_MAX_RECOVERY_ATTEMPTS="${GENOMECLAW_MAX_RECOVERY_ATTEMPTS:-3}"
+WATCHDOG_INTERVAL_SEC="${WATCHDOG_INTERVAL_SEC:-60}"
+CANARY_PATH="$RAW_DIR/.canary"
+
+# Stage the canary (1 byte; timestamp). This is the file the watchdog
+# probes; if read fails mid-run, the drive disconnect is the cause.
+date -u +%s > "$CANARY_PATH" 2>/dev/null || true
+
+# Watchdog: background subshell that probes the canary every WATCHDOG_INTERVAL_SEC.
+# On failure, touches .recovery_needed + sends SIGTERM to the watched PID.
+# Returns when the watched PID exits or after signaling recovery.
+prs_smoke_watchdog() {
+    local watched_pid=$1
+    while kill -0 "$watched_pid" 2>/dev/null; do
+        # Probe: read the canary. If the bind-mount went stale, this fails fast.
+        if ! timeout 10 cat "$CANARY_PATH" >/dev/null 2>&1; then
+            echo "WATCHDOG: bind-mount lost; signaling recovery" \
+                | tee -a "$SMOKE_DIR/recovery.log" >&2
+            touch "$SMOKE_DIR/.recovery_needed"
+            # SIGTERM cascade kills the toolkit container + Nextflow + siblings.
+            kill -TERM "$watched_pid" 2>/dev/null || true
+            return
+        fi
+        sleep "$WATCHDOG_INTERVAL_SEC"
+    done
+}
+
+# Wait until the host-side drive has been continuously readable for
+# stable_seconds. Don't recover into a still-bouncing drive.
+wait_for_stable_drive_reconnect() {
+    local stable_target=${1:-30}
+    local stable=0
+    local poll_interval=5
+    echo "==> recovery: waiting for stable drive reconnect (${stable_target}s threshold)" \
+        | tee -a "$SMOKE_DIR/recovery.log"
+    while (( stable < stable_target )); do
+        if timeout 10 ls "$RAW_DIR" >/dev/null 2>&1; then
+            stable=$((stable + poll_interval))
+        else
+            stable=0
+        fi
+        sleep "$poll_interval"
+    done
+    echo "==> recovery: drive stable; continuing" \
+        | tee -a "$SMOKE_DIR/recovery.log"
+}
+
+# Refresh the Colima VM's bind-mount via stop + start. Uses canonical
+# args matching the user's host-setup incantation. Future enhancement
+# (Phase 4.4 — currently deferred): source from
+# ~/.config/genomeclaw/colima.json persisted by `genomeclaw host setup`.
+refresh_colima_mount() {
+    echo "==> recovery: colima stop" | tee -a "$SMOKE_DIR/recovery.log"
+    colima stop 2>&1 | tee -a "$SMOKE_DIR/recovery.log" || true
+    wait_for_stable_drive_reconnect 30
+    echo "==> recovery: colima start --mount $DRIVE:w" \
+        | tee -a "$SMOKE_DIR/recovery.log"
+    colima start --cpu 2 --memory 12 --disk 40 --mount "$DRIVE:w" 2>&1 \
+        | tee -a "$SMOKE_DIR/recovery.log"
+}
+
+# Single pgsc_calc invocation with watchdog. Returns the subprocess's rc.
+# Recovery loop is the caller's responsibility (sees rc + .recovery_needed flag).
+run_pgsc_calc_once_with_watchdog() {
+    local stage_name=$1; shift
+    rm -f "$SMOKE_DIR/.recovery_needed"
+    "$@" &
+    local pgsc_pid=$!
+    prs_smoke_watchdog "$pgsc_pid" &
+    local watchdog_pid=$!
+    wait "$pgsc_pid"
+    local rc=$?
+    # Watchdog terminates on its own loop condition (pgsc_pid exit); just in case.
+    kill -TERM "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    return "$rc"
+}
+
+# Bounded recovery loop wrapping pgsc_calc invocation.
+# - If pgsc_calc returns rc=0: success; return 0.
+# - If .recovery_needed is set: drive went stale; refresh Colima + re-invoke.
+#   Bounded to GENOMECLAW_MAX_RECOVERY_ATTEMPTS.
+# - If pgsc_calc returns rc != 0 without .recovery_needed: real failure; return rc.
+run_pgsc_calc_with_recovery() {
+    local stage_name=$1; shift
+    local attempt=0
+    while (( attempt <= GENOMECLAW_MAX_RECOVERY_ATTEMPTS )); do
+        if run_pgsc_calc_once_with_watchdog "$stage_name" "$@"; then
+            return 0
+        fi
+        local rc=$?
+        if [[ ! -f "$SMOKE_DIR/.recovery_needed" ]]; then
+            # Real pgsc_calc failure (not infra); don't retry.
+            return "$rc"
+        fi
+        attempt=$((attempt + 1))
+        if (( attempt > GENOMECLAW_MAX_RECOVERY_ATTEMPTS )); then
+            echo "RECOVERY EXHAUSTED: $GENOMECLAW_MAX_RECOVERY_ATTEMPTS attempts; drive too unstable" \
+                | tee -a "$SMOKE_DIR/recovery.log" >&2
+            return 87
+        fi
+        echo "==> recovery attempt $attempt/$GENOMECLAW_MAX_RECOVERY_ATTEMPTS" \
+            | tee -a "$SMOKE_DIR/recovery.log"
+        refresh_colima_mount
+        rm -f "$SMOKE_DIR/.recovery_needed"
+    done
+    return 87
+}
+
+# ---------------------------------------------------------------------------
 # Stage C: end-to-end prs-compute — Tier 2 + merge + pgsc_calc
 # ---------------------------------------------------------------------------
 
@@ -299,23 +502,30 @@ CLI_ENVELOPE="$SMOKE_DIR/cli_envelope.json"
 # shim because the shim lacked overlay + HOST_ROOTS. With Phases 1+3 in
 # place, the bypass is no longer needed; using the shim validates the whole
 # path-crossing-discipline cumulatively.
+# Wrap the shim invocation in the bounded recovery loop (Phase 4.3): on
+# mid-run drive disconnect, the watchdog signals .recovery_needed; the loop
+# refreshes the Colima mount and re-invokes with Nextflow `-resume` (added
+# in Phase 4.1) picking up cached tasks. Bounded to
+# GENOMECLAW_MAX_RECOVERY_ATTEMPTS; rc=87 if exhausted.
 run_timed_stage "prs_compute_${PGS_ID}" \
-    bash -c "
-        '$SHIM' --json pipeline prs-compute \
-            --sample '$SAMPLE_ID' \
-            --cram '$CRAM_IN_CONTAINER' \
-            --sites '$SITES_IN_CONTAINER' \
-            --alleles '$ALLELES_IN_CONTAINER' \
-            --scorefile '$SCOREFILE_IN_CONTAINER' \
-            --fasta '$FASTA_IN_CONTAINER' \
-            --panel-version v1 \
-            --reference-root '$REF_ROOT_HOST' \
-            --output-root '$OUTPUT_ROOT_HOST' \
-            --work-dir '$WORK_DIR_HOST' \
-            --rationale 'Phase 5 real-data smoke — canonical CARDIoGRAMplusC4D + UK Biobank CAD PRS; chosen as the regression baseline to verify the Tier 1+Tier 2 forced-genotyping bridge against the 2026-05-17 failure mode.' \
-            --question 'Phase 5 smoke: does the bridge produce a CLEAN/WARNING calibrated score on real data?' \
-            > '$CLI_ENVELOPE'
-    "
+    run_pgsc_calc_with_recovery "prs_compute_${PGS_ID}" \
+        bash -c "
+            '$SHIM' --json pipeline prs-compute \
+                --sample '$SAMPLE_ID' \
+                --cram '$CRAM_IN_CONTAINER' \
+                --sites '$SITES_IN_CONTAINER' \
+                --alleles '$ALLELES_IN_CONTAINER' \
+                --scorefile '$SCOREFILE_IN_CONTAINER' \
+                --fasta '$FASTA_IN_CONTAINER' \
+                --panel-version v1 \
+                --reference-root '$REF_ROOT_HOST' \
+                --output-root '$OUTPUT_ROOT_HOST' \
+                --work-dir '$WORK_DIR_HOST' \
+                --run-dir '$SMOKE_DIR_HOST' \
+                --rationale 'Phase 5 real-data smoke — canonical CARDIoGRAMplusC4D + UK Biobank CAD PRS; chosen as the regression baseline to verify the Tier 1+Tier 2 forced-genotyping bridge against the 2026-05-17 failure mode.' \
+                --question 'Phase 5 smoke: does the bridge produce a CLEAN/WARNING calibrated score on real data?' \
+                > '$CLI_ENVELOPE'
+        "
 
 # ---------------------------------------------------------------------------
 # INV-D001 post-snapshot: re-hash CRAM + verify equal
@@ -327,9 +537,11 @@ CRAM_SHA_POST=$(sha256_file "$CRAM_PATH")
 CRAM_MTIME_POST=$(stat -f %m "$CRAM_PATH" 2>/dev/null || stat -c %Y "$CRAM_PATH")
 echo "    sha256=$CRAM_SHA_POST  mtime=$CRAM_MTIME_POST" | tee -a "$SMOKE_DIR/smoke.log"
 
-INV_D001_EQUAL="false"
+# Python literal — interpolated into the heredoc Python script below; bash
+# lowercase `true`/`false` would NameError in Python.
+INV_D001_EQUAL="False"
 if [[ "$CRAM_SHA_PRE" == "$CRAM_SHA_POST" ]]; then
-    INV_D001_EQUAL="true"
+    INV_D001_EQUAL="True"
 fi
 
 # ---------------------------------------------------------------------------

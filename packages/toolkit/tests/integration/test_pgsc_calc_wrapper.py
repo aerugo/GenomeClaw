@@ -364,6 +364,190 @@ def test_compute_pgs_samplesheet_sampleset_has_no_period(tmp_path: Path) -> None
     )
 
 
+def test_pgsc_calc_argv_includes_resume_flag(tmp_path: Path) -> None:
+    """prs-smoke-resilience Phase 4.1: the wrapper's emitted argv includes
+    ``-resume`` so re-invocations against the same ``work_dir`` skip
+    already-completed Nextflow tasks.
+
+    Enables the Phase 4 recovery loop: when a mid-run drive disconnect
+    forces a Colima restart, the smoke driver re-invokes pgsc_calc; with
+    ``-resume`` baked in, the second invocation picks up from the last
+    cached task instead of starting from scratch (saving 25-90 min per
+    recovery cycle).
+
+    Safe to enable unconditionally — on a fresh ``work_dir``,
+    ``-resume`` is a no-op (no cached tasks to skip).
+    """
+    from genomeclaw_toolkit.prep._paths import as_sibling_mountable
+    from genomeclaw_toolkit.prep.pgs import _build_pgsc_calc_argv
+
+    samplesheet = as_sibling_mountable(tmp_path / "samplesheet.csv")
+    samplesheet.write_text("sampleset,path_prefix,chrom,format,vcf_genotype_field\n")
+    work_dir = as_sibling_mountable(tmp_path / "work")
+    work_dir.mkdir(exist_ok=True)
+    reference_root = as_sibling_mountable(tmp_path / "ref")
+    (reference_root / "pgs_catalog_ancestry" / "v1").mkdir(parents=True)
+
+    argv = _build_pgsc_calc_argv(
+        samplesheet=samplesheet,
+        pgs_id="PGS000018",
+        work_dir=work_dir,
+        reference_root=reference_root,
+    )
+
+    assert "-resume" in argv, (
+        f"prs-smoke-resilience Phase 4.1: pgsc_calc argv MUST include "
+        f"-resume so recovery loops can pick up cached tasks; got argv={argv}"
+    )
+
+
+def test_tmpdir_redirect_config_includes_error_strategy_retry(tmp_path: Path) -> None:
+    """prs-smoke-resilience Phase 3: ``_TMPDIR_REDIRECT_CONFIG`` baked
+    into ``nextflow.config`` includes ``errorStrategy = 'retry'`` and
+    ``maxRetries = 2`` so transient pgsc_calc failures (v22d's
+    heapq.merge KeyError class) get bounded retries instead of aborting
+    the whole DAG.
+
+    2 retries gets ~99.9% success when the per-task transient rate is
+    <10% (we observed ~5% on v22d's INTERSECT_VARIANTS step).
+    """
+    from genomeclaw_toolkit.prep._paths import as_sibling_mountable
+    from genomeclaw_toolkit.prep.pgs import _write_pgsc_calc_nextflow_config
+
+    work_dir = as_sibling_mountable(tmp_path / "work")
+    work_dir.mkdir()
+    config_path = _write_pgsc_calc_nextflow_config(work_dir)
+    content = config_path.read_text()
+
+    # The directive must be in the process block.
+    assert "errorStrategy" in content, (
+        f"prs-smoke-resilience Phase 3: nextflow.config must include "
+        f"errorStrategy directive; got:\n{content}"
+    )
+    assert "'retry'" in content or '"retry"' in content, (
+        f"errorStrategy value must be 'retry'; got:\n{content}"
+    )
+    assert "maxRetries" in content, (
+        f"maxRetries directive missing; got:\n{content}"
+    )
+    # 2 retries is the documented bound. A future bump (e.g. to 3) would
+    # be a deliberate change; this assertion catches accidental drift.
+    assert "maxRetries = 2" in content or "maxRetries=2" in content, (
+        f"maxRetries must be exactly 2 (per the empirical 5-10% per-task "
+        f"transient rate; 3 attempts → ~99.9% success). got:\n{content}"
+    )
+
+
+def test_compute_pgs_error_includes_both_stdout_and_stderr(tmp_path: Path) -> None:
+    """prs-smoke-resilience Phase 2: pgsc_calc rc != 0 surfaces BOTH stdout
+    and stderr in the RuntimeError message, not just stderr's last line.
+
+    The v22 ledger's pgsc_calc errors all came back as "pgsc_calc failed
+    (rc=1):\\nNextflow 26.04.1 is available - Please consider updating
+    your version to it" — the actual pipeline error was burried in
+    Nextflow's task .command.err files. stderr's last line is the
+    update banner; the real error is in stdout (Nextflow streams DAG
+    progress + task failure messages there). Phase 2 surfaces both so
+    the debugger doesn't have to dig into work_dir/<hash>/.command.err
+    to find what failed.
+    """
+    import subprocess
+
+    from genomeclaw_toolkit.prep.pgs import compute_pgs
+
+    vcf = tmp_path / "user.vcf.gz"
+    vcf.write_bytes(b"fake-vcf")
+    reference_root = _make_reference_root(tmp_path)
+    work_dir = tmp_path / "work"
+
+    # Simulate a pgsc_calc failure where stderr is the empty update banner
+    # but stdout has the real error message (the DAG aborted at some task).
+    def _failed_run(*_args: object, **_kwargs: object):
+        return subprocess.CompletedProcess(
+            args=["nextflow"],
+            returncode=1,
+            stdout=b"Pipeline execution aborted\nERROR ~ Process `INTERSECT_THINNED` terminated with rc=3\nWork dir: /work/abc/def\nTip: when invoked with -resume, you can use -dump-hashes\n",
+            stderr=b"Nextflow 26.04.1 is available - Please consider updating your version to it\n",
+        )
+
+    with patch("genomeclaw_toolkit.prep.pgs.subprocess.run", side_effect=_failed_run):
+        with pytest.raises(RuntimeError) as exc_info:
+            compute_pgs(
+                vcf=vcf,
+                pgs_id="PGS000018",
+                reference_root=reference_root,
+                work_dir=work_dir,
+                agent_choice_rationale="x" * 60,
+                requested_for_question="why?",
+            )
+
+    msg = str(exc_info.value)
+    # Stderr (current behaviour — keep it)
+    assert "Nextflow 26.04.1 is available" in msg, (
+        f"RuntimeError should include stderr; got: {msg}"
+    )
+    # NEW: stdout's contents must surface too.
+    assert "INTERSECT_THINNED" in msg or "Pipeline execution aborted" in msg, (
+        f"RuntimeError MUST include pgsc_calc stdout (which carries the real "
+        f"DAG-abort error); the stderr banner is decorative. got: {msg}"
+    )
+    # Structural markers — make the message easy to read.
+    assert "stderr" in msg.lower(), f"message should label the stderr section; got: {msg}"
+    assert "stdout" in msg.lower(), f"message should label the stdout section; got: {msg}"
+
+
+def test_compute_pgs_runs_nextflow_with_tmpdir_set_to_work_dir(tmp_path: Path) -> None:
+    """``compute_pgs`` invokes nextflow with ``TMPDIR=<work_dir>`` in the
+    subprocess env.
+
+    Why this matters: Nextflow's per-task ``.command.run`` script creates
+    ``NXF_SCRATCH="$(nxf_mktemp $TMPDIR)"`` BEFORE our ``beforeScript``
+    fires. So if TMPDIR isn't set at the toolkit-container-process level
+    when nextflow spawns, NXF_SCRATCH lands at ``/tmp/<random>`` (the
+    toolkit container's writable layer, NOT bind-mounted to the host).
+    DooD-spawned sibling containers identity-mount NXF_TASK_WORKDIR
+    against the host and see an empty mount — INTERSECT_THINNED (and
+    others) fail with "No such file or directory" on staged inputs.
+
+    Smoke v22f (2026-05-21) surfaced this when ``process.scratch = false``
+    in our nextflow.config turned out NOT to be honored by Nextflow's
+    process template — the .command.run still set NXF_SCRATCH from
+    TMPDIR. The env-var approach short-circuits the issue at the
+    subprocess boundary: with TMPDIR=<work_dir> at the parent-process
+    level, NXF_SCRATCH lands under <work_dir> (which IS bind-mounted
+    + identity-mountable into siblings).
+    """
+    vcf = tmp_path / "user.vcf.gz"
+    vcf.write_bytes(b"fake-vcf")
+    reference_root = _make_reference_root(tmp_path)
+    work_dir = tmp_path / "work"
+
+    fake_run = _fake_pgsc_calc_run(work_dir)
+    with patch("genomeclaw_toolkit.prep.pgs.subprocess.run", fake_run):
+        compute_pgs(
+            vcf=vcf,
+            pgs_id="PGS000018",
+            reference_root=reference_root,
+            work_dir=work_dir,
+            agent_choice_rationale="x" * 60,
+            requested_for_question="why?",
+        )
+
+    # subprocess.run was invoked with an `env` kwarg containing TMPDIR.
+    assert fake_run.call_count == 1, fake_run.call_args_list
+    call = fake_run.call_args_list[0]
+    env = call.kwargs.get("env")
+    assert env is not None, (
+        f"compute_pgs MUST pass env= to subprocess.run so TMPDIR can be "
+        f"set for the nextflow child; got call kwargs={list(call.kwargs)}"
+    )
+    assert env.get("TMPDIR") == str(work_dir), (
+        f"TMPDIR in the nextflow subprocess env MUST equal the work_dir "
+        f"so NXF_SCRATCH lands in a bind-mounted location; got TMPDIR="
+        f"{env.get('TMPDIR')!r}, expected {str(work_dir)!r}"
+    )
+
+
 def test_compute_pgs_writes_nextflow_config_redirecting_tmpdir(tmp_path: Path) -> None:
     """The wrapper materialises a ``nextflow.config`` in the work_dir that
     redirects each sibling task's TMPDIR to its bind-mounted work-dir.
@@ -422,6 +606,23 @@ def test_compute_pgs_writes_nextflow_config_redirecting_tmpdir(tmp_path: Path) -
     # symlink dereferenced to /opt/nextflow/... — invisible to siblings).
     assert "stageInMode = 'copy'" in content, (
         f"DooD-safe staging requires process.stageInMode = 'copy'; "
+        f"got config:\n{content}"
+    )
+
+    # scratch = false — DooD-safe scratch placement. Default scratch=true
+    # makes Nextflow create $NXF_SCRATCH under $TMPDIR. Our beforeScript
+    # exports TMPDIR=${PWD}, but it fires AFTER NXF_SCRATCH is locked at
+    # the toolkit container's /tmp (which is the container's writable
+    # layer, NOT bind-mounted to the host). Files staged into $NXF_SCRATCH
+    # then can't be seen by DooD-spawned sibling containers, which
+    # identity-mount $NXF_TASK_WORKDIR against the host. Smoke v22c
+    # (2026-05-21) surfaced this as INTERSECT_THINNED failing with "No
+    # such file or directory" for files nxf_stage had nominally copied —
+    # the cp commands succeeded inside /tmp/<random> but plink2 sibling
+    # saw an empty mount. process.scratch = false makes tasks run
+    # directly in their (bind-mounted) hash dir, closing the gap.
+    assert "scratch = false" in content, (
+        f"DooD-safe scratch placement requires process.scratch = false; "
         f"got config:\n{content}"
     )
 
@@ -496,16 +697,18 @@ def test_invT001_pgsc_calc_argv_consumes_min_overlap_from_conventions(
     )
 
 
-def test_pgsc_calc_argv_min_overlap_defaults_to_0_5_when_no_override(
+def test_pgsc_calc_argv_min_overlap_defaults_to_0_45_when_no_override(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """No env var, no conventions override → argv carries ``--min_overlap 0.5``.
+    """No env var, no conventions override → argv carries ``--min_overlap 0.45``.
 
     This is the canonical non-imputed single-sample WGS default. The
     research validation report (docs/reports/prs-real-data-smoke-research-
-    findings.md) is the doctrinal source; any future contributor who
-    wants to change this default must also update the report + the
-    conventions docstring + this test in the same commit.
+    findings.md) is the doctrinal source; smoke v22e (2026-05-21) measured
+    PGS000018 at 49.51% empirical match rate, so the original 0.5 default
+    rejected a healthy artifact. Any future contributor who wants to
+    change this default must also update the report + the conventions
+    docstring + this test in the same commit.
     """
     monkeypatch.delenv("GENOMECLAW_PGSC_CALC_MIN_OVERLAP", raising=False)
 
@@ -528,6 +731,78 @@ def test_pgsc_calc_argv_min_overlap_defaults_to_0_5_when_no_override(
 
     assert "--min_overlap" in argv, f"--min_overlap missing; argv={argv}"
     flag_idx = argv.index("--min_overlap")
-    assert argv[flag_idx + 1] == "0.5", (
-        f"non-imputed single-sample WGS default MUST be 0.5; got {argv[flag_idx + 1]!r}"
+    assert argv[flag_idx + 1] == "0.45", (
+        f"non-imputed single-sample WGS default MUST be 0.45; got {argv[flag_idx + 1]!r}"
     )
+
+
+
+# ---------------------------------------------------------------------------
+# v23 regression — parsers must find the actual pgsc_calc v2.2.0 output layout
+# ---------------------------------------------------------------------------
+
+
+def test_parse_pgsc_calc_outputs_finds_norm_pgs_in_nextflow_hash_dirs(tmp_path: Path) -> None:
+    """pgsc_calc v2.2.0 emits per-task outputs under ``<work_dir>/<2-char-hash>/<long-hash>/``
+    NOT under the legacy ``<work_dir>/score/`` + ``<work_dir>/ancestry/`` publish-dir
+    layout the wrapper was originally written against. Smoke v23 (2026-05-22)
+    showed the wrapper returning ``percentile=None`` because the parser couldn't
+    find the file at the expected legacy path.
+
+    Two files matter:
+    - ``aggregated_scores.txt.gz`` (gzipped TSV) — has SUM/DENOM/AVG
+    - ``norm_pgs.txt.gz`` (gzipped TSV) — has PGS/Z_MostSimilarPop/percentile_MostSimilarPop
+
+    The ``PGS`` column carries the full accession with suffix (e.g.
+    ``PGS000018_hmPOS_GRCh38``), so prefix-match against the bare ID.
+
+    Wrapper must recursively search the work_dir tree for these files and
+    gunzip them.
+    """
+    import gzip
+
+    from genomeclaw_toolkit.prep.pgs import (
+        _parse_aggregated_scores,
+        _parse_aggregated_scores_norm,
+    )
+
+    work_dir = tmp_path / "work"
+    # Mirror v23's actual layout: per-task hash dirs at depth 2.
+    task_e7 = work_dir / "e7" / "1a379cfeee5074e0a71a9c4b8506f0"
+    task_e7.mkdir(parents=True)
+    task_0b = work_dir / "0b" / "9e015e5e97ca81a20327b8c85ba24b"
+    task_0b.mkdir(parents=True)
+
+    # aggregated_scores.txt.gz: SUM=9.665, DENOM=1728050, AVG=5.59e-06 — v23 numbers.
+    with gzip.open(task_e7 / "aggregated_scores.txt.gz", "wt") as fh:
+        fh.write("sampleset\tFID\tIID\tPGS\tSUM\tDENOM\tAVG\n")
+        fh.write(
+            "norm\tMPNRGLQ2K\tMPNRGLQ2K\tPGS000018_hmPOS_GRCh38\t"
+            "9.66498\t1728050.0\t5.59e-06\n"
+        )
+
+    # norm_pgs.txt.gz: percentile_MostSimilarPop=14.54 — the v23 calibrated number.
+    with gzip.open(task_0b / "norm_pgs.txt.gz", "wt") as fh:
+        fh.write(
+            "sampleset\tFID\tIID\tPGS\tSUM\t"
+            "Z_MostSimilarPop\tZ_norm1\tZ_norm2\tpercentile_MostSimilarPop\n"
+        )
+        fh.write(
+            "norm\tMPNRGLQ2K\tMPNRGLQ2K\tPGS000018_hmPOS_GRCh38\t"
+            "9.66498\t-1.0449871\t-1.366664\t-1.123757\t14.5427\n"
+        )
+
+    raw_score, study_pop = _parse_aggregated_scores(work_dir, "PGS000018")
+    assert raw_score is not None, (
+        f"expected non-None raw_score parsed from nested aggregated_scores.txt.gz; "
+        f"got None"
+    )
+    # AVG is what _parse_aggregated_scores returns as raw_score (per docstring).
+    assert raw_score == pytest.approx(5.59e-06)
+
+    percentile, warning = _parse_aggregated_scores_norm(work_dir, "PGS000018")
+    assert percentile is not None, (
+        "expected non-None percentile parsed from nested norm_pgs.txt.gz; got None"
+    )
+    assert percentile == pytest.approx(14.5427)
+    assert warning is None  # no calibration_warning column in norm_pgs.txt.gz schema

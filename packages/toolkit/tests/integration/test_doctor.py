@@ -740,3 +740,181 @@ def test_doctor_reports_prs_coverage_partial_when_qc_json_missing(
     assert pv["status"] == "partial"
     assert pv["tier1_vcf"] is not None
     assert pv["tier1_qc_json"] is None
+
+
+# ---------------------------------------------------------------------------
+# prs-smoke-resilience Phase 1 — smoke-readiness probes
+#
+# Three new informational sections that the smoke driver gates on BEFORE
+# invoking the expensive Tier 1 / pgsc_calc pipeline. Closes L4 (Colima /
+# external-drive / zombie containers) brittleness from the v22 ledger:
+# instead of failing 25-90 min into a smoke when the drive disconnects,
+# the gate fails in ≤30 seconds with an actionable diagnostic.
+#
+# Each probe is INFORMATIONAL only (does not change `doctor` exit code).
+# Smoke driver gate (Phase 1.2 of prs-smoke-resilience) reads these
+# fields and exits rc=2 if any are not in their "ready" state.
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_reports_colima_mount_visible_field_when_docker_probe_succeeds(
+    tmp_path: Path,
+) -> None:
+    """When the docker bind-mount probe succeeds (rc=0), the field reports
+    status='visible' and includes the probed path.
+
+    Per prs-smoke-resilience spec AC1: the field surfaces whether Colima's
+    VM can see the canonical raw bind-mount via a tiny ``docker run alpine
+    test -d /probe`` invocation. The smoke driver gates on this BEFORE
+    INV-D001 pre-snapshot fires; v22h #2's "bad file descriptor" error
+    would have surfaced here in ≤30 seconds instead of after a futile
+    docker run cascade.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    runner = _StubRunner()
+    # Stub the docker bind-mount probe → rc=0 → mount visible.
+    runner.responses[
+        ("docker", "run", "--rm", "-v", f"{layout['raw']}:/probe", "alpine", "test", "-d", "/probe")
+    ] = (0, "", "")
+
+    rc, report = doctor(paths=layout, runner=runner)
+
+    assert rc == 0
+    assert "colima_mount_visible" in report, (
+        f"prs-smoke-resilience Phase 1: doctor must surface "
+        f"`colima_mount_visible`; got keys={sorted(report)}"
+    )
+    cmv = report["colima_mount_visible"]
+    assert cmv["status"] == "visible", f"expected visible, got {cmv}"
+    assert cmv["probed_path"] == str(layout["raw"])
+
+
+def test_doctor_reports_colima_mount_visible_broken_when_docker_probe_fails(
+    tmp_path: Path,
+) -> None:
+    """When the docker probe fails (rc != 0), status='broken' + fix hint.
+
+    Mirrors the v22h #2 failure mode: host sees the drive but Colima's
+    VM can't bind-mount it (`bad file descriptor` / `mkdir: file exists`).
+    The fix is `colima stop && colima start --mount /Volumes/Genome_Work:w`;
+    the field carries that hint so the smoke driver's pre-flight error
+    message can include it verbatim.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    runner = _StubRunner()
+    runner.responses[
+        ("docker", "run", "--rm", "-v", f"{layout['raw']}:/probe", "alpine", "test", "-d", "/probe")
+    ] = (1, "", "docker: bad file descriptor")
+
+    rc, report = doctor(paths=layout, runner=runner)
+
+    assert rc == 0, "broken mount is informational, not a hard fail (smoke driver gates separately)"
+    cmv = report["colima_mount_visible"]
+    assert cmv["status"] == "broken", f"expected broken, got {cmv}"
+    assert "fix" in cmv
+    assert "colima" in cmv["fix"].lower()
+
+
+def test_doctor_reports_external_drive_readable_field_when_canary_present(
+    tmp_path: Path,
+) -> None:
+    """When the raw_dir is readable + non-empty, status='readable'.
+
+    Per prs-smoke-resilience spec AC1: probe reads the raw dir's contents
+    to confirm the underlying external drive is mounted + accessible. v22h
+    #1's "Device not configured" sha256 fail would have surfaced here in
+    ≤30s as `status='unreadable'`.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    # Place a tiny canary so the readable-but-empty case stays distinct from
+    # readable-with-content.
+    (layout["raw"] / ".canary").write_text("ok")
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    assert rc == 0
+    assert "external_drive_readable" in report, (
+        f"prs-smoke-resilience Phase 1: doctor must surface "
+        f"`external_drive_readable`; got keys={sorted(report)}"
+    )
+    edr = report["external_drive_readable"]
+    assert edr["status"] == "readable", f"expected readable, got {edr}"
+    assert edr["probed_path"] == str(layout["raw"])
+
+
+def test_doctor_reports_external_drive_readable_unreadable_when_path_missing(
+    tmp_path: Path,
+) -> None:
+    """When raw_dir is missing (drive unmounted), status='unreadable' + fix hint."""
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    # Remove the raw dir to simulate an unmounted drive.
+    layout["raw"].rmdir()
+
+    rc, report = doctor(paths=layout, runner=_StubRunner())
+
+    # The `raw_present` host-side check FAILS in this state — so rc=1.
+    # Our new field is informational alongside.
+    edr = report["external_drive_readable"]
+    assert edr["status"] == "unreadable", f"expected unreadable, got {edr}"
+    assert "fix" in edr
+
+
+def test_doctor_reports_leftover_genomeclaw_containers_field_when_none_running(
+    tmp_path: Path,
+) -> None:
+    """No leftover smoke containers → empty list, status='clean'."""
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    runner = _StubRunner()
+    # `docker ps -a --filter label=genomeclaw-smoke --format '{{.ID}}'` returns empty.
+    runner.responses[
+        ("docker", "ps", "-a", "--filter", "label=genomeclaw-smoke", "--format", "{{.ID}}")
+    ] = (0, "", "")
+
+    rc, report = doctor(paths=layout, runner=runner)
+
+    assert rc == 0
+    assert "leftover_genomeclaw_containers" in report, (
+        f"prs-smoke-resilience Phase 1: doctor must surface "
+        f"`leftover_genomeclaw_containers`; got keys={sorted(report)}"
+    )
+    lgc = report["leftover_genomeclaw_containers"]
+    assert lgc["status"] == "clean", f"expected clean, got {lgc}"
+    assert lgc["container_ids"] == []
+
+
+def test_doctor_reports_leftover_genomeclaw_containers_when_zombies_present(
+    tmp_path: Path,
+) -> None:
+    """Leftover smoke containers from prior runs → status='leftover' + list.
+
+    Mirrors the v22e + v22g zombie-container pattern: pgsc_calc / Nextflow
+    sibling containers kept running after the parent toolkit container
+    died; the smoke driver's next run conflicts on the same work-dir.
+    Phase 2's cleanup discipline will auto-stop these; for now the doctor
+    field surfaces them.
+    """
+    from genomeclaw_toolkit.prep.doctor import doctor
+
+    layout = _make_layout(tmp_path)
+    runner = _StubRunner()
+    runner.responses[
+        ("docker", "ps", "-a", "--filter", "label=genomeclaw-smoke", "--format", "{{.ID}}")
+    ] = (0, "abc123def456\n0123456789ab\n", "")
+
+    rc, report = doctor(paths=layout, runner=runner)
+
+    assert rc == 0
+    lgc = report["leftover_genomeclaw_containers"]
+    assert lgc["status"] == "leftover", f"expected leftover, got {lgc}"
+    assert lgc["container_ids"] == ["abc123def456", "0123456789ab"]
+    assert "fix" in lgc

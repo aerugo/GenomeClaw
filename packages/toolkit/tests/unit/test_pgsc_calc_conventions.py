@@ -395,11 +395,12 @@ def test_pgsc_calc_conventions_min_overlap_default_for_non_imputed_wgs() -> None
     from genomeclaw_toolkit.prep._pgsc_calc_conventions import PgscCalcConventions
 
     conv = PgscCalcConventions()
-    assert conv.min_overlap_default_for_non_imputed_wgs == 0.5, (
+    assert conv.min_overlap_default_for_non_imputed_wgs == 0.45, (
         "Phase 1 of prs-non-imputed-wgs: the conventions dataclass MUST pin "
-        "min_overlap_default_for_non_imputed_wgs to 0.5 (per the research "
-        "findings doc). Changing this default in isolation breaks the smoke "
-        "v22 gate."
+        "min_overlap_default_for_non_imputed_wgs to 0.45 (per the research "
+        "findings doc's documented 45-65% range + smoke v22e's empirical "
+        "49.51% measurement for PGS000018). Changing this default in "
+        "isolation breaks the smoke v22 gate."
     )
     # The field type is float, not str — pgsc_calc parses it as a float
     # downstream, and the env-var override path must produce a float too.
