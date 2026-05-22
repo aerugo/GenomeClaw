@@ -570,7 +570,7 @@ When the user switches default model (e.g. to `openai/o3` for higher-stakes depl
 - Existing wrappers: backfill the conventions dataclass during the next breaking change to the tool (e.g., when bumping the tool's pin in `_versions.py`). The discovery test enumerates the backfill queue (warn-only) so it stays visible.
 
 **Where it applies**:
-- Every external-tool wrapper in [packages/toolkit/src/genomeclaw_toolkit/prep/](../../packages/toolkit/src/genomeclaw_toolkit/prep/). The Phase-2 deliverable shipped `pgsc_calc` (strict); `bcftools`, `bgzip`, `mosdepth`, `vcfanno`, `vep` are warn-only (queued for backfill).
+- Every external-tool wrapper in [packages/toolkit/src/genomeclaw_toolkit/prep/](../../packages/toolkit/src/genomeclaw_toolkit/prep/). The strict-tools roster is `pgsc_calc` (Phase-2 deliverable), `cyrius` (MVP Phase 6 Slice D — added 2026-05-22), and `pharmcat` (MVP Phase 6 Slice D' — added 2026-05-22). The warn-only backfill queue is `bcftools`, `bgzip`, `mosdepth`, `vcfanno`, `vep`.
 - The `INV-T` category is created for this rule; future tool-integration invariants land under this prefix.
 
 **How to verify**:

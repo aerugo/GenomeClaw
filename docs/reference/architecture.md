@@ -2,7 +2,7 @@
 
 **Status**: Living document
 **Companion to**: [INVARIANTS.md](INVARIANTS.md), [grand-plan.md](grand-plan.md)
-**Last Updated**: 2026-05-09
+**Last Updated**: 2026-05-22 (MVP Phase 6 close — Slice D Cyrius + Slice D' PharmCAT + Slice F live agent sweep all shipped)
 
 This document describes the **verified deployment shape** of GenomeClaw against the NemoClaw / OpenClaw / OpenShell stack. The host can be any Linux or macOS environment with Docker and NemoClaw — bioinformatics binaries ride inside the [`genomeclaw/toolkit`](#host-side-packaging--genomeclawtoolkit-docker-image) host image, not on the bare host. This document is the operational counterpart to the strategic [grand plan](grand-plan.md).
 
@@ -87,7 +87,7 @@ flowchart TB
     subgraph HST["Host — Linux or macOS"]
         Service["<b>genomeclaw-service</b><br/>127.0.0.1:8643<br/>read-only HTTP / JSON<br/>minimal-sufficient outputs (INV-P002)"]
         Store[("<b>Derived store</b><br/>/mnt/genomeclaw/derived/&lt;run-id&gt;/<br/>DuckDB, evidence joins, provenance")]
-        Prep["<b>genomeclaw</b> (host CLI)<br/>wraps samtools / bcftools / mosdepth /<br/>VEP+LOFTEE+AlphaMissense+SpliceAI / vcfanno /<br/>Cyrius / pgsc_calc / PharmCAT<br/>setup | fetch | ingest | normalize | annotate |<br/>materialize | doctor | eject"]
+        Prep["<b>genomeclaw</b> (host CLI)<br/>wraps samtools / bcftools / mosdepth /<br/>VEP+LOFTEE+AlphaMissense / vcfanno /<br/>Cyrius / pgsc_calc / PharmCAT<br/>setup | fetch | ingest | normalize | annotate |<br/>materialize | cyp2d6-call | pharmcat | pgs-compute |<br/>doctor | eject"]
         Scratch[("/mnt/genomeclaw/scratch/<br/>RW — heavy intermediates (INV-D003)")]
         Raw[("/mnt/genomeclaw/raw/<br/>RO — Nebula source files")]
         Ref[("/mnt/genomeclaw/reference/<br/>RO at runtime")]
@@ -110,9 +110,9 @@ flowchart TB
 ### 1. Host pipeline CLI — `genomeclaw`
 
 **Lives**: host process, no sandbox. Shipped as the `genomeclaw/toolkit` Docker image alongside its pinned bioinformatics binaries (see [Host-side packaging](#host-side-packaging--genomeclawtoolkit-docker-image)).
-**Implementation**: Python (driven by ecosystem: `cyvcf2`, `pysam`, DuckDB Python bindings, PharmCAT). Wraps the bioinformatics tools that live alongside it in the image.
-**Responsibility**: ingest → normalize → filter → annotate → materialize, plus per-Q7 **`mosdepth`** (per-gene mean coverage from BAM/CRAM, materialized into the `coverage_qc` table), per-Q5 **VEP + LOFTEE + AlphaMissense + SpliceAI + vcfanno** annotation (with **MANE Select** transcript pinning; HGVSc and HGVSp emitted server-side, never constructed by the LLM), per-Q6 **Cyrius** (CYP2D6 diplotype call from BAM/CRAM, fed into PharmCAT's outside-call interface), per-Q5 **`bcftools stats`** summary written into `manifest.json` under `qc.bcftools_stats`, and per-Q8 **`pgsc_calc`** (PRS computation against PGS Catalog scoring weights, materialized into the `pgs_scores` table). Reads from `/mnt/genomeclaw/raw/` and `/mnt/genomeclaw/reference/`; writes to `/mnt/genomeclaw/derived/<run-id>/` with full provenance columns.
-**Subcommand surface** (per [MVP spec](../plans/active/mvp/spec.md) Q5–Q8 + Phase 2/4/6 deliverables): pipeline subcommands `fetch`, `ingest`, `normalize`, `annotate`, `materialize`, plus Phase-6-owned `cyp2d6-call` and `pgs-compute`. Host-environment subcommands (shipped via the [completed cram-scratch-strategy plan](../plans/completed/cram-scratch-strategy/)) auto-route host-native (no docker): `setup` (interactive one-time external-drive layout), `doctor` (read-only host-side diagnostic — existence + write-probe of the four canonical subdirs, `_scratch/setup.log` surface, colima version + status), `eject` (refuses if a toolkit container is running, then `colima stop` + `diskutil eject`).
+**Implementation**: Python (driven by ecosystem: `cyvcf2`, `pysam`, DuckDB Python bindings). Wraps the bioinformatics tools that live alongside it in the image.
+**Responsibility**: ingest → normalize → filter → annotate → materialize, plus per-Q7 **`mosdepth`** (per-gene mean coverage from BAM/CRAM, materialized into the `coverage_qc` table), per-Q5 **VEP + LOFTEE + AlphaMissense + vcfanno** annotation (with **MANE Select** transcript pinning; HGVSc and HGVSp emitted server-side, never constructed by the LLM; SpliceAI dropped per Q5 amendment 2026-05-13), per-Q6 **Cyrius** (CYP2D6 diplotype call from BAM/CRAM, fed into PharmCAT's outside-call interface; shipped MVP Phase 6 Slice D 2026-05-22 — see [phase-6-slice-d.md](../plans/active/mvp/phases/phase-6-slice-d.md)), per-Q5 **`bcftools stats`** summary written into `manifest.json` under `qc.bcftools_stats`, per-Q8 **`pgsc_calc`** (agent-triggered PRS computation against PGS Catalog scoring weights, materialized into the `pgs_scores` table), and **PharmCAT v3.2.0** (PGx recommendations consuming the VCF + Cyrius outside-call; shipped MVP Phase 6 Slice D' 2026-05-22 — see [phase-6-slice-d-prime.md](../plans/active/mvp/phases/phase-6-slice-d-prime.md)). Reads from `/mnt/genomeclaw/raw/` and `/mnt/genomeclaw/reference/`; writes to `/mnt/genomeclaw/derived/<run-id>/` with full provenance columns.
+**Subcommand surface** (per [MVP spec](../plans/active/mvp/spec.md) Q5–Q8 + Phase 2/4/6 deliverables): pipeline subcommands `fetch`, `ingest`, `normalize`, `annotate`, `materialize`, plus Phase-6-owned `cyp2d6-call`, `pharmcat`, and `pgs-compute`. Host-environment subcommands (shipped via the [completed cram-scratch-strategy plan](../plans/completed/cram-scratch-strategy/)) auto-route host-native (no docker): `setup` (interactive one-time external-drive layout), `doctor` (read-only host-side diagnostic — existence + write-probe of the four canonical subdirs, `_scratch/setup.log` surface, colima version + status), `eject` (refuses if a toolkit container is running, then `colima stop` + `diskutil eject`).
 **Why host-side**: `INV-D002`. Bioinformatics tools are heavy, host-native, and must never be reachable from the agent.
 
 ### 2. Host service — `genomeclaw-service`
@@ -288,7 +288,7 @@ flowchart LR
     Toolkit -->|RW bind-mount| Derived[("/mnt/genomeclaw/derived/")]
 ```
 
-**What's inside the image**: the toolkit Python venv + the small native binaries listed above. **What's not**: the heavy reference data — VEP cache, AlphaMissense, gnomAD slices, PGS Catalog scoring weights — which all live on the bind-mounted `/mnt/genomeclaw/reference/` volume so the image stays small and the data stays user-owned.
+**What's inside the image**: the toolkit Python venv + the small native binaries listed above + (post-2026-05-22 `prs-bootstrap-meta` Stage 2) the PRS pipeline runtime: **Nextflow + JRE 17 + mamba (for conda-staged pgsc_calc deps) + Docker CLI (for `pgsc_calc` DooD sibling-container spawning) + the `pgsc_calc` Nextflow pipeline pre-warmed at `/opt/pgsc_calc/`**. `plink2` / `plink` / R / Bioconductor materialise per-process on first invocation into `reference/nextflow-cache/conda/` rather than baking into the image (arm64 conda availability gap; image delta stays ~1.07 GB vs. the ~400 MB estimate before the architectural pivot). **What's not**: the heavy reference data — VEP cache, AlphaMissense, gnomAD slices, PGS Catalog scoring weights, the 16 GB compressed / 28 GB extracted HGDP+1kGP ancestry bundle — which all live on the bind-mounted `/mnt/genomeclaw/reference/` volume so the image stays small and the data stays user-owned.
 
 **Bind-mount discipline** (four canonical mounts):
 - `/mnt/genomeclaw/raw` — `:ro` (preserves `INV-D001`).

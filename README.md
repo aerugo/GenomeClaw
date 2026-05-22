@@ -59,7 +59,7 @@ GenomeClaw's host pipeline needs four directories, each with a different lifecyc
 | Mount | Lifecycle | Size (one 30× WGS user) | Where to put it |
 |-------|-----------|-------------------------|-----------------|
 | `raw/` | Permanent — Nebula source-of-truth artifacts (FASTQ / BAM / CRAM / VCF) | 50–80 GB | Dedicated external drive |
-| `reference/` | Slowly versioned — annotation datasets (GRCh38 ~3 GB, ClinVar ~250 MB, gnomAD v4.1 exomes ~200 GB, dbSNP ~25 GB, VEP cache ~75 GB, AlphaMissense ~1.5 GB, SpliceAI ~50 GB, PGS Catalog ~few GB, PGS Catalog HGDP+1KG ancestry bundle ~50–60 GB, Nextflow-materialised `pgsc_calc` conda envs ~few GB cached on first PRS compute) | ~350–410 GB once everything lands; gnomAD genomes (additional 563 GB) is a follow-up opt-in | Dedicated external drive |
+| `reference/` | Slowly versioned — annotation datasets (GRCh38 ~3 GB, ClinVar ~250 MB, gnomAD v4.1 exomes ~200 GB, dbSNP ~25 GB, VEP cache ~75 GB, AlphaMissense ~1.5 GB, SpliceAI ~50 GB, PGS Catalog scoring files ~few GB, PGS Catalog HGDP+1KG ancestry bundle ~16 GB compressed / 28 GB extracted — empirical 2026-05-22, not the originally-estimated 50-60 GB) | ~330–380 GB once everything lands; gnomAD genomes (additional 563 GB) is a follow-up opt-in | Dedicated external drive |
 | `derived/` | Per-run, authoritative — `<run-id>/` directories accumulate; provenance-tracked | 1–2 GB per run | Dedicated external drive |
 | `_scratch/` | Ephemeral — sharded under `<step>/<run-id>/`; **nothing here is authoritative.** Wiping it between runs is normal hygiene. | Up to multi-tens-of-GB during `pgsc_calc`; multi-hundreds-of-GB for CRAM-scale | Dedicated external drive — physically separated from `derived/` (`INV-D003`) |
 
@@ -287,7 +287,7 @@ The host-side data directories are **outside the repository**, mounted at deploy
 
 ## Getting Started
 
-**Implementation is in progress** — MVP Phases 1–3 (toolkit scaffolding + CI + the `genomeclaw/toolkit` host Docker image; `fetch` + `ingest` + `bcftools stats` + `mosdepth`; `normalize` + `materialize`) have landed against the project owner's real Nebula VCF. Phase 4 (annotation via VEP + LOFTEE + AlphaMissense + SpliceAI + vcfanno), the host service, the plugin, and lifestyle / PRS / PGx work land across Phases 4–6 of the [MVP plan](docs/plans/active/mvp/). Storage architecture for CRAM-scale workloads (interactive `setup`, `doctor`, `eject`, `shard_scratch` / `atomic_promote` primitives, pre-flight assertions, `INV-D003`) shipped via the [cram-scratch-strategy plan](docs/plans/completed/cram-scratch-strategy/). Contributors picking up the work should follow the [planning protocol](docs/plans/CLAUDE.md) (strict TDD per phase).
+**MVP Phases 1–6 complete as of 2026-05-22.** The full pipeline runs end-to-end on the project owner's real Nebula 30× WGS: ingest + `bcftools stats` + `mosdepth` (Phases 2/3), VCF normalization + materialization to DuckDB (Phase 3), full **VEP + LOFTEE + AlphaMissense + vcfanno + gnomAD-constraint** annotation with MANE Select transcript pinning (Phase 4; 4.87M variant rows; ClinVar parity 42,885/42,885), host service + sandbox plugin + privacy-default posture (Phase 5), findings + evidence + **Cyrius CYP2D6 outside-call → PharmCAT PGx findings** (Phase 6 Slices D + D'; 9 actionable PGx findings persisted for the project owner's run), **agent-driven PRS** computation (Phase 6 Slice E via the [prs-bootstrap-meta cascade](docs/plans/completed/prs-bootstrap-meta.md); PGS000018 percentile=14.54 within EUR), and a **4/4 live LLM sweep** against gpt-5.5 for Stories 2/4/9/10 (Phase 6 Slice F). 798 toolkit tests pass + 58/58 invariants green. Storage architecture for CRAM-scale workloads shipped via the [cram-scratch-strategy plan](docs/plans/completed/cram-scratch-strategy/). **Phase 7** (end-to-end MVP demo + invariant sweep + Phase-5-deferred SSRF probe + doc drift sweep + plan move to `completed/`) is the next opening — skeleton at [phases/phase-7.md](docs/plans/active/mvp/phases/phase-7.md). Contributors should follow the [planning protocol](docs/plans/CLAUDE.md) (strict TDD per phase).
 
 ### Build the host image (today)
 
@@ -327,15 +327,36 @@ bin/genomeclaw pipeline ingest \
   --vcf       /mnt/genomeclaw/raw/<sample-id>/sample.vcf.gz \
   --bam       /mnt/genomeclaw/raw/<sample-id>/sample.bam
 # Pipeline: integrity → bcftools stats → mosdepth → normalize →
-#   VEP+LOFTEE+AlphaMissense+SpliceAI+vcfanno → Cyrius → materialize.
+#   VEP+LOFTEE+AlphaMissense+vcfanno → materialize (with gnomAD-constraint
+#   join for gene_loeuf).
 
-# 3. Compute polygenic risk scores (host-side, opt-in egress for PGS Catalog)
-bin/genomeclaw pgs-compute \
-  --traits cad,t2d,prostate \
-  --bam /mnt/genomeclaw/raw/<sample-id>/sample.bam
+# 3. Call CYP2D6 with Cyrius (BAM/CRAM input; outputs cyp2d6_diplotype.json)
+bin/genomeclaw pipeline cyp2d6-call \
+  --bam /mnt/genomeclaw/raw/<sample-id>/sample.cram \
+  --sample-id <your-sample-id> \
+  --reference-fasta /mnt/genomeclaw/reference/grch38/grch38.fa.gz \
+  --run-dir /mnt/genomeclaw/derived/<run-id>
 
-# 4. Start the host service (reads the active run via the CURRENT symlink).
-#    Lands in Phase 5; will run inside the same `genomeclaw/toolkit` image.
+# 4. Run PharmCAT for PGx findings (consumes Cyrius's outside-call)
+bin/genomeclaw pipeline pharmcat \
+  --vcf /mnt/genomeclaw/raw/<sample-id>/sample.vcf.gz \
+  --cyp2d6-diplotype-json /mnt/genomeclaw/derived/<run-id>/cyp2d6_diplotype.json \
+  --reference-fasta /mnt/genomeclaw/reference/grch38/grch38.fa.gz \
+  --run-dir /mnt/genomeclaw/derived/<run-id>
+
+# 5. Compute one polygenic risk score (host-side, opt-in egress for PGS Catalog
+#    weights). The agent picks the PGS Catalog ID; the rationale is persisted
+#    on the `pgs_scores` row per INV-A003.
+bin/genomeclaw pipeline pgs-compute \
+  --pgs PGS000018 \
+  --vcf /mnt/genomeclaw/raw/<sample-id>/sample.vcf.gz \
+  --reference-root /mnt/genomeclaw/reference \
+  --rationale "<agent's reasoning for picking this scorefile>" \
+  --question "<the verbatim user question this answers>" \
+  --work-dir /mnt/genomeclaw/scratch/pgs-work \
+  --run-dir /mnt/genomeclaw/derived/<run-id>
+
+# 6. Start the host service (reads the active run via the CURRENT symlink).
 docker run -d --rm \
   --name genomeclaw-service \
   -p 127.0.0.1:8643:8643 \
@@ -343,14 +364,15 @@ docker run -d --rm \
   -v /mnt/genomeclaw/derived:/mnt/genomeclaw/derived \
   genomeclaw/toolkit:dev genomeclaw-service start --port 8643
 
-# 5. Onboard the sandbox plugin (one-time)
+# 7. Onboard the sandbox plugin (one-time)
 nemoclaw onboard --from packages/nemoclaw-plugin/sandbox/Dockerfile
 
-# 6. Talk to the agent over Telegram. The agent calls the six GenomeClaw
-#    tools (status / findings / variant / evidence / gene / pgs) as needed.
+# 8. Talk to the agent over Telegram. The agent calls the nine GenomeClaw
+#    tools as needed: status / findings / variant / evidence / gene /
+#    pgs_list / pgs_get / pgs_compute / pgs_compute_status.
 ```
 
-Until the rest of the MVP lands, contributors should pick up the [MVP plan](docs/plans/active/mvp/) at the next pending phase (Phase 4 — the full VEP-based annotation stack — as of this writing).
+The MVP pipeline above is **shipped + verified end-to-end on real data** as of 2026-05-22. Next opening is [Phase 7](docs/plans/active/mvp/phases/phase-7.md) — end-to-end MVP demo + invariant sweep + the Phase-5-deferred SSRF probe.
 
 ---
 

@@ -104,6 +104,8 @@ Adds `genomeclaw pipeline cyp2d6-call --bam <path>` that wraps Cyrius. Writes `d
 
 **Detailed plan**: the v1 plan at [phase-6-slice-e.md](phase-6-slice-e.md) is **Status: Superseded**. A v2 slice plan at [phase-6-slice-e-v2.md](phase-6-slice-e-v2.md) replaces it, scoped against the agent-driven design above; sub-slices E.1 (schema + 4 tools + 4 endpoints), E.2 (`pgsc_calc` wrapper + provenance), E.3 (async orchestration + concurrency cap + kill-switch + decline pattern + system-prompt update). Slice E.4 (validation study + pre-compute consent) is deferred per the methodological-review pass recorded in the report.
 
+**Status update 2026-05-22 — Slice E fully closed via the [prs-bootstrap-meta](../../../completed/prs-bootstrap-meta.md) cascade**: E.1 + E.2 shipped 2026-05-17; E.3 absorbed into the cascade (orchestrator at `service/pgs_compute_orchestrator.py`; PRS-decline pattern landed via [`prs-input-coverage-fill`](../../../completed/prs-input-coverage-fill/)'s `PRSDeclineError` + 5-named-reasons; system-prompt 5th decline reason added via [`prs-non-imputed-wgs`](../../../completed/prs-non-imputed-wgs/) Phase 3; sandbox image rebuilt during [`agent-research-and-synthesis`](../../../completed/agent-research-and-synthesis/)). **Real-data smoke v23 (2026-05-22)** produced an ancestry-calibrated PRS end-to-end on the project owner's real Nebula CRAM: PGS000018 percentile=14.54 within EUR @ 100% confidence, match rate 49.51%, `pgs_scores` + matching `findings` rows persisted via `prs-compute --run-dir`. Slice E.4 remains deferred. Story 10 live snapshot already shipped via the agent-research-and-synthesis companion plan against a synthetic finding; could be re-staged against the real v23 row but isn't blocking.
+
 **Bootstrap dependencies**: Q-E1' (accept Q8 v1.6 rewrite) — answered yes 2026-05-17 by the propagation of canonical-doc updates. Q-E2' (daily wall-clock budget) — removed 2026-05-17 (the budget mechanism was rejected as overengineering for the single-user PoC). Q-E3' (supersession schema) + Q-E4' (PGS Catalog REST API investigation) remain open; tracked under the v2 slice plan.
 
 ### Slice F — Story 2/4/9/10 agent-prose snapshot tests *(integration; needs live LLM)*
@@ -172,16 +174,20 @@ GENOMECLAW_HAS_BIO=1 uv run pytest tests/integration/test_cyrius_wrapper.py -v
 
 ## Completion Criteria
 
-- [ ] All 6 slices' test cases pass
-- [ ] Static checks pass (ruff, format, mypy for new modules; vitest + typecheck for plugin)
-- [ ] Each enforced `INV-xxx` is verified by at least one test in this phase (`INV-E001`, `INV-C001`, `INV-P001`, `INV-P002`)
-- [ ] All seven curated-notes files exist + passed `privacy-safety-reviewer` review
-- [ ] CYP2D6 `*1/*4`-class PGx finding renders with `clinical_escalation` set (using Cyrius output against the project owner's BAM)
-- [ ] CAD PRS finding renders with `clinical-non-actionable` category + calibration warning surfaced
-- [ ] Snapshot tests pass for Stories 2/4/9/10 against gpt-5.5
-- [ ] Sixth plugin tool `genomeclaw_pgs` registers via `registerTool`
-- [ ] Policy preset extended; `test_invP002_policy_preset_path_set_matches_documented_surface` covers new paths
-- [ ] [work-notes.md](../work-notes.md) updated per slice
+- [x] **Slices A + B test cases pass** (15 + 9 tests; shipped 2026-05-15)
+- [x] **Slice C retired** + replaced by agent-research-and-synthesis (closed 2026-05-15)
+- [x] **Slice E test cases pass** — E.1 + E.2 + E.3 all green via the [prs-bootstrap-meta](../../../completed/prs-bootstrap-meta.md) cascade closure 2026-05-22; 747 host tests pass
+- [x] **Slice D complete** — wrapper + CLI 17/17 tests green; image rebuild shipped (`genomeclaw/toolkit:slice-d`); real-data smoke against MPNRGLQ2K CRAM PASS (diplotype `*1/*35`, filter PASS, 170s wall) 2026-05-22 ([phase-6-slice-d.md](phase-6-slice-d.md))
+- [x] **Slice F Story 2 live snapshot passes** — PASSED 2026-05-22 against gpt-5.5 + `genomeclaw/sandbox:slice-d-prime` (101s wall). Agent invoked `genomeclaw_status`, surfaced run-id + schema version + sample-id in prose, did NOT fabricate evidence refs, expressed meta-awareness ("have not pulled any specific findings yet"). **One soft warning logged**: agent did not volunteer privacy framing ('not a doctor' / 'data stays on host') — follow-up to update the agent system prompt to cue first-turn privacy disclaimers. **Stories 4 + 9 + 10 also passed in the same live sweep** (Story 4 clopidogrel/CYP2C19: 4m23s; Story 9 caffeine: ~4m30s; Story 10 CAD PRS: ~4m25s). All 4 stories now have green live snapshots.
+- [x] **Static checks pass** for shipped slices (ruff, format clean on PRS path)
+- [x] **`INV-A003` + `INV-C001 v1.7` + `INV-E001`** verified by tests across the cascade
+- [ ] `INV-P002` (sandbox doesn't reach pgscatalog.org directly) — landed via `test_invP001_pgsc_calc_sandbox_*` `needs_sandbox` test; auto-skipped on host runs
+- [x] ~~All seven curated-notes files~~ — **retired** (Slice C); superseded by [agent-research-and-synthesis](../../../completed/agent-research-and-synthesis/)
+- [x] **CYP2D6 PGx finding** renders with `clinical_escalation` set — Slice D' shipped 2026-05-22 ([phase-6-slice-d-prime.md](phase-6-slice-d-prime.md)). Real-data smoke against MPNRGLQ2K VCF + Slice D's CYP2D6 *1/*35 outside-call produced **9 user-applicable actionable PGx findings**: CYP2D6 *1/*35 → atomoxetine + tamoxifen, UGT1A1 *1/*80+*28 → atazanavir, CYP2B6 *1/*6 → efavirenz + sertraline, CYP2C19 *1/*1 → 4 PPIs (dexlansoprazole, lansoprazole, omeprazole, pantoprazole). All persisted with `evidence_ref=pharmgkb:<id>` + `clinical_escalation=confirm_with_provider`.
+- [x] **CAD PRS finding renders with `clinical-non-actionable` category** — v23 satisfied this; `pgs_catalog:PGS000018` finding row landed
+- [x] **Plugin tool surface (5→9)** registers via `registerTool` — `genomeclaw_pgs_list`/`_get`/`_compute`/`_compute_status` shipped in E.1 (2026-05-17)
+- [x] **Policy preset extended** for `/v1/pgs/*`; INV-P002 test passes
+- [x] **work-notes.md updated** through the cascade (per-plan + meta-plan close-out entries on 2026-05-22)
 - [ ] [phases/phase-7.md](phase-7.md) authored before Phase 6 closes (end-to-end MVP demo + invariant sweep)
 
 ### Open Questions for Resolution During Phase 6

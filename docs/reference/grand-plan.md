@@ -149,15 +149,15 @@ These are the **functional surfaces** the system grows. Each theme has a purpose
 
 ### Theme G — Pharmacogenomics & specialized panels
 
-- PharmCAT integration for actionable pharmacogenomic haplotypes.
-- **CYP2D6 outside-call via Cyrius** (per [MVP spec Q6](../plans/active/mvp/spec.md)). PharmCAT does not call CYP2D6 from VCF; Cyrius runs against the BAM/CRAM, produces a star-allele diplotype, and feeds it into PharmCAT's outside-call interface. CYP2D6 metabolizes ~25% of clinically prescribed drugs (codeine, tramadol, oxycodone, tamoxifen, many antidepressants, antipsychotics); without this, the PGx track is unsafe for any CYP2D6-relevant prescription.
+- **PharmCAT v3.2.0 integration shipped 2026-05-22** *(MVP Phase 6 Slice D'; see [phase-6-slice-d-prime.md](../plans/active/mvp/phases/phase-6-slice-d-prime.md))*. Two-subprocess architecture (`pharmcat_vcf_preprocessor` → `pharmcat` JAR with `-po` outside-call), parses `report.json` for user-applicable per-(gene × drug) annotations, INSERTs one `clinical-actionable` `findings` row per actionable recommendation with `evidence_ref=pharmgkb:<drug-id>` + `clinical_escalation=confirm_with_provider`. Real-data smoke against the project owner's Nebula VCF + CYP2D6 outside-call (135s wall) produced 9 user-applicable PGx findings (atomoxetine + tamoxifen via CYP2D6 *1/*35 outside-call; atazanavir via UGT1A1 *1/*80+*28; efavirenz + sertraline via CYP2B6 *1/*6; 4 PPIs via CYP2C19 *1/*1).
+- **CYP2D6 outside-call via Cyrius shipped 2026-05-22** *(MVP Phase 6 Slice D; per [spec Q6](../plans/active/mvp/spec.md) + [phase-6-slice-d.md](../plans/active/mvp/phases/phase-6-slice-d.md))*. PharmCAT does not call CYP2D6 from VCF; Cyrius v1.1.1 (Illumina; GitHub-only — not on bioconda) runs against the BAM/CRAM, produces a star-allele diplotype, and feeds it into PharmCAT's outside-call interface. Real-data smoke against the project owner's Nebula CRAM (170s wall) returned diplotype `*1/*35`, filter PASS. CYP2D6 metabolizes ~25% of clinically prescribed drugs (codeine, tramadol, oxycodone, tamoxifen, many antidepressants, antipsychotics); without this, the PGx track would be unsafe for any CYP2D6-relevant prescription.
 - **Polygenic risk scores via `pgsc_calc`**, **agent-driven** *(v1.6, 2026-05-17; per [MVP spec Q8 v1.6](../plans/active/mvp/spec.md) + [agent-driven PRS report](../reports/agent-driven-prs-computation.md))*. The agent (running at the model's reasoning ceiling per `INV-A002`) reads PGS Catalog metadata + recent literature, picks the right scorefile for the user's question, records its choice rationale + alternatives considered (per `INV-A003`), and triggers a host-side compute. Results land in a `pgs_scores` table keyed by PGS Catalog ID (e.g. `PGS000018`), **not** by curator-named trait. The "panel" is whatever the agent has computed for *this* user; it grows over time as a side-effect of use. Ancestry-normalized via continuous-ancestry calibration against 1000G + HGDP. PRS findings classification is `clinical-non-actionable` (population-level percentile estimates, not pathogenic variant calls); they do not carry a `clinical_escalation` marker. Calibration warning is structural. The agent declines a compute (per the **PRS-decline pattern** in `INV-C001` v1.7) when the literature is too immature to produce a meaningful percentile — naming two specific reasons rather than computing a poorly-validated score. The v1.5 fixed-three-trait panel (CAD, T2D, breast or prostate) is **retired**; the pre-codification didn't scale to the long-tail of conditions a curious adult actually asks about.
 - **PRS input-shape reality** *(2026-05-20, per [research validation findings](../reports/prs-real-data-smoke-research-findings.md))*. The default input class — non-imputed single-sample WGS — caps the match rate between a user's variant-sites-only VCF and a dense imputed PGS Catalog scoring file (e.g. snpnet/LASSO models like PGS001229) at **45–65%** empirically, not the 75% the `pgsc_calc` default `--min_overlap` was calibrated on (Lambert et al. 2024 *Nature Genetics* — cohort-imputed data). The ~47% structural loss decomposes as ~15% ambiguous (palindromic) SNPs dropped by `--keep_ambiguous false`, ~10% multi-allelic / complex records, and ~22% rare-variant / coverage-dropout sites the variant-sites-only VCF doesn't emit. Operational consequences: `--min_overlap` is treated as a per-input-class parameter (default `0.5` for non-imputed single-sample WGS, persisted in `pgs_scores.params_json` per `INV-R001`); `--keep_ambiguous false` is documented as **load-bearing** (flipping it to `true` recovers ~15% match rate at the cost of systematic strand-error on ~half of recovered weights); `bcftools norm -m -any` runs upstream of the wrapper to recover the multi-allelic share; **HapMap3+ / C+T scorefiles are preferred** over snpnet/imputation-dependent scorefiles for this input class. When only an imputation-dependent scorefile is available for a trait, that becomes a fifth named reason for the agent to consider declining under the `INV-C001` v1.7 PRS-decline pattern.
 - ACMG SF gene-list awareness.
 - Haplotype-aware reporting and escalation markers.
 
 **Gates**: highest clinical-adjacency surface area; depends on Themes B–E being solid.
-**Open**: ~~which PharmCAT outputs to surface and how~~ partially resolved by Q6; remaining open question is which non-CYP2D6 PharmCAT outputs to surface in the initial release.
+**Open**: ~~which PharmCAT outputs to surface and how~~ resolved by Slice D' (2026-05-22) — emit one finding per (drug × user-applicable annotation) where `dosingInformation || alternateDrugAvailable || otherPrescribingGuidance`. CPIC guideline branch only in v0; DPWG + FDA branches deferred to a follow-on slice if those recommendations become user-actionable downstream.
 
 ### Theme H — Lifestyle and wellbeing optimization
 
@@ -189,6 +189,8 @@ Horizons are **rough chronology**, not commitments. The point is to communicate 
 
 *Scope themes: A (partial), tooling*
 
+**Status**: **Delivered** (MVP Phases 1–3 + cram-scratch-strategy interlude; 2026-05-08 through 2026-05-09).
+
 - Repository scaffolding under `packages/toolkit/` and `packages/nemoclaw-plugin/`, language toolchains (Python + TypeScript), CI shape.
 - Host CLI entrypoint and subcommand framework (`genomeclaw`).
 - Plugin scaffolding with the manifest, policy preset, and Dockerfile already in place; first tool round-trip with the host service over HTTP.
@@ -196,11 +198,13 @@ Horizons are **rough chronology**, not commitments. The point is to communicate 
 - Minimal derived-store substrate with provenance columns (foundations of Theme C).
 - Test infrastructure for the first-class categories (provenance, determinism, privacy default, evidence binding).
 
-**Exit criteria**: a NemoClaw agent in the project owner's sandbox can call `genomeclaw_status` and receive structured JSON from the host service; the plugin is policy-denied any other egress.
+**Exit criteria** — met 2026-05-15 (Phase 5 close): a NemoClaw agent in the project owner's sandbox can call `genomeclaw_status` and receive structured JSON from the host service; the plugin is policy-denied any other egress.
 
 ### Horizon 2 — Annotation pipelines
 
 *Scope themes: B, C*
+
+**Status**: **Delivered** (MVP Phase 4 close 2026-05-15 — full VEP + LOFTEE + AlphaMissense + vcfanno + gnomAD-constraint stack, MANE Select transcript pinning, 4h08m58s real-data smoke against the project owner's Nebula VCF).
 
 - VCF normalization.
 - ClinVar + gnomAD + dbSNP annotation paths.
@@ -208,18 +212,20 @@ Horizons are **rough chronology**, not commitments. The point is to communicate 
 - Determinism + provenance test coverage across the pipeline.
 - Host service query endpoints (`/v1/variants`, `/v1/findings`).
 
-**Exit criteria**: a deterministic, evidence-cited variant store can be rebuilt from a fixture, and `genomeclaw_findings` returns structured rows with provenance.
+**Exit criteria** — met 2026-05-15: a deterministic, evidence-cited variant store can be rebuilt from a fixture (4.87M variant rows, ClinVar parity 42,885/42,885 vs. the Phase-4A baseline), and `genomeclaw_findings` returns structured rows with provenance.
 
 ### Horizon 3 — Agentic interpretation surface
 
 *Scope themes: D, partial E*
+
+**Status**: **Delivered** (MVP Phase 6 close 2026-05-22 — Slices A/B + agent-research-and-synthesis companion plan + Slice E PRS + Slice D Cyrius + Slice D' PharmCAT + Slice F live LLM sweep). 4/4 live tests against gpt-5.5 pass (Stories 2 + 4 + 9 + 10).
 
 - Structured **findings** emission with categorical confidence.
 - Evidence-record schema and joins.
 - Plugin tool surface formalized; safe-by-default vs. opt-in classification implemented; bulk-class wired but disabled by default.
 - Privacy-default tests across the full agent flow.
 
-**Exit criteria**: a NemoClaw agent can drive the full ingest → annotate → query → finding loop; default-config integration tests confirm no outbound call goes anywhere other than the configured agent provider and the configured host service.
+**Exit criteria** — met 2026-05-22: a NemoClaw agent can drive the full ingest → annotate → query → finding loop; default-config integration tests confirm no outbound call goes anywhere other than the configured agent provider and the configured host service. Plugin's 9-tool surface (status / findings / variant / evidence / gene / pgs_list / pgs_get / pgs_compute / pgs_compute_status) loads + registers cleanly inside the sandbox image; 798 toolkit tests pass + 58/58 invariants green.
 
 ### Horizon 4 — Cautious reporting
 
@@ -339,6 +345,7 @@ These are the decisions the project starts with. Revisit only if a strong reason
 | ~~**Lifestyle calibration via `reference/curated_notes/<gene>.md`**~~ → **Lifestyle calibration via agent research-and-synthesis (v1.6, 2026-05-15)** *(per [agent-research-and-synthesis plan](../plans/active/agent-research-and-synthesis/spec.md), [INVARIANTS v1.8](INVARIANTS.md) INV-C001 v1.6 + INV-A001 + INV-A002)* | The v1.5 curated-notes pattern didn't leverage the frontier model's training knowledge, didn't scale beyond the curator's pre-defined topics, and didn't self-update with new literature. The research-and-synthesis pattern uses OpenClaw built-ins (memory + web_search) + max-reasoning for health interpretation. The seven-gene shortlist is no longer special-cased; the long-tail of gene questions works through the same path. |
 | **Defer-by-default scope discipline with explicit trigger list** *(2026-05-08; per [MVP spec Q10](../plans/active/mvp/spec.md))* | Building infrastructure for hypothetical needs ages poorly; the bar is observed need, not anticipated need. |
 | **Toolkit + bioinformatics binaries packaged as a single `genomeclaw/toolkit` Docker image** *(2026-05-08; see [architecture.md](architecture.md#host-side-packaging--genomeclawtoolkit-docker-image))* | Pinned tool versions strengthen `INV-R001`; one image runs identically on Linux, macOS, and CI; large reference data stays bind-mounted, never baked in. `INV-D002` is unaffected (it forbids bio binaries in the **sandbox** image, not the host one). |
+| **PRS bootstrap closed: agent-driven `pgsc_calc` runs end-to-end with non-imputed force-genotyping bridge + resilience-first sequencing** *(2026-05-22; see [prs-bootstrap-meta](../plans/active/prs-bootstrap-meta.md), [smoke v23 results](../plans/active/prs-smoke-resilience/work-notes.md))* | Stage 3 went GREEN after a six-plan cascade closed the path-crossing, runtime-hardening, allele-orientation, non-imputed-WGS, and smoke-resilience gaps surfaced by the original integration smoke. The architectural pattern crystallised: Tier 1 + Tier 2 force-genotyping closes the variant-only-VCF gap; `--min_overlap 0.45` is the empirical threshold for non-imputed single-sample WGS; pre-flight L4 probes + mid-run watchdog + Nextflow `-resume` + Colima mount recovery turn a 25-90 min iteration cost into a 30s fail-fast or a 2-5 min self-heal; the `prs-compute --run-dir` flag persists the calibrated row into `variants.duckdb`. v23 produced MPNRGLQ2K PGS000018 percentile=14.54 within EUR @ 49.51% match rate. INV-D005/D006/D007/D008, INV-R002, INV-T001 v1.14 promoted across the cascade. |
 
 ---
 
