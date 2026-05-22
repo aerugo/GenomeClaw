@@ -2081,3 +2081,39 @@ The agent's behavior matches Section 10 — i.e. the current prompt is correct. 
 - **Step 7.5** (remainder) — final reconciliation pass after 7.1 + 7.4 run; plan move from `docs/plans/active/mvp/` to `docs/plans/completed/mvp/`.
 
 These three are best treated as a "Phase 7 close" session — kick off Step 7.1 in background, do 7.4 setup + run in foreground, then 7.5 paperwork.
+
+---
+
+## 2026-05-22 (planning) — Phase 7 close re-scoped into two sessions; three sub-decisions pinned
+
+**Context Review Completed**:
+- Phase 6 fully closed (Slices A/B/C-retired/D/D'/E/F all shipped); 798 toolkit tests pass with sandbox set; reference docs reconciled; 6-commit batch pushed (523f11c → 5cb9b96).
+- User asked: "lets plan how to wrap up the mvp plan."
+
+**Three sub-decisions surfaced + pinned**:
+
+1. **Step 7.1 — full re-run, not augment-existing**. The alternative was to layer Slice D/D'/E outputs onto the 2026-05-15 Phase 4 run-dir (~30 min wall) instead of re-running the full pipeline (~5h45m wall). Re-running wins because (a) the Phase 4 store is 7 days old + reference data has shifted (gnomAD/ClinVar monthly updates), (b) one canonical run-dir simplifies every downstream test, (c) INV-R002 (rebuildability / determinism diff) is only meaningful against a fresh run.
+
+2. **Step 7.4 — sandbox-L7 SSRF probe, not full Landlock+seccomp+netns**. The Phase-5-deferred original was "full kernel-level isolation under OpenShell L7" — a real research project tied to OpenShell version specifics. The MVP's actual contract is the OpenShell L7 proxy + the policy-preset shape, both testable in the sandbox image without kernel-level setup. The full Landlock/seccomp/netns probing is captured as a post-MVP follow-up plan (also a natural fit for tying OpenShell version pinning into INV-T001).
+
+3. **Step 7.3 — reuse the 4 Slice F live tests, skip Story 1 authoring**. The 4 live tests (Stories 2/4/9/10) already pass against gpt-5.5 + the sandbox image. Phase 7's spec called for Stories 1/4/9 — but Story 1 ("any actionable findings?") is substantially covered by Story 4's PGx path. For Phase 7, re-run the 4 against the canonical run-dir's actual findings (vs. the synthetic staging the current tests use) for true integration coverage.
+
+**Two-session structure**:
+
+| Session | Steps | Wall | Foreground | Goal |
+|---------|-------|------|------------|------|
+| **Close 1** | 7.1 (full re-run) + 7.2 (invariant sweep) + 7.3 (4 live tests against canonical run-dir) + INV-R002 second run | ~5h45m wall, ~1-2 hr foreground | Background long run, reconciliation work during | Canonical run-dir + all invariants green against real data |
+| **Close 2** | 7.4 (author + run sandbox-L7 SSRF probe) + 7.5 (final doc drift + plan move-to-completed + commit/push) | ~2-3 hr | Author probe test, run it, doc sweep, plan move, final commit/push | MVP plan in completed/; project enters post-MVP state |
+
+**Files updated this session**:
+- [phases/phase-7.md](phases/phase-7.md) — full re-scope to two-session structure with the three pinned decisions; new Verification sections per session; refined wall-clock budget (~5h45m for close-1, ~2-3 hr for close-2); explicit carry-forward follow-ups for the deferred work.
+- [development-plan.md](development-plan.md) — Phase 7 progress row updated to reflect the two-session structure + the three pinned decisions.
+- This work-notes block.
+
+**Carry-forward follow-ups captured in phase-7.md**:
+- Full Landlock+seccomp+netns SSRF probe — post-MVP plan; ties OpenShell version pinning into INV-T001.
+- Story 1 live test — if a contract gap surfaces beyond what Story 4 covers.
+- PharmCAT DPWG + FDA guideline branches — currently CPIC-only.
+- Existing prior follow-ups (Slice E.4, Cyrius F-list items, AC7 warm-cache).
+
+**Next action**: kick off close session 1. Prerequisites are met (toolkit + sandbox images current; real-data inputs staged; reference layout current).

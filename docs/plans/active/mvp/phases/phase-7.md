@@ -1,6 +1,6 @@
-# Phase 7: End-to-end MVP demo + invariant sweep
+# Phase 7: End-to-end MVP demo + invariant sweep + plan close
 
-**Status**: Pending
+**Status**: Pending — close sessions 1 + 2 scoped 2026-05-22
 **Started**:
 **Completed**:
 **Parent Plan**: [development-plan.md](../development-plan.md)
@@ -10,123 +10,249 @@
 
 ## Objective
 
-Drive the full ingest → normalize → annotate → materialize → query → finding → live-agent loop against the project owner's real Nebula VCF + CRAM on the project owner's actual hardware, then sweep every `INV-xxx` in a single run. This is the phase that converts the MVP plan's claim ("a NemoClaw agent over Telegram answers real clinical and lifestyle questions about a real Nebula genome") from a list of unit-test green-bars into one live demonstration backed by passing invariant tests. The phase also lands the Phase-5-deferred SSRF probe (OpenShell L7 proxy under full Landlock + seccomp + netns isolation) so the runtime privacy floor is verified, not just the policy preset's static shape.
+Drive the full ingest → normalize → annotate → materialize → CYP2D6 → PharmCAT → PRS → live-agent loop against the project owner's real Nebula VCF + CRAM into **one canonical run-dir**, sweep every `INV-xxx` against that run-dir, verify the SSRF policy preset holds under sandbox-runtime L7 probing, reconcile any reference-doc drift, and move the MVP plan to `completed/`.
 
-The phase is **not** about writing new pipeline code — Phases 1–6 are responsible for that. It is about driving the assembled system end-to-end, capturing the demo transcripts, and confirming the invariant tests pass together rather than only in isolated test files.
+Phase 7 is **not** about writing new pipeline code — Phases 1–6 are responsible for that. It's about driving the assembled system end-to-end in one consolidated run, confirming the invariant tests pass together rather than only in isolated test files, and closing the plan paperwork.
+
+Three sub-decisions pinned 2026-05-22 (see [development-plan.md § Open Risks](../development-plan.md#open-risks--follow-ups)):
+
+1. **Step 7.1 — full re-run** (not augment-existing). One canonical run-dir simplifies every downstream test + INV-R002 (rebuildability / determinism) is meaningful only against a fresh run.
+2. **Step 7.4 — static + sandbox L7 SSRF probe** (not full Landlock+seccomp+netns). The MVP's promise is the OpenShell L7 + policy-preset shape, both of which are testable in the sandbox image. Full kernel-level isolation probing (Landlock+seccomp+netns) is a real research project tied to OpenShell version specifics; capture as a post-MVP follow-up.
+3. **Step 7.3 — reuse the 4 Slice F live tests** (skip Story 1 authoring). Stories 2 / 4 / 9 / 10 already pass against gpt-5.5 + the sandbox image; Story 1 ("any actionable findings?") is substantially covered by Story 4's PGx path. Re-run them against the consolidated run-dir for integration coverage.
+
+## Two-session structure
+
+| Session | Steps | Wall | Foreground | Goal |
+|---------|-------|------|------------|------|
+| **Close 1** | 7.1 (full re-run, backgroundable) + 7.2 (invariant sweep against run-dir) + 7.3 (re-run live tests against canonical run-dir) | ~5-6 hr wall, ~1-2 hr foreground | Kick off long run, do reconciliation work while it runs | Canonical run-dir + all invariants green against real data |
+| **Close 2** | 7.4 (static + sandbox L7 SSRF probe authored + run) + 7.5 (final doc drift + plan move-to-completed + final commit + push) | ~2-3 hr | Author the probe test, run it, doc sweep, plan move, final commit/push | MVP plan in completed/; project enters post-MVP state |
+
+Two sessions is the cleanest split — close session 1's long run isn't worth interleaving with close session 2's authoring work.
 
 ## Scope Boundaries
 
 - **In scope**:
-  - One end-to-end pipeline run on the project owner's real Nebula VCF (`MPNRGLQ2K.mm2.sortdup.bqsr.hc.vcf.gz`) + real CRAM (`MPNRGLQ2K.mm2.sortdup.bqsr.cram`): `genomeclaw pipeline run` → `pgs-compute --pgs <id> --run-dir` → `cyp2d6-call` (Slice D output) — landing one DuckDB at `/Volumes/Genome_Work/genomeclaw/derived/<run-id>/variants.duckdb` that the host service serves.
-  - Three live agent transcripts (gpt-5.5 over the OpenAI live-LLM harness, sandbox-resident): Story 1 (any actionable findings?), Story 4 (CYP2D6 PGx — requires Slice D), Story 9 (lifestyle caffeine — already shipped via agent-research-and-synthesis; re-stage against the real run's variants/coverage).
-  - **Invariant sweep**: a single `pytest tests/invariants/ -v` run that exercises every `INV-xxx` test file together — INV-D001/D002/D003/D005/D006/D007/D008 + INV-E001 + INV-P001/P002 + INV-R001/R002 + INV-C001 + INV-T001 + INV-A001/A002/A003. The sweep happens against the live derived store from the real run, not against a synthetic fixture.
-  - **SSRF probe** (deferred from Phase 5 per [phase-5.md](phase-5.md)): in the sandbox under full Landlock + seccomp + netns + OpenShell L7 proxy, attempt to reach un-allowlisted RFC 1918 hosts/ports + the public internet; assert the L7 proxy rejects all of them. Verifies OpenShell runtime behavior, not GenomeClaw behavior — but the GenomeClaw policy preset is the configuration under test.
-  - **Documentation drift sweep**: any architecture.md, INVARIANTS.md, grand-plan.md, user-stories.md drift surfaced during the end-to-end run lands in this phase's commits. README.md "Getting Started" replaces its placeholder with the real ingest + service-start commands.
-  - **Plan close-out paperwork**: development-plan.md, work-notes.md, and spec.md all reflect the final shipped design (not the original guess); the plan moves from `docs/plans/active/mvp/` to `docs/plans/completed/mvp/`.
+  - One end-to-end pipeline run against the project owner's real Nebula VCF + CRAM landing in **one canonical run-dir** at `/Volumes/Genome_Work/genomeclaw/derived/<run-id>/`. Sequence: `pipeline run` → `pipeline cyp2d6-call` → `pipeline pharmcat` → `pipeline pgs-compute`.
+  - Full invariant sweep against the canonical run-dir + INV-R002 (determinism diff via a second run).
+  - Re-run of the 4 Slice F live tests (Stories 2 / 4 / 9 / 10) against the canonical run-dir's findings + variants + coverage_qc + pgs_scores rows.
+  - **Sandbox-L7 SSRF probe** authored as `tests/invariants/test_invP002_ssrf_runtime_probe.py`: parameterised attempts to reach un-allowlisted hosts/ports from inside the sandbox; expect rejection at the OpenShell L7 proxy or the netns barrier (whichever fires first). Does NOT require full Landlock+seccomp setup — verifies what the MVP actually promised.
+  - **Doc drift sweep**: reconcile any reference-doc drift surfaced by the canonical run + final paperwork (development-plan.md / work-notes.md / spec.md / phase-7.md status closures).
+  - **Plan close-out**: move `docs/plans/active/mvp/` → `docs/plans/completed/mvp/`. Final commit + push.
 - **Out of scope**:
+  - **Full Landlock+seccomp+netns SSRF probe**. Captured as a post-MVP follow-up (depends on OpenShell version specifics; warrants its own short plan).
+  - **Story 1 live test authoring** — substantially covered by Story 4. Captured as a post-MVP follow-up if a discrete Story 1 contract surfaces value.
   - Any new pipeline subcommand, schema column, evidence kind, or invariant.
-  - Validation studies, eval harnesses, or additional Stories beyond 1, 4, 9 (the user-story-driven AC4/AC5 path).
-  - Story 2 ("what do you know about me?") — already shipped under Phase 6 Slice F; re-staged here only if the Phase 6 run materially changed the derived store's shape.
-  - Story 10 (PRS) live re-stage — optional polish per the 2026-05-22 EOD checkpoint; only landed if time permits and the v23 PRS row is still on-disk.
+  - Validation studies, eval harnesses, additional PRS traits, additional PharmCAT guideline branches (DPWG / FDA).
   - Cyrius / PharmCAT outside-call code — Slice D / D' deliverables. Phase 7 consumes them.
-  - Onboarding additional PRS traits, expanding curated notes (retired), or any other Phase-2-onward subsystem extension.
 
 ## Invariants Enforced in This Phase
 
-This phase **re-exercises** every canonical invariant in a single sweep rather than introducing new tests. The list below is the live-sweep checklist; each invariant must have at least one passing test that touched the real run's derived store.
+This phase **re-exercises** every canonical invariant in a single sweep against the canonical run-dir rather than introducing new tests. The list below is the live-sweep checklist; each invariant must have at least one passing test that touched the real run's derived store.
 
-- **INV-D001** Raw genomic files source-of-truth — VCF + CRAM SHA256 unchanged after the full run (`bin/genomeclaw-prs-smoke` / equivalent).
-- **INV-D002** Sandbox image has no bioinformatics binaries — re-run `test_invD002_sandbox_image_minimal.py` against the current sandbox image tag.
+- **INV-D001** Raw genomic files source-of-truth — VCF + CRAM SHA256 unchanged after the full run (compare digests pre / post).
+- **INV-D002** Sandbox image has no bioinformatics binaries — re-run sandbox image inspection.
 - **INV-D003** Heavy scratch separated from authoritative outputs — preflight assertion at each orchestrator entry; verify `_scratch/` and `derived/` are non-nested on the project owner's drive.
 - **INV-D005 / INV-D006 / INV-D007 / INV-D008** Path-crossing discipline — `test_invD00*` files green against the real run's argv emissions.
-- **INV-E001** Every emitted finding carries `evidence_ref` — assert against `findings` rows in the real derived store.
+- **INV-E001** Every emitted finding carries `evidence_ref` — assert against `findings` rows in the canonical derived store (~9 PGx findings + the PRS finding + whatever Phase 4 emitted).
 - **INV-P001** Privacy default — sandbox flow with default config produces no outbound calls beyond `host.openshell.internal` + `inference.local` (re-run `test_invP001_*.py`).
-- **INV-P002** Minimal-sufficient JSON + policy preset shape — `test_invP002_*.py` green; **SSRF probe under full Landlock + seccomp + netns** confirms runtime enforcement, not just static config.
+- **INV-P002** Minimal-sufficient JSON + policy preset shape — `test_invP002_*.py` green; **sandbox L7 SSRF probe** confirms runtime enforcement, not just static config.
 - **INV-R001** Provenance columns on every derived row — assert against the real `variants` / `pgs_scores` / `findings` / `coverage_qc` tables.
 - **INV-R002** Rebuildability — re-run the pipeline against the same VCF + same reference + same tool versions; diff the derived stores; expect byte-equivalent output modulo declared non-determinism.
-- **INV-C001** v1.7 — clinical-actionable findings carry `clinical_escalation`; PRS findings are `clinical-non-actionable`; PRS decline pattern fires on an immature-trait question; snapshot tests over the three live transcripts pass.
-- **INV-T001** Tool-conventions dataclasses match pinned versions — `test_invT001_tool_conventions_exist.py` green; the post-Phase-6 dataclass set (PgscCalc + Cyrius + any others) all show `verified_against_version` matching `_versions.py` pins.
-- **INV-A001 / INV-A002 / INV-A003** Agent memory provenance + reasoning floor + PRS compute provenance — re-run `live_llm` tests against the post-Phase-6 sandbox image; assert `executionTrace.thinking` populated on the Story 9 + Story 4 turns and a memory note landed before each reply.
+- **INV-C001** v1.7 — clinical-actionable findings carry `clinical_escalation`; PRS findings are `clinical-non-actionable`; PRS decline pattern fires on an immature-trait question; snapshot tests over the 4 Slice F live transcripts pass.
+- **INV-T001** Tool-conventions dataclasses match pinned versions — `test_invT001_tool_conventions_exist.py` green; the post-Phase-6 dataclass set (PgscCalc + Cyrius + PharmCAT) all show `verified_against_version` matching `_versions.py` pins.
+- **INV-A001 / INV-A002 / INV-A003** Agent memory provenance + reasoning floor + PRS compute provenance — re-run `live_llm` tests against the canonical run-dir's findings; assert `executionTrace.thinking` populated on the Story 9 + Story 4 turns and a memory note landed before each reply.
 
 ---
 
-## TDD Steps
+## Close Session 1
 
-Phase 7 is integration + sweep, not RED/GREEN/REFACTOR per-feature. The "tests" already exist in `tests/invariants/`, `tests/privacy/`, `tests/provenance/`, `tests/determinism/`, and the `live_llm`-marked suites from prior phases. The phase-7 work is to **run them together against the real derived store** and reconcile any divergence — typically a stale test fixture that needs widening to admit the real data's shape, not a code bug.
+### Step 7.1 — Stage the canonical real-data run
 
-### Step 7.1 — Stage the real run
+**Pre-flight checks** (10 min):
 
 1. Confirm `/Volumes/Genome_Work/genomeclaw/raw/MPNRGLQ2K/` carries the canonical VCF + CRAM + indexes.
-2. Confirm the reference layout under `/Volumes/Genome_Work/genomeclaw/reference/` is current (VEP cache + LOFTEE + AlphaMissense + gnomAD-exomes + dbSNP + gnomAD-constraint + pgs_catalog_ancestry).
-3. Drive `genomeclaw pipeline run` end-to-end. Expected wall-clock: ≤4h30m on the project owner's hardware (Phase 4 closed at 4h08m58s; Phase 6 Slice D + pgs-compute add ~20–30 min).
-4. Drive `genomeclaw pipeline cyp2d6-call` (Slice D output) — writes `derived/<run-id>/cyp2d6_diplotype.json`.
-5. Drive `genomeclaw pipeline pgs-compute --pgs PGS000018 --run-dir <run-dir>` (already verified end-to-end via smoke v23 2026-05-22; re-stage if the v23 run's derived store has been pruned).
-6. Update the `CURRENT` symlink atomically once all three artifacts are in place.
+2. Confirm the reference layout under `/Volumes/Genome_Work/genomeclaw/reference/` is current — VEP cache + LOFTEE + AlphaMissense + gnomAD-exomes + dbSNP + gnomAD-constraint + pgs_catalog_ancestry + GRCh38 fasta (for PharmCAT's preprocessor).
+3. Confirm both Docker images are current: `genomeclaw/toolkit:slice-d-prime` (6.35 GB) + `genomeclaw/sandbox:slice-d-prime` (2.61 GB).
+4. Capture SHA256 of the input VCF + CRAM into a pre-run log for the post-run INV-D001 check.
 
-### Step 7.2 — Run the invariant sweep
+**Run sequence** (~4h45m – 5h30m wall, mostly background):
+
+```bash
+export GENOMECLAW_IMAGE=genomeclaw/toolkit:slice-d-prime
+RUN_ID="$(date -u +%Y-%m-%dT%H-%M-%SZ)-phase7"
+RUN_DIR="/mnt/genomeclaw/derived/${RUN_ID}"
+
+# 1. ingest + normalize + annotate + materialize (~4h09m per Phase 4 close)
+bin/genomeclaw pipeline run \
+  --vcf /mnt/genomeclaw/raw/MPNRGLQ2K/MPNRGLQ2K.mm2.sortdup.bqsr.hc.vcf.gz \
+  --reference-root /mnt/genomeclaw/reference \
+  --run-dir "${RUN_DIR}"
+
+# 2. Cyrius CYP2D6 (~170s)
+bin/genomeclaw pipeline cyp2d6-call \
+  --bam /mnt/genomeclaw/raw/MPNRGLQ2K/MPNRGLQ2K.mm2.sortdup.bqsr.cram \
+  --sample-id MPNRGLQ2K \
+  --reference-fasta /mnt/genomeclaw/reference/grch38/ncbi-2014/grch38.fa.gz \
+  --run-dir "${RUN_DIR}"
+
+# 3. PharmCAT PGx (~135s)
+bin/genomeclaw pipeline pharmcat \
+  --vcf /mnt/genomeclaw/raw/MPNRGLQ2K/MPNRGLQ2K.mm2.sortdup.bqsr.hc.vcf.gz \
+  --cyp2d6-diplotype-json "${RUN_DIR}/cyp2d6_diplotype.json" \
+  --reference-fasta /mnt/genomeclaw/reference/grch38/ncbi-2014/grch38.fa.gz \
+  --run-dir "${RUN_DIR}"
+
+# 4. PGS Catalog PRS — agent-curated rationale (e.g. PGS000018 for CAD)
+bin/genomeclaw pipeline pgs-compute \
+  --pgs PGS000018 \
+  --vcf /mnt/genomeclaw/raw/MPNRGLQ2K/MPNRGLQ2K.mm2.sortdup.bqsr.hc.vcf.gz \
+  --reference-root /mnt/genomeclaw/reference \
+  --rationale '<rationale per INV-A003 — see prior smoke v23 for canonical form>' \
+  --question 'phase-7 end-to-end smoke against the canonical run-dir' \
+  --work-dir /mnt/genomeclaw/_scratch/pgs-work-phase7 \
+  --run-dir "${RUN_DIR}"
+
+# 5. Update CURRENT symlink atomically
+bin/genomeclaw runs activate "${RUN_ID}"
+```
+
+**Post-run sanity checks** (5 min):
+
+- Confirm input VCF + CRAM SHA256 unchanged (INV-D001).
+- `duckdb ${DERIVED}/CURRENT/variants.duckdb 'SELECT COUNT(*) FROM variants'` — expect 4.87M rows.
+- `SELECT COUNT(*) FROM findings WHERE tool = 'pharmcat'` — expect ~9 rows.
+- `SELECT * FROM pgs_scores` — expect 1 row (PGS000018).
+- `SELECT * FROM coverage_qc LIMIT 5` — expect ~20,000 gene-level rows.
+
+### Step 7.2 — Run the invariant sweep against the canonical run-dir
 
 ```bash
 cd packages/toolkit
 GENOMECLAW_DERIVED_DIR=/Volumes/Genome_Work/genomeclaw/derived/CURRENT \
+GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:slice-d-prime \
   uv run pytest tests/invariants tests/privacy tests/provenance tests/determinism -v
 ```
 
-Reconcile any failures: a stale fixture (most likely — Phase 4/6 changed schemas; the invariant test may still admit the synthetic shape but the real shape differs) gets widened to admit both. A real bug gets a one-line fix or a follow-up plan, not a phase-7 commit.
+Reconcile any failures: a stale fixture (most likely — the canonical run-dir carries shapes the synthetic fixtures don't cover) gets widened to admit both. A real bug gets a one-line fix or a follow-up plan, not a phase-7 commit.
 
-### Step 7.3 — Capture the live transcripts
+### Step 7.3 — Re-run the 4 Slice F live tests against the canonical run-dir
 
-Re-use the agent-research-and-synthesis sandbox image (`genomeclaw/sandbox:ars-phase-2d` or its post-Phase-6 successor):
+The 4 live tests currently stage their own synthetic findings via `tests/_live_smoke/staging.py`. For Phase 7's integration coverage, stage them against the **canonical run-dir's actual findings** instead — verifies the agent's prose against real data.
+
+**Option A** (recommended): Add a `--against-run-dir <path>` opt-in to the staging helper that, if set, points the host service at the canonical run-dir instead of staging synthetic fixtures. Re-run the 4 tests.
+
+**Option B** (simpler): Keep the synthetic staging + just re-run as-is to confirm no regressions post-sandbox-rebuild.
 
 ```bash
-# Story 1: "Any actionable findings I should know about?"
-uv run pytest tests/live_llm/test_story1_actionable_findings.py -v
+export OPENAI_API_KEY=$(grep '^OPEN_AI_API_KEY=' .env | cut -d= -f2-)
+export GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:slice-d-prime
 
-# Story 4: "I'm being prescribed codeine — anything I should know?" (Cyrius + PharmCAT path)
-uv run pytest tests/live_llm/test_story4_cyp2d6_codeine.py -v
-
-# Story 9: "What does my genome say about caffeine?" (lifestyle; ARS pattern)
-uv run pytest tests/live_llm/test_story9_caffeine.py -v
+uv run pytest \
+  tests/integration/test_live_story2_introspection_snapshot.py \
+  tests/integration/test_live_story4_clopidogrel_snapshot.py \
+  tests/integration/test_live_story9_caffeine_snapshot.py \
+  tests/integration/test_live_story10_cad_prs_snapshot.py \
+  -v
 ```
 
-Each test snapshots the agent's prose + asserts the structural rules from `INV-C001` v1.7 + `INV-A001` + `INV-A002`. The transcripts themselves land in `docs/reference/transcripts/phase-7/` for the close-out narrative.
+Cost: ~$1-2 + ~15 min wall (4 turns × ~3-4 min each). Capture the transcripts into `docs/reference/transcripts/phase-7/` for the close-out narrative.
 
-### Step 7.4 — SSRF probe under full isolation
+### Step 7.2 — INV-R002 determinism check (close session 1 finale)
 
-The Phase 5 deferred work. The probe is parameterised over a list of (host, port, expected-outcome) tuples — RFC 1918 allowlist hosts + public internet hosts + non-allowlisted ports. Inside the sandbox under full Landlock + seccomp + netns + OpenShell L7 proxy, attempt connection; assert allowed connections reach the proxy + non-allowed connections fail at the netns boundary (not at the L7 reject layer — the netns hardening is the runtime backstop).
+Re-run the full pipeline (steps 1-4 of Step 7.1) into a **second** run-dir. Diff the two stores:
 
 ```bash
-GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:<current-tag> \
+RUN_ID_2="$(date -u +%Y-%m-%dT%H-%M-%SZ)-phase7-rerun"
+# Re-run all 4 commands above against RUN_DIR_2 = /mnt/genomeclaw/derived/${RUN_ID_2}
+
+# Diff via duckdb's EXPORT DATABASE
+duckdb $RUN_DIR/variants.duckdb 'EXPORT DATABASE '"'$EXPORT_1'"
+duckdb $RUN_DIR_2/variants.duckdb 'EXPORT DATABASE '"'$EXPORT_2'"
+diff -r $EXPORT_1 $EXPORT_2  # expect empty modulo declared non-determinism (timestamps)
+```
+
+Document any non-determinism in `work-notes.md` (expected: `created_at` timestamps differ on every row; the actual data values must match byte-for-byte).
+
+**Close session 1 done when**: canonical run-dir exists at `derived/CURRENT/`, all invariant tests green against it, 4 live tests pass, INV-R002 diff is empty modulo timestamps.
+
+---
+
+## Close Session 2
+
+### Step 7.4 — Sandbox-L7 SSRF probe (Phase-5-deferred work, scoped down)
+
+**Author** `tests/invariants/test_invP002_ssrf_runtime_probe.py`:
+
+The probe enumerates (host, port, expected-outcome) tuples and attempts a connection from inside the running sandbox container against each. Expected outcomes:
+
+| Target | Expected |
+|--------|----------|
+| `host.openshell.internal:8643` (the host service) | ALLOW |
+| `host.openshell.internal:8644` (un-allowlisted port on the same host) | REJECT |
+| `192.168.1.1:80` (un-allowlisted RFC 1918 host) | REJECT |
+| `example.com:443` (public internet, non-allowlisted) | REJECT |
+| `1.1.1.1:53` (public internet, non-allowlisted) | REJECT |
+
+The probe uses `curl --max-time 2` from inside the sandbox; expected REJECTs return non-zero with a clear connection-refused / timeout / proxy-blocked signal. Expected ALLOW returns 200 (or the actual host-service response).
+
+**Run**:
+
+```bash
+GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:slice-d-prime \
   uv run pytest tests/invariants/test_invP002_ssrf_runtime_probe.py -v
 ```
 
-### Step 7.5 — Documentation drift sweep + close-out
+**Scope**: this is the sandbox-L7 + policy-preset enforcement check, NOT full kernel-level isolation (Landlock+seccomp+netns). The latter is captured as a post-MVP follow-up plan.
 
-1. `docs/reference/architecture.md` — verify the diagrams + endpoint sketches match the shipped code; reconcile drift.
-2. `docs/reference/INVARIANTS.md` — verify version + Invariant Index match the latest invariants; no new invariants expected.
-3. `docs/reference/grand-plan.md` — mark Horizons 1–3 as Delivered; advance deferred-decision rows where applicable.
-4. `docs/reference/user-stories.md` — mark resolved gap-analysis items.
-5. `README.md` — replace "Getting Started" placeholder with real ingest + service-start commands.
-6. `docs/plans/active/mvp/development-plan.md` — final progress table; all phases at Complete.
-7. `docs/plans/active/mvp/work-notes.md` — phase-7 close-out block.
-8. Move `docs/plans/active/mvp/` → `docs/plans/completed/mvp/`.
+### Step 7.5 — Documentation drift sweep + plan close
+
+1. **architecture.md drift recon** — verify the diagrams + endpoint sketches match the canonical run-dir's shape; any Phase-7-discovered drift lands here. Most drift was reconciled during the 2026-05-22 Phase-6 close sweep; expect minor reconciliation only.
+2. **INVARIANTS.md** — verify version stamp + Invariant Index match the latest invariants; no new invariants expected (Phase 7 is exercise, not introduction).
+3. **grand-plan.md** — mark Horizons 4 (Cautious reporting) + 5 (Pharmacogenomics) as Delivered if they aren't already; advance deferred-decision rows.
+4. **user-stories.md** — mark resolved gap-analysis items in the canonical run-dir's findings shape.
+5. **README.md** — verify the Getting Started flow matches the actual subcommand surface; reconcile any drift.
+6. **development-plan.md** — final progress table; all 7 phases at Complete; final 2026-XX-XX close date on each row.
+7. **work-notes.md** — phase-7 close-out block (close session 1 + close session 2 narratives, the canonical run-dir's path, final test counts, the INV-R002 determinism-diff outcome).
+8. **phase-7.md** (this file) — Status → Complete, Completed → close-session-2 date.
+9. **Move** `docs/plans/active/mvp/` → `docs/plans/completed/mvp/`.
+10. **Final commit** capturing the move + the final paperwork.
+11. **Push** to origin/main.
 
 ---
 
 ## Implementation Details
 
-### Tracing what actually runs
+### Tracing what actually runs in close session 1
 
-Phase 7 is the first place every `INV-xxx` test has the real derived store available. Expect 1–3 invariant tests to fail-then-widen on first pass: the real data carries shapes synthetic fixtures don't cover (e.g., the `coverage_qc` table has ~20,000 gene-level rows vs. the fixture's 7; the `findings` table has the Cyrius-derived PGx row in addition to whatever fixture rows were assumed). Widening means admitting the real shape, not regressing on the invariant.
+Phase 7 is the first place every `INV-xxx` test has the canonical run-dir available. Expect 1–3 invariant tests to fail-then-widen on first pass: the real data carries shapes synthetic fixtures don't cover (e.g., the `coverage_qc` table has ~20,000 gene-level rows vs. the fixture's 7; the `findings` table has the 9 Cyrius+PharmCAT rows plus the PRS row plus Phase-4's findings rather than the fixture's 1-3 rows). Widening means admitting the real shape, not regressing on the invariant.
 
-### Sequencing inside Step 7.1
+### Wall-clock budget refinements
 
-If the project owner's hardware can re-run the full pipeline from scratch in ≤4h30m, that is the canonical run. If wall-clock is constrained, the v23 (2026-05-22) PRS run's derived store under `/Volumes/Genome_Work/genomeclaw/derived/<v23-run-id>/` is acceptable as a starting point; layer in the Phase 6 Slice D output (Cyrius `cyp2d6_diplotype.json`) by running just `genomeclaw pipeline cyp2d6-call` against the v23-staged BAM.
+Phase 4 closed at 4h08m58s end-to-end (ingest + normalize + annotate + materialize). Slice D (cyp2d6-call) added 170s. Slice D' (PharmCAT) added 135s. Slice E (pgs-compute) adds ~25-30 min including the ancestry-projection step. Total close-session-1 budget:
 
-### Edge cases
+- Pipeline run: ~4h09m
+- cyp2d6-call: ~3 min
+- pharmcat: ~3 min
+- pgs-compute: ~25-30 min
+- **End-to-end: ~4h40m – 4h50m**
 
-- **Sandbox image rebuild lag**: if Phase 6 closed without rebuilding the sandbox image, Step 7.3's `live_llm` tests skip. Resolution: rebuild the image as part of phase-7 setup (no plan changes; just one `docker build` + `nemoclaw onboard --from`).
-- **PGS Catalog rate-limiting**: the SSRF probe must NOT exercise the PGS Catalog endpoint (the probe is a SSRF-attempt test, not a fetch test). Use a mock RFC 1918 destination + a public-internet destination unrelated to GenomeClaw's allowlist.
-- **OpenShell L7 proxy version drift**: the Phase-5-deferred work was deferred *because* it required pinning a specific OpenShell version's policy enforcement. If the current OpenShell version's probe interface differs from Phase 5's expectations, the test gets a thin probe-runtime-version dataclass per INV-T001 before shipping.
+Add ~30 min for invariant-sweep reconciliation + ~15 min for the 4 live-test runs + ~30 min for the INV-R002 second run = **~5h45m total close-session-1 wall**, ~1-2 hr foreground attention.
+
+### SSRF probe — scoped trade-offs
+
+The Phase-5-deferred original was "Landlock+seccomp+netns + OpenShell L7 proxy" — full kernel-level isolation verification. The MVP's actual contract is the OpenShell L7 proxy + the policy-preset shape; both are testable in the sandbox image without kernel-level setup.
+
+What the scoped probe DOES verify:
+- The sandbox's network namespace is constrained
+- The OpenShell L7 proxy rejects non-allowlisted hosts
+- The policy preset's enumeration matches the runtime behavior
+
+What the scoped probe DOES NOT verify:
+- Landlock filesystem isolation (out of scope; deferred)
+- seccomp syscall filtering (out of scope; deferred)
+- Cross-process namespace escape (out of scope; deferred)
+
+These deferrals are explicit + intentional. The post-MVP plan that takes on the full Landlock/seccomp probing should also tie OpenShell version pinning into INV-T001 (treat the OpenShell runtime as another externally-pinned tool).
 
 ### Privacy / egress notes
 
@@ -139,68 +265,103 @@ Phase 7 introduces **no new egress surfaces**. The four documented surfaces (age
 | File | Action | Purpose |
 |------|--------|---------|
 | `docs/plans/active/mvp/phases/phase-7.md` | THIS FILE | Authoring + tracking the close-out phase |
-| `docs/reference/transcripts/phase-7/story-1.md` | CREATE | Story 1 live transcript (actionable findings) |
-| `docs/reference/transcripts/phase-7/story-4.md` | CREATE | Story 4 live transcript (CYP2D6 PGx) |
-| `docs/reference/transcripts/phase-7/story-9.md` | CREATE | Story 9 live transcript (caffeine lifestyle) |
-| `packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py` | CREATE | Phase-5-deferred SSRF runtime probe |
-| `docs/reference/architecture.md` | MODIFY (drift) | Reconcile any post-Phase-6 drift |
+| `docs/reference/transcripts/phase-7/story-2.md` | CREATE | Story 2 introspection transcript |
+| `docs/reference/transcripts/phase-7/story-4.md` | CREATE | Story 4 clopidogrel/CYP2C19 PGx transcript |
+| `docs/reference/transcripts/phase-7/story-9.md` | CREATE | Story 9 caffeine lifestyle transcript |
+| `docs/reference/transcripts/phase-7/story-10.md` | CREATE | Story 10 CAD PRS transcript |
+| `packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py` | CREATE | Phase-5-deferred SSRF probe (scoped to sandbox-L7) |
+| `packages/toolkit/tests/_live_smoke/staging.py` | MODIFY (option A) | Add `--against-run-dir` opt-in to point at canonical run-dir |
+| `docs/reference/architecture.md` | MODIFY (drift) | Reconcile any post-canonical-run drift |
 | `docs/reference/INVARIANTS.md` | MODIFY (close-out) | Version stamp + Invariant Index sweep |
-| `docs/reference/grand-plan.md` | MODIFY (close-out) | Horizons 1–3 Delivered; deferred-decision rows |
-| `docs/reference/user-stories.md` | MODIFY (close-out) | Mark resolved gap-analysis items |
-| `README.md` | MODIFY | Replace "Getting Started" placeholder |
+| `docs/reference/grand-plan.md` | MODIFY (close-out) | Horizons 4 + 5 Delivered; deferred-decision rows |
+| `docs/reference/user-stories.md` | MODIFY (close-out) | Final gap-analysis reconciliation |
+| `README.md` | MODIFY | Final flow reconciliation |
 | `docs/plans/active/mvp/development-plan.md` | MODIFY | Final progress table; all phases Complete |
-| `docs/plans/active/mvp/work-notes.md` | MODIFY | Phase-7 close-out block |
+| `docs/plans/active/mvp/work-notes.md` | MODIFY | Phase-7 close-session-1 + close-session-2 blocks |
 | `docs/plans/active/mvp/` | MOVE | → `docs/plans/completed/mvp/` |
 
 ---
 
 ## Verification
 
-```bash
-# 1. Stage the real run (see Step 7.1)
-genomeclaw pipeline run --vcf $NEBULA_VCF --reference-root $REFS --run-dir $DERIVED/<run-id>
-genomeclaw pipeline cyp2d6-call --bam $NEBULA_CRAM --run-dir $DERIVED/<run-id>
-genomeclaw pipeline pgs-compute --pgs PGS000018 --vcf $NEBULA_VCF --reference-root $REFS \
-    --run-dir $DERIVED/<run-id> --rationale '<rationale>' --question '<question>'
+Close session 1:
 
-# 2. Full invariant sweep against the real derived store
+```bash
+# 1. Stage the canonical real-data run (Step 7.1)
+bin/genomeclaw pipeline run --vcf $NEBULA_VCF --reference-root $REFS --run-dir $DERIVED/<run-id>
+bin/genomeclaw pipeline cyp2d6-call --bam $NEBULA_CRAM --sample-id MPNRGLQ2K \
+    --reference-fasta $REF_FASTA --run-dir $DERIVED/<run-id>
+bin/genomeclaw pipeline pharmcat --vcf $NEBULA_VCF \
+    --cyp2d6-diplotype-json $DERIVED/<run-id>/cyp2d6_diplotype.json \
+    --reference-fasta $REF_FASTA --run-dir $DERIVED/<run-id>
+bin/genomeclaw pipeline pgs-compute --pgs PGS000018 --vcf $NEBULA_VCF --reference-root $REFS \
+    --run-dir $DERIVED/<run-id> --rationale '<rationale>' --question '<question>' \
+    --work-dir $SCRATCH/pgs-work-phase7
+
+# 2. Invariant sweep
 cd packages/toolkit
-GENOMECLAW_DERIVED_DIR=$DERIVED/CURRENT \
+GENOMECLAW_DERIVED_DIR=$DERIVED/CURRENT GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:slice-d-prime \
   uv run pytest tests/invariants tests/privacy tests/provenance tests/determinism -v
 
-# 3. Live agent transcripts
-GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:<current-tag> OPENAI_API_KEY=... \
-  uv run pytest tests/live_llm -v -m "story1 or story4 or story9"
+# 3. 4 Slice F live tests
+export OPENAI_API_KEY=$(grep '^OPEN_AI_API_KEY=' /Users/hugi/GitRepos/GenomeClaw/.env | cut -d= -f2-)
+uv run pytest \
+  tests/integration/test_live_story2_introspection_snapshot.py \
+  tests/integration/test_live_story4_clopidogrel_snapshot.py \
+  tests/integration/test_live_story9_caffeine_snapshot.py \
+  tests/integration/test_live_story10_cad_prs_snapshot.py -v
 
-# 4. SSRF runtime probe
-GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:<current-tag> \
+# 4. INV-R002 determinism diff: re-run + diff stores
+# (full pipeline run sequence again into RUN_DIR_2)
+duckdb $DERIVED/<run-id>/variants.duckdb 'EXPORT DATABASE '"'$EXPORT_1'"
+duckdb $DERIVED/<run-id-2>/variants.duckdb 'EXPORT DATABASE '"'$EXPORT_2'"
+diff -r $EXPORT_1 $EXPORT_2  # expect empty modulo timestamps
+```
+
+Close session 2:
+
+```bash
+# 5. SSRF probe (sandbox-L7 scope)
+GENOMECLAW_SANDBOX_IMAGE=genomeclaw/sandbox:slice-d-prime \
   uv run pytest tests/invariants/test_invP002_ssrf_runtime_probe.py -v
 
-# 5. Determinism (INV-R002): re-run the pipeline + diff the derived stores
-genomeclaw pipeline run --vcf $NEBULA_VCF --reference-root $REFS --run-dir $DERIVED/<run-id-2>
-duckdb $DERIVED/<run-id>/variants.duckdb 'EXPORT DATABASE'"'$EXPORT_1'"
-duckdb $DERIVED/<run-id-2>/variants.duckdb 'EXPORT DATABASE'"'$EXPORT_2'"
-diff -r $EXPORT_1 $EXPORT_2  # expect empty modulo declared non-determinism
+# 6. Final paperwork + plan move
+git mv docs/plans/active/mvp docs/plans/completed/mvp
+git commit -m 'docs(mvp): close Phase 7 + move plan to completed/'
+git push origin main
 ```
 
 ---
 
 ## Completion Criteria
 
-- [ ] Real-data end-to-end run completes in ≤4h30m (ingest + normalize + annotate + materialize + cyp2d6-call + pgs-compute).
-- [ ] `pytest tests/invariants tests/privacy tests/provenance tests/determinism` green against the real derived store.
-- [ ] All seven AC items from `spec.md` check off — AC1 through AC14 (numbering jumps where ACs were revised + retired).
-- [ ] Three live agent transcripts captured + snapshot tests green (Stories 1, 4, 9).
-- [ ] SSRF runtime probe green under full Landlock + seccomp + netns + OpenShell L7 proxy.
-- [ ] `docs/reference/architecture.md`, `docs/reference/INVARIANTS.md`, `docs/reference/grand-plan.md`, `docs/reference/user-stories.md`, `README.md` reconciled with shipped code.
+### Close session 1 done when
+
+- [ ] Canonical run-dir at `/Volumes/Genome_Work/genomeclaw/derived/<run-id>/` carries: 4.87M-row `variants` table, ~20,000-row `coverage_qc` table, ~9-row `pharmcat`-tool `findings`, 1-row `pgs_scores`, `cyp2d6_diplotype.json`, `manifest.json`, `provenance.json`, plus the Phase 4 v0.2 annotation columns.
+- [ ] `CURRENT` symlink atomically updated.
+- [ ] Input VCF + CRAM SHA256 unchanged after the full run (INV-D001).
+- [ ] `pytest tests/invariants tests/privacy tests/provenance tests/determinism` green against the canonical run-dir.
+- [ ] 4 Slice F live tests pass (Stories 2 / 4 / 9 / 10) against the canonical run-dir's findings.
+- [ ] INV-R002 second-run diff is empty modulo timestamps.
+- [ ] 4 transcripts captured in `docs/reference/transcripts/phase-7/`.
+
+### Close session 2 done when
+
+- [ ] SSRF runtime probe authored + green (sandbox-L7 scope).
+- [ ] `docs/reference/architecture.md`, `docs/reference/INVARIANTS.md`, `docs/reference/grand-plan.md`, `docs/reference/user-stories.md`, `README.md` reconciled with canonical-run-dir shape.
+- [ ] All 14 AC items from `spec.md` check off (AC1–AC14; numbering jumps where ACs were revised + retired).
 - [ ] No outbound calls observed in the SSRF + privacy-default tests except to the configured agent endpoint + host service.
-- [ ] `docs/plans/active/mvp/development-plan.md` shows all 7 phases at Complete.
-- [ ] `docs/plans/active/mvp/work-notes.md` carries a phase-7 close-out block.
+- [ ] `docs/plans/active/mvp/development-plan.md` shows all 7 phases at Complete with close dates.
+- [ ] `docs/plans/active/mvp/work-notes.md` carries close-session-1 + close-session-2 blocks.
+- [ ] `docs/plans/active/mvp/phases/phase-7.md` Status → Complete with Completed date.
 - [ ] Plan moved from `docs/plans/active/mvp/` to `docs/plans/completed/mvp/`.
+- [ ] Final commit + push to `origin/main`.
 
 ### Carry-forward follow-ups (out of scope for Phase 7; tracked as post-MVP)
 
+- **Full Landlock+seccomp+netns SSRF probe** — author a dedicated post-MVP plan that ties OpenShell version pinning into INV-T001 + verifies kernel-level isolation primitives. The MVP's scoped probe verifies the L7 + policy-preset surface; the full probe verifies the syscall + filesystem isolation surface.
+- **Story 1 live test** — discrete "any actionable findings?" test if a contract gap surfaces beyond what Story 4 already covers.
 - Slice E.4 (PRS validation study + pre-compute consent) — deferred per the methodological-review pass.
 - Cyrius F4 (sex-info handling for chrX scoring) + F5 (`refs materialize` CLI) + F6 (CI gate on pgsc_calc pin bumps) — all per the 2026-05-22 EOD checkpoint's F-list.
-- Story 10 (PRS) live re-stage against the post-Phase-6 PRS row — optional polish.
+- PharmCAT DPWG + FDA guideline branches — currently CPIC-only; expand if user-actionable recommendations surface downstream.
 - AC7 warm-cache reproducibility (≤15 min wall on re-run with caches present) — closes the last unchecked AC of `prs-bootstrap-meta`; not blocking Phase 7.
