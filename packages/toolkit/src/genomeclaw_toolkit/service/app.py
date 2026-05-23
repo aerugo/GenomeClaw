@@ -18,6 +18,7 @@ regression that widens a payload surfaces in the snapshot tests.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import signal
 from typing import TYPE_CHECKING, Annotated, Any
@@ -52,7 +53,9 @@ from genomeclaw_toolkit.schemas.variant import (
     VariantSummary,
 )
 from genomeclaw_toolkit.service.pgs_compute_orchestrator import (
+    create_pgs_compute_tasks_db_if_missing,
     enqueue_pgs_compute_task,
+    pgs_compute_worker_lifespan,
     query_pgs_compute_task_status,
 )
 from genomeclaw_toolkit.service.store import (
@@ -75,6 +78,7 @@ from genomeclaw_toolkit.service.store import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
 
@@ -119,15 +123,38 @@ def build_app(*, derived_root: Path) -> FastAPI:
     resolves curated-notes evidence kinds. Lifestyle calibration is now
     an agent-workspace concern (memory + reasoned research).
     """
+    cache = _ActiveRunCache()
+    cache.reload(derived_root=derived_root)
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        """Spawn the E.3 PGS compute worker; cancel on shutdown.
+
+        The worker drains ``pgs_compute_tasks.sqlite`` for the active run.
+        If no active run is resolved (e.g. the host service is up but
+        ``CURRENT`` is broken), the worker is not spawned — the
+        ``/v1/health`` 503 path still serves the operator the diagnostic.
+        """
+        worker_ctx = None
+        if cache.active is not None:
+            db_path = cache.active.run_dir / "pgs_compute_tasks.sqlite"
+            create_pgs_compute_tasks_db_if_missing(db_path)
+            worker_ctx = pgs_compute_worker_lifespan(db_path)
+            await worker_ctx.__aenter__()
+        try:
+            yield
+        finally:
+            if worker_ctx is not None:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await worker_ctx.__aexit__(None, None, None)
+
     app = FastAPI(
         title="genomeclaw-service",
         version="v0.2",
         docs_url=None,  # No interactive docs surface — INV-P002 minimal-sufficient.
         redoc_url=None,
+        lifespan=_lifespan,
     )
-
-    cache = _ActiveRunCache()
-    cache.reload(derived_root=derived_root)
 
     # SIGHUP → re-resolve. Skipped on platforms without SIGHUP (Windows);
     # the host service only ships on POSIX so the guard is defensive.
