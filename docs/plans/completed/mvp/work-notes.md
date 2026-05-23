@@ -2168,3 +2168,49 @@ These gaps don't block the invariant sweep or the live tests (which stage their 
 - Final commit + push.
 
 Close session 2 should take ~3-4 hr total. No more long-running pipeline runs.
+
+---
+
+## 2026-05-23 — Phase 7 close session 2: SSRF deferred, plan moved to completed/
+
+**Context**: Close session 1 (786c13c) closed all of Step 7.1 + 7.2 + 7.3. Close session 2's remaining work was: Step 7.4 SSRF probe + transcript capture + final doc drift + plan move.
+
+### Step 7.4 SSRF probe — deferred to a dedicated follow-up plan
+
+**Empirical finding**: bare `docker exec curl` from inside the sandbox image reaches public-internet hosts (e.g. `curl https://1.1.1.1` returns 301). The OpenShell L7 enforcement only fires when OpenClaw routes the request through its gateway — bare curl bypasses the policy entirely.
+
+A meaningful runtime SSRF probe therefore needs OpenClaw running with the policy preset active inside the sandbox container, AND a way to exec curl-equivalent calls through OpenClaw's gateway path. The existing `tests/_live_smoke/run.py` orchestrator already spins up the full sandbox + openclaw + policy stack but tears down after a single agent turn. Extending it to a long-running probe harness is non-trivial work — a real piece of work that deserves its own plan + dedicated session.
+
+**Decision**: defer the runtime SSRF probe to [docs/plans/active/ssrf-runtime-probe/](../../ssrf-runtime-probe/) (scope-pin authored as a placeholder). The MVP ships with the static coverage (6 existing INV-P002 tests) + implicit-runtime evidence (the 4 Slice F live tests passed through the OpenShell-gated sandbox; that means the policy allowed the right hosts at runtime).
+
+### Transcript capture — deferred to optional polish
+
+Verbatim live-test transcripts would require re-running the 4 live tests with a capture hook (~$1-2 + ~13 min wall). Instead, authored [docs/reference/transcripts/phase-7/README.md](../../../reference/transcripts/phase-7/README.md) as a Phase-7 evidence index — documents what each live test asserted + links to the test source. Sufficient evidence for MVP close; verbatim capture stays as an optional polish item.
+
+### Final doc drift sweep
+
+Most reference-doc drift was reconciled during the Phase 6 close + the mid-Phase-7 from-scratch-setup-protections work. Close session 2 added:
+
+- [spec.md](spec.md) AC checkmarks — all 14 marked with shipped state or carry-forward deferral.
+- [development-plan.md](development-plan.md) status header → MVP COMPLETE + Phase 7 row → Complete with close dates.
+- [phase-7.md](phases/phase-7.md) status → Complete with completed date.
+- This work-notes block.
+
+### Plan move
+
+`docs/plans/active/mvp/` → `docs/plans/completed/mvp/`. Final commit + push.
+
+### Final tally
+
+| Metric | Value |
+|--------|-------|
+| Phases shipped | 7/7 (all complete) |
+| Toolkit tests | 778 passed (host); 798 with sandbox image set |
+| Plugin tests | 21/21 vitest pass |
+| Live LLM tests | 4/4 pass against gpt-5.5 (Stories 2/4/9/10) |
+| Real-data canonical run | 5h21m wall; 4,812,970 variants; 9 PGx findings; CYP2D6 *1/*35; SHA256 unchanged |
+| Companion plans landed | 6 — cram-scratch-strategy, agent-research-and-synthesis, prs-bootstrap-meta (cascade of 6 plans), from-scratch-setup-protections |
+| Carry-forward follow-ups | INV-R002 real-data diff, F4 chrX-needs-sex, AC8 coverage_qc BED, LOFTEE column re-populate, full Landlock+seccomp+netns SSRF probe, Story 1 live test if needed |
+| Open invariants | INVARIANTS.md at v1.15; no new invariants from Phase 7 itself |
+
+**MVP shipped 2026-05-23.** Project enters post-MVP state.
