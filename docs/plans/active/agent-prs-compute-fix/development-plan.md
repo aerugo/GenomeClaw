@@ -206,4 +206,4 @@ New `test_live_agent_prs_compute_e2e.py`:
 | 3 — Worker skeleton | **Complete** | 2026-05-23 | 2026-05-23 | 10/10 tests green; FastAPI lifespan + asyncio.Lock + atomic claim via `RETURNING`; full toolkit 843/843 |
 | 4 — Worker compute integration | **Complete** | 2026-05-23 | 2026-05-23 | 14/14 tests green; sidecar loader + `_real_compute_fn` + 6-class structured error mapping + INV-R002 guard; `stamp_pgs_row` relocated to `prep/pgs.py`; full toolkit 857/857 |
 | 5 — Crash recovery + observability | **Complete** | 2026-05-23 | 2026-05-23 | 10/10 tests green; `cleanup_stale_running_tasks` (1 h default) + 5 structured INFO/WARNING log lines on every status transition; full toolkit 867/867 |
-| 6 — E2E verification | Pending | | | AMD-question agent invocation → PRS percentile |
+| 6 — E2E verification | **Test file authored** | 2026-05-23 | | 2 live-agent tests landed (auto-skip without `OPENAI_API_KEY` + `GENOMECLAW_SANDBOX_IMAGE`); operator runs the live test after sandbox rebuild |
