@@ -370,3 +370,60 @@ Phase 4 ran end-to-end in one session after the Phase 3 commit landed. 14 RED te
 
 **Phase 5** — crash recovery + observability. Stale-running cleanup at app startup (rows with `started_at` > 1 h transition to `failed:worker_restart:stale_running`). INFO/WARNING log lines on every status transition for operator monitoring. 9 tests. Estimated 2 hours.
 
+---
+
+## 2026-05-23 — Phase 5 complete (recovery + observability shipped)
+
+Single-session phase; 10 RED tests authored first, all GREEN on first run.
+
+### What landed
+
+- **`packages/toolkit/src/genomeclaw_toolkit/service/pgs_compute_orchestrator.py`** (MODIFY):
+  - `_stale_running_window_s()` reads `GENOMECLAW_PGS_STALE_RUNNING_WINDOW_S` (default 3600 s = 1 h).
+  - `cleanup_stale_running_tasks(db_path, *, window_s=None) -> list[str]` — single atomic SQL `UPDATE ... RETURNING` transitions any `status='running'` row with `started_at < now() - window_s` to `failed:worker_restart:stale_running`. Emits one WARNING log record per cleaned row with structured `task_id` / `pgs_id` / `transition='stale_running_to_failed'` fields. Returns the cleaned `task_id` list for the caller's summary log.
+  - Worker loop now emits **5 structured log lines** on every transition:
+    - `queued_to_running` (INFO, on claim)
+    - `running_to_done` (INFO, on success)
+    - `running_to_failed` (INFO, with `error=<structured>`)
+    - `queued_to_failed_compute_path_disabled` (INFO, kill-switch reject)
+    - `stale_running_to_failed` (WARNING, cleanup at startup — see above)
+  - All extras pass through `logging.LogRecord.extra={...}`; an operator's structured-logs aggregator parses them directly.
+- **`packages/toolkit/src/genomeclaw_toolkit/service/app.py`** (MODIFY): lifespan startup now calls `cleanup_stale_running_tasks(db_path)` BEFORE spawning the worker. If any rows were cleaned, emits a WARNING summary line at the app-logger level. The per-row WARNING records come from the cleanup function itself.
+- **`packages/toolkit/tests/integration/test_pgs_compute_worker_recovery.py`** (CREATE): 10 tests across three buckets:
+  - **Unit tests on `cleanup_stale_running_tasks`** (4): empty-DB returns `[]`; stale rows transition; recent rows untouched; window configurable via env.
+  - **Integration test on app startup** (1): pre-seed a stale row, enter TestClient, assert row transitions before any new enqueue.
+  - **Observability tests via `caplog`** (5): one per transition, each asserts the right `transition=` value lands on a record with the expected level.
+- **`docs/reference/architecture.md`** (MODIFY — light): one paragraph appended to the PGS routes section describing the worker shape + sidecar + stale-running window env var.
+
+### Verification gates passed
+
+- Phase 5 tests: **10/10 PASS** on first run.
+- Full toolkit suite: **867 passed, 114 skipped** — no regressions from the Phase 4 baseline of 857 (the +10 new Phase 5 tests).
+- ruff: clean.
+- mypy --strict: clean on `pgs_compute_orchestrator.py` + `app.py`.
+
+### Key design decisions
+
+1. **1-h default stale-running window**. Warm-cache compute ≤30 min; cold-cache ≤2 h. 1 h is above warm-cache budget + below cold-cache budget. Fresh-deployment operators bump via env to `14400` for the first cold-cache compute. Documented in the architecture doc.
+2. **Cleanup runs in the lifespan startup hook, BEFORE spawning the worker**. This guarantees that a stale row from an unclean prior shutdown can't be re-claimed by the new worker before being marked failed. The atomic `UPDATE...RETURNING` would race-safe handle even concurrent claim attempts, but startup-order is cleaner reasoning.
+3. **Single-statement SQL cleanup**. One atomic `UPDATE ... RETURNING` rather than SELECT-then-UPDATE — no partial-state risk if the host crashes mid-cleanup.
+4. **WARNING level for cleanup, INFO for normal transitions**. Cleanup indicates an unclean prior shutdown — operator probably wants to know. Normal transitions are routine + INFO-noisy enough on their own without WARN escalation.
+5. **Structured `extra={...}` fields on every record**. Operators with structured-log aggregators (Datadog / Loki / Elasticsearch) get parseable per-record context; operators with plain `tail -f` see human-readable messages. No format string interpolation of the structured fields — they're metadata, not message content.
+
+### What stays unchanged
+
+- `INVARIANTS.md` — no new invariants.
+- All Phase 1-4 tests still green.
+- `bin/genomeclaw-prs-smoke` + the operator-side smoke path — untouched.
+- Plugin TypeBox + sandbox image — untouched (Phase 6 rebuilds sandbox).
+
+### Open follow-ups deferred to Phase 6
+
+- Sandbox image rebuild so the agent at runtime picks up the new plugin code (the Phase 2 TypeBox change).
+- Live agent E2E test against the canonical Phase 7 run-dir with the AMD-question prompt.
+- The 1-h window default may need bumping if Phase 6's live test exercises the cold-cache compute path against a fresh sample.
+
+### Next step
+
+**Phase 6** — live agent E2E verification. Stage the canonical Phase 7 run-dir + the AMD/glaucoma scorefiles, rebuild the sandbox image, run the agent against the AMD-question prompt, assert the reply contains a numeric percentile (or a clear named-reason explanation) and the task DB shows a terminal state. Closes the plan.
+

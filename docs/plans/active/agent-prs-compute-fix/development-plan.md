@@ -205,5 +205,5 @@ New `test_live_agent_prs_compute_e2e.py`:
 | 2 — Axis A validation fix | **Complete** | 2026-05-23 | 2026-05-23 | Threshold 50→10 in 4 surfaces; 7 validation tests green; full toolkit 833/833 |
 | 3 — Worker skeleton | **Complete** | 2026-05-23 | 2026-05-23 | 10/10 tests green; FastAPI lifespan + asyncio.Lock + atomic claim via `RETURNING`; full toolkit 843/843 |
 | 4 — Worker compute integration | **Complete** | 2026-05-23 | 2026-05-23 | 14/14 tests green; sidecar loader + `_real_compute_fn` + 6-class structured error mapping + INV-R002 guard; `stamp_pgs_row` relocated to `prep/pgs.py`; full toolkit 857/857 |
-| 5 — Crash recovery + observability | Pending | | | Robustness |
+| 5 — Crash recovery + observability | **Complete** | 2026-05-23 | 2026-05-23 | 10/10 tests green; `cleanup_stale_running_tasks` (1 h default) + 5 structured INFO/WARNING log lines on every status transition; full toolkit 867/867 |
 | 6 — E2E verification | Pending | | | AMD-question agent invocation → PRS percentile |
