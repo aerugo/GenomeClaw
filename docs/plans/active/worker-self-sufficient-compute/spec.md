@@ -98,11 +98,7 @@ Phase 2's auto-fetch + Phase 3's containerised compute affect documented egress 
 
 ## Open Questions
 
-1. **Phase 3 runtime architecture** — three options on the table:
-   - **A**: Run the WHOLE host service inside the toolkit image (Uvicorn lives there too). Simplest; bcftools is on PATH; sandbox reaches it via host bridge with `-p 8643:8643`. Downside: heavyweight (6.4 GB image holds the host service too).
-   - **B**: Per-compute DooD-spawn — worker stays on host; for each compute task it `docker run`s a toolkit container that runs the compute, then exits. Bind-mounts the sidecar-declared paths + the task SQLite DB. Higher per-task overhead but cleanest separation.
-   - **C**: Persistent toolkit container at lifespan startup + `docker exec <container> ...` per task. Hybrid of A and B.
-   - **Phase 1 design pass picks one.** Recommendation pending the design exploration; gut feel says A is simplest + lowest-novelty.
+1. **Phase 3 runtime architecture** — RESOLVED (2026-05-23 Phase 1 design pass): **Option A chosen** — run the WHOLE host service inside the toolkit image (Uvicorn lives there too). `bin/genomeclaw host service` is reworked from `GENOMECLAW_NATIVE=1` to `docker run -p 8643:8643 ... genomeclaw/toolkit:<tag> uvicorn ...`. Zero refactor of `compute_prs_with_coverage_fill`; bcftools is on PATH inside the image; proven pattern from the smoke driver. Options B (per-compute DooD-spawn) and C (persistent container + exec) dropped — both add novel orchestration plumbing on the critical path without benefit for the single-user personal-host envelope.
 2. **Scorefile fetch retry policy** — how many retries on transient PGS Catalog 5xx? **Recommendation**: 3 retries with exponential backoff (1s, 4s, 16s), then `scorefile_unfetchable:<reason>`. Matches the existing `refs fetch` behavior.
 3. **Per-compute work-dir lifecycle** — should the toolkit container's work-dir be cleaned up after success? **Recommendation**: Yes, on `done`. Failed tasks keep the work-dir for debugging (operator can grep). Phase 3 design pass picks the cleanup window.
 4. **Auto-fetch vs explicit-tool design** — should the agent ALSO have a separate `genomeclaw_pgs_scorefile_fetch` tool to pre-stage on demand? **Recommendation**: NO. The agent's role is to call `_pgs_compute`; the worker handles fetching as part of the compute. A separate tool surface is unnecessary plumbing.

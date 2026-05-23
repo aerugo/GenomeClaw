@@ -89,52 +89,22 @@ The fetch function reuses `prep/fetch.py`'s existing `_http_get` + `_SourceLayou
 New error classes:
 - `PgsScorefileUnfetchableError(pgs_id, reason)` → `failed:scorefile_unfetchable:<pgs_id>:<reason>`
 
-### Phase 3 design — containerised compute
+### Phase 3 design — containerised compute (Option A: host service inside the toolkit image)
 
-**Three options** (Phase 1 picks one):
+**Phase 1 decision (2026-05-23)**: Option A — run the host service INSIDE the toolkit image.
 
-#### Option A: Host service runs INSIDE the toolkit image
+The host service's Uvicorn process runs inside `genomeclaw/toolkit:<tag>`. `bin/genomeclaw host service` (currently the `host)` case in `bin/genomeclaw`, which forces `GENOMECLAW_NATIVE=1`) is reworked to issue a `docker run -p 8643:8643 -v <mounts> genomeclaw/toolkit:<tag> uvicorn ...` invocation instead. The `GENOMECLAW_NATIVE=1` override becomes obsolete for the host service path.
 
-The host service's Uvicorn process runs inside `genomeclaw/toolkit:<tag>`. `bin/genomeclaw host service` swaps the `GENOMECLAW_NATIVE=1` override for a `docker run -p 8643:8643 -v <mounts> genomeclaw/toolkit:<tag> uvicorn ...` invocation.
+**Rationale**: Zero refactor of `compute_prs_with_coverage_fill` — it runs in the environment it was designed for, with bcftools/samtools/pgsc_calc on PATH. The smoke driver (`bin/genomeclaw-prs-smoke`) is already the living proof that the toolkit image can run the Python package end-to-end against real inputs. No new orchestration plumbing is required.
 
-**Pros**:
-- Zero refactor of `compute_prs_with_coverage_fill` — it runs in the environment it's designed for.
-- Simplest dependency story.
-- Bcftools, samtools, pgsc_calc, Nextflow are all on PATH.
+**Dropped alternatives**:
+- **Option B (per-compute DooD-spawn)**: per-task docker-run overhead (~2-5s), JSON-envelope plumbing, bind-mount lifecycle complexity — all novel code surfaces on the critical path. Dropped.
+- **Option C (persistent container + docker exec)**: persistent container lifecycle management adds failure modes (what if container crashes mid-task?) and more moving parts than A. Dropped.
 
-**Cons**:
-- Heavyweight: the host service is now a 6.4 GB image instead of a Python process.
-- The shim's existing `host)` case becomes obsolete; needs rework.
-- Restart cost is higher (image pull on first run, ~5 min cold start).
-
-#### Option B: Per-compute DooD-spawn
-
-`_real_compute_fn` spawns a transient `docker run --rm` toolkit container per task. The container takes the compute args via env vars + a JSON manifest written to a bind-mounted scratch dir, executes the equivalent of `prs-compute --json --rationale=... --question=... --pgs=... ...`, exits with a JSON envelope on stdout. The worker parses + persists.
-
-**Pros**:
-- Worker stays on host as a thin process.
-- Per-compute isolation; failed computes can't leak state.
-- Lifecycle managed by docker; no persistent container baggage.
-
-**Cons**:
-- Per-task overhead (container start ~2-5s wall).
-- Plumbing: args via env vars or JSON-on-disk; result via stdout JSON.
-- New code surface in the orchestrator.
-
-#### Option C: Persistent toolkit container + `docker exec`
-
-At lifespan startup, the worker spawns a long-lived `genomeclaw/toolkit:<tag>` container with the canonical bind-mounts. Per task, `docker exec <container> <cmd>` runs the compute. Container exits at lifespan shutdown.
-
-**Pros**:
-- Per-compute overhead is minimal (~50 ms).
-- Cleaner than B for high-frequency computes.
-
-**Cons**:
-- Persistent state could leak between tasks (pgsc_calc work dir; bcftools cache).
-- Lifecycle management is tricky: what if the container dies mid-task?
-- More moving parts than B.
-
-**Phase 1 recommends Option A** — it's the simplest + matches the architecture doc's existing framing ("toolkit image is the bio-tools integration point"). The "host service inside the toolkit image" pattern is what the smoke driver already does. Phase 1 will pick definitively after a brief design exploration.
+**Static analysis confirming Option A**:
+- `bin/genomeclaw-prs-smoke` already invokes `docker run ... genomeclaw/toolkit:prs-phase5a python -m genomeclaw_toolkit._cli pipeline prs-compute ...` — Option A's pattern is proven.
+- Port binding `-p 8643:8643` maps the container's port to the host bridge; sandbox reaches `host.openshell.internal:8643` identically.
+- `_publish_host_roots_from_config` in `app.py` sets `GENOMECLAW_HOST_ROOTS` from the sidecar at lifespan startup; covers the DooD path the shim normally handles via `GENOMECLAW_DOOD=1`.
 
 ### Phase 3 contract (independent of Option choice)
 
@@ -251,7 +221,7 @@ Same as the existing Phase 4 of agent-prs-compute-fix's spec: a live `live_llm`-
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| 1 — Design pass | Pending | | | Pick Option A vs B vs C |
-| 2 — Inline auto-fetch | Pending | | | Layer A independent of Phase 1 choice |
-| 3 — Containerised compute | Pending | | | Implementation depends on Phase 1 |
+| 1 — Design pass | Complete | 2026-05-23 | 2026-05-23 | Option A chosen; work-notes.md carries the rationale |
+| 2 — Inline auto-fetch | Complete | 2026-05-23 | 2026-05-23 | 8 tests; fetch_pgs_scorefile + _ensure_scorefile_staged |
+| 3 — Containerised compute | Pending | | | Option A: shim rework; requires toolkit image rebuild |
 | 4 — Live verification | Pending | | | The user-facing AC1 gate |
