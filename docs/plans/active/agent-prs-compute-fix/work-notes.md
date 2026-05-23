@@ -235,3 +235,66 @@ The plugin's compiled output changed (`packages/nemoclaw-plugin/dist/index.js` w
 
 **Phase 3** — worker skeleton. The bones of the E.3 worker: FastAPI `lifespan` hook, polling loop, atomic claim via `UPDATE...RETURNING`, concurrency cap, kill-switch. 8 tests, no real compute yet (no-op `await asyncio.sleep(0)`). Estimated 3-4 hours of focused work.
 
+---
+
+## 2026-05-23 — Phase 3 complete (worker skeleton landed)
+
+User chose to continue straight after Phase 2 commit. Phase 3 ran end-to-end in one session.
+
+### What landed
+
+- **`packages/toolkit/src/genomeclaw_toolkit/service/pgs_compute_orchestrator.py`**:
+  - New `PgsComputeTaskFullRow` dataclass (full claim shape — includes `rationale` + `requested_for_question` for INV-A003 plumbing, distinct from the existing `PgsComputeTaskRow` status projection).
+  - `_atomic_claim_one(db_path)` — SQLite `UPDATE ... RETURNING` with inner SELECT for FIFO ordering by `requested_at`. Atomic against concurrent claimants (defence-in-depth; one worker per app in practice).
+  - `_mark_done` + `_mark_failed` helpers.
+  - `_poll_interval_s()` reads `GENOMECLAW_PGS_WORKER_POLL_INTERVAL_S` (default 1.0 s).
+  - `_resolve_compute_enabled()` reads `GENOMECLAW_PGS_COMPUTE_ENABLED` (default `true`). Phase 4 will swap this for a config-file read.
+  - `_noop_compute_fn` — Phase 3 stub. Phase 4 replaces with `compute_prs_with_coverage_fill(...)`.
+  - `_dispatch_compute` — indirection so `monkeypatch.setattr(_noop_compute_fn, ...)` works at runtime. Without the wrapper, the worker captures the function reference at task-spawn time + tests couldn't swap in stubs.
+  - `pgs_compute_worker_loop(db_path, *, compute_enabled_fn, compute_fn, poll_interval_s)` — the main loop. Concurrency cap = 1 via per-loop `asyncio.Lock` (NOT module-level — module-level locks bind to the first event loop they touch and break for subsequent `TestClient` sessions).
+  - `pgs_compute_worker_lifespan(db_path)` async context manager — spawn task on `__aenter__`, cancel + suppress `CancelledError` on `__aexit__`.
+  - Kill-switch design: "claim-then-fail" rather than "skip". With `compute_enabled=false`, the worker still atomically claims the queued row + marks it `failed:compute_path_disabled` so the agent's `/v1/pgs/compute/{task_id}` polling surfaces the rejection promptly. A skipped row would sit at `queued` indefinitely.
+- **`packages/toolkit/src/genomeclaw_toolkit/service/app.py`**:
+  - Restructured `build_app` so the `_ActiveRunCache` is created BEFORE the `FastAPI(...)` instance (the lifespan closure needs to capture the cache).
+  - New `@contextlib.asynccontextmanager async def _lifespan(_app)` that calls `pgs_compute_worker_lifespan(db_path)` for the active run + suppresses `CancelledError` on shutdown.
+  - If `cache.active is None` at startup, the worker isn't spawned — the `/v1/health` 503 still serves the operator the diagnostic.
+- **`packages/toolkit/tests/integration/test_pgs_compute_worker_skeleton.py`** (CREATE): 10 tests across 3 buckets — unit tests on `_atomic_claim_one` (empty / FIFO / running-skip), integration tests via TestClient (drain happy-path, concurrency cap, kill-switch on/off, INV-A003 plumbing, shutdown clean-up), invariant test (INV-P001 static check on networking imports).
+
+### Verification gates passed
+
+- New phase 3 tests: **10/10 PASS** on first GREEN run.
+- Full toolkit suite: **843 passed, 114 skipped (env-gated)** — no regression vs Phase 2's 833 (the 10 new tests).
+- `ruff check` on touched files: clean.
+- `mypy --strict` on `pgs_compute_orchestrator.py` + `app.py`: clean.
+
+### Key design decisions recorded
+
+1. **Per-loop lock, not module-level**. Each TestClient session gets a fresh event loop; a module-level `asyncio.Lock` binds to the first loop + raises `RuntimeError: ... attached to a different loop` on subsequent tests. Solution: the lock is created INSIDE `pgs_compute_worker_loop`, scoped to the function's lifetime. The concurrency-cap test still passes because there's one lock per worker + one worker per app — exactly what the "1 in-flight" cap requires.
+2. **`_dispatch_compute` indirection**. Tests need to swap in instrumented compute_fns AFTER `build_app` returns (because `monkeypatch.setattr` happens in the test body). The lifespan binds `compute_fn=_dispatch_compute`; the dispatcher re-resolves `_noop_compute_fn` from module globals on each call. This is a small price for testability + Phase 4 will replace the dispatcher with a real-compute wrapper bound via the lifespan.
+3. **No `pytest-asyncio`**. The project didn't have it as a dev dep + adding one for this phase felt overkill. Phase 3's tests use synchronous `TestClient` + polling. TestClient's `__enter__` runs the FastAPI `lifespan` startup on its internal event loop in a thread; the worker runs there + test code polls via synchronous HTTP. Phase 4 may need it for the `loop.run_in_executor` integration test; we'll revisit.
+4. **INV-P001 via static import check**. Rather than runtime-patch `socket.socket.connect` (which would break TestClient itself), the test reads the orchestrator's source + asserts no `httpx` / `urllib` / `requests` / `aiohttp` / `socket.socket` / `ssl` strings appear. Catches a future regression that adds an outbound import; doesn't fight with the test infrastructure.
+
+### Edge cases handled
+
+- Empty queue → `_atomic_claim_one` returns `None`; the loop falls through to the sleep.
+- No active run on app startup → lifespan skips worker spawn; the `/v1/health` 503 path still works.
+- Worker crash mid-task → `except Exception` in the inner block marks the row `failed:worker_unexpected_error:<ExceptionClass>` + logs the traceback. The outer `except Exception` in the loop tick is defensive (e.g. transient SQLite lock); the loop survives + retries on the next tick.
+- App shutdown mid-task → `worker_task.cancel()` + `suppress(CancelledError)` on shutdown. The in-flight task row remains at `running` until Phase 5's stale-running cleanup transitions it.
+
+### What stays unchanged
+
+- `INVARIANTS.md` — no new invariants.
+- `bin/genomeclaw-prs-smoke`, `prs-compute` CLI, `compute_prs_with_coverage_fill` — untouched (Phase 4 wires them up).
+- `pgs_compute_tasks` SQLite schema — untouched.
+- The plugin's 4 PGS tools — untouched.
+
+### Open follow-ups deferred to later phases
+
+- **Phase 4**: `_noop_compute_fn` swapped for `compute_prs_with_coverage_fill(...)`; `loop.run_in_executor(None, ...)` for the blocking call; `_stamp_pgs_row(...)` persistence; structured error mapping (`scorefile_missing:PGS<id>`, `pgsc_calc_failed:rc=N`, `dood_path_error:<path>`, `prs_decline:<reason>`); INV-R002 degenerate-result guard.
+- **Phase 5**: stale-running cleanup at startup; INFO/WARNING log lines at each transition.
+- **Phase 6**: live agent E2E test.
+
+### Next step
+
+**Phase 4** — wire `_noop_compute_fn` to `compute_prs_with_coverage_fill(...)` via `loop.run_in_executor(None, ...)`. Read the `prs_compute_config.json` sidecar at startup. Persist `pgs_scores` + `findings` rows via `_stamp_pgs_row(...)`. Add the structured error-mapping layer + the INV-R002 degenerate-result guard. 13 tests (9 worker-integration + 4 config-loader). Estimated 4-6 hours.
+
