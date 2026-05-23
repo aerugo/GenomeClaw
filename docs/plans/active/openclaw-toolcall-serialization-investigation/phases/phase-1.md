@@ -1,8 +1,8 @@
 # Phase 1 — Reproduce + classify the failure modes
 
-**Status**: Pending
-**Started**:
-**Completed**:
+**Status**: Complete (STATIC investigation; live runs pending operator action)
+**Started**: 2026-05-23
+**Completed**: 2026-05-23 (STATIC portion — see [findings.md](../findings.md) for the operator's live-run next steps)
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
@@ -122,13 +122,13 @@ Phase 1 is investigation. The acceptance gate:
 
 ## Completion Criteria
 
-- [ ] Existing-issue search complete; no duplicate work.
-- [ ] Openclaw verbose-trace surface identified (or monkey-patch shim in place).
-- [ ] Reproducer triggers ≥80% corruption rate across 5 runs.
-- [ ] Raw OpenAI Responses API payload captured at least once (via Option A/B/C).
-- [ ] Each symptom classified with evidence.
-- [ ] `findings.md` written + checked into the plan dir.
-- [ ] Phase 3 path recommended.
+- [x] Existing-issue search complete; no duplicate work. (5 relevant openclaw issues catalogued in findings.md; closest match #43305 for Symptom B; Symptom A has no match.)
+- [x] Openclaw verbose-trace surface identified (or monkey-patch shim in place). (Env vars `OPENCLAW_RAW_STREAM` + `OPENCLAW_DEBUG_MODEL_PAYLOAD=full-redacted`; monkey-patch fallback documented.)
+- [ ] Reproducer triggers ≥80% corruption rate across 5 runs. (Reproducer authored + auto-skip verified; live runs pending operator API key.)
+- [ ] Raw OpenAI Responses API payload captured at least once (via Option A/B/C). (Option C probe authored at `/tmp/openai_responses_bypass_probe.py`; live run pending operator API key.)
+- [ ] Each symptom classified with evidence. (Classification framework + decision rule documented; operator fills in after live runs.)
+- [x] `findings.md` written + checked into the plan dir.
+- [x] Phase 3 path recommended. (Predicted Path D, see findings.md § Path recommendation prediction; revisable after live runs.)
 
 ## Next
 
