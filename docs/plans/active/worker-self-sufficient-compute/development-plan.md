@@ -223,5 +223,5 @@ Same as the existing Phase 4 of agent-prs-compute-fix's spec: a live `live_llm`-
 |-------|--------|---------|-----------|-------|
 | 1 — Design pass | Complete | 2026-05-23 | 2026-05-23 | Option A chosen; work-notes.md carries the rationale |
 | 2 — Inline auto-fetch | Complete | 2026-05-23 | 2026-05-23 | 8 tests; fetch_pgs_scorefile + _ensure_scorefile_staged |
-| 3 — Containerised compute | Pending | | | Option A: shim rework; requires toolkit image rebuild |
+| 3 — Containerised compute | **Complete** | 2026-05-23 | 2026-05-23 | Option A shipped: `bin/genomeclaw host service` wraps in `docker run -p 8643:8643 --host 0.0.0.0`; toolkit image rebuilt as `worker-self-sufficient`; bcftools verified on PATH; PGS004606 compute reached `running` live against canonical CRAM. 5/5 Phase 3 tests pass (3 host-runnable + 2 image-gated). |
 | 4 — Live verification | Pending | | | The user-facing AC1 gate |

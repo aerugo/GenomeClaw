@@ -1,8 +1,8 @@
 # Phase 3 — Containerised compute (architecture)
 
-**Status**: Pending (gated on Phase 1's design pass)
-**Started**:
-**Completed**:
+**Status**: **Complete** — host service runs inside toolkit image; bcftools verified on PATH; compute reaches `running` live against canonical CRAM.
+**Started**: 2026-05-23
+**Completed**: 2026-05-23
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
