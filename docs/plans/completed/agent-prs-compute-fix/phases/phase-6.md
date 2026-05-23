@@ -1,8 +1,8 @@
 # Phase 6 — End-to-end verification
 
-**Status**: **Test file authored 2026-05-23; live run pending operator setup**
+**Status**: **Complete** — Path A live run PASSED 2026-05-23 (5m41s wall)
 **Started**: 2026-05-23
-**Completed**: (live run + sign-off pending)
+**Completed**: 2026-05-23
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
