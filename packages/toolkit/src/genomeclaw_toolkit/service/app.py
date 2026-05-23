@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import functools
 import logging
+import os
 import signal
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -117,6 +118,42 @@ class _ActiveRunCache:
             self.error = exc
 
 
+def _publish_host_roots_from_config(config: Any) -> None:
+    """Set ``GENOMECLAW_HOST_ROOTS`` from the sidecar's host-form paths.
+
+    :func:`prep._paths.as_sibling_mountable` requires this env var to
+    validate paths bound for DooD-spawned siblings. The shim publishes it
+    when the toolkit runs inside a container (``GENOMECLAW_DOOD=1``); the
+    host service running outside the toolkit container has no such shim.
+    Without this propagation the worker fails every compute with
+    ``dood_path_error`` even though the sidecar paths are valid host-form.
+
+    Idempotent: an operator-supplied ``GENOMECLAW_HOST_ROOTS`` is honoured
+    in addition to the derived roots — the helper appends rather than
+    overwrites. The derived roots are the four directories the sidecar
+    paths live under (CRAM raw, reference, sidecar-declared work dir
+    parent, and the active run's derived-root parent).
+    """
+    existing = os.environ.get("GENOMECLAW_HOST_ROOTS", "").strip()
+    derived_roots: list[str] = []
+    candidates = [
+        config.cram_path.parent.parent,  # raw/
+        config.reference_root,
+        config.work_dir_root.parent,  # _scratch/
+    ]
+    for c in candidates:
+        s = str(c)
+        if s and s not in derived_roots and (not existing or s not in existing):
+            derived_roots.append(s)
+    if not derived_roots:
+        return
+    merged = existing + ":" + ":".join(derived_roots) if existing else ":".join(derived_roots)
+    os.environ["GENOMECLAW_HOST_ROOTS"] = merged
+    _LOG.info(
+        "Published GENOMECLAW_HOST_ROOTS from sidecar: %s", merged
+    )
+
+
 def build_app(*, derived_root: Path) -> FastAPI:
     """Construct the FastAPI app bound to ``derived_root``.
 
@@ -182,6 +219,15 @@ def build_app(*, derived_root: Path) -> FastAPI:
                     exc,
                 )
             else:
+                # Phase 4 + 2026-05-23 fix: propagate the sidecar's host-form
+                # paths to ``GENOMECLAW_HOST_ROOTS`` so
+                # :func:`prep._paths.as_sibling_mountable` accepts them. The
+                # shim normally publishes this env var when ``GENOMECLAW_DOOD=1``;
+                # the host service running outside the toolkit container has
+                # no such shim. Without this propagation the worker fails
+                # every compute with ``dood_path_error`` even though the
+                # sidecar paths are perfectly valid host-form paths.
+                _publish_host_roots_from_config(prs_config)
                 compute_fn = functools.partial(
                     _real_compute_fn, config=prs_config, run_dir=run_dir
                 )
