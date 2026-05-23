@@ -62,7 +62,7 @@ If the OpenAI output has `arguments: {gene: "CFH"}` but openclaw passes `args.ge
 
 | Phase | Description | Tests | TDD focus |
 |-------|-------------|-------|-----------|
-| **1** | Reproduce + classify the failure modes | 0 new pytest; investigation outputs are reports + traces | Evidence gathering |
+| **1** | Reproduce + classify the failure modes | 1 new live-gated pytest (`test_openclaw_serialization_repro.py`); investigation outputs are reports + traces | Evidence gathering |
 | **2** | Cross-model bisect (one alternative model) | 0 new pytest; one paid LLM call against the reproducer | Evidence gathering |
 | **3** | Decide + execute Path U / D / L | depends on path — Path L adds tests; Paths U/D add docs | Decision + delivery |
 
@@ -106,6 +106,6 @@ Path-conditional. Pick exactly one:
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| 1 — Reproduce + classify | Pending | | | Half-day spike |
+| 1 — Reproduce + classify | STATIC complete; live runs pending operator | 2026-05-23 | 2026-05-23 (static) | Half-day spike. Findings + reproducer + probe + agent-quirks skeleton landed. |
 | 2 — Cross-model bisect | Pending | | | ~1 hour + one paid LLM call |
-| 3 — Decide + execute | Pending | | | Path-conditional; 1-2 hours |
+| 3 — Decide + execute | Pending | | | Path-conditional; 1-2 hours. Predicted Path D. |
