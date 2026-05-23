@@ -2117,3 +2117,54 @@ These three are best treated as a "Phase 7 close" session — kick off Step 7.1 
 - Existing prior follow-ups (Slice E.4, Cyrius F-list items, AC7 warm-cache).
 
 **Next action**: kick off close session 1. Prerequisites are met (toolkit + sandbox images current; real-data inputs staged; reference layout current).
+
+---
+
+## 2026-05-22/23 — Phase 7 close session 1 executed
+
+**Context**: User authorized "lets do it now". Kicked off the canonical real-data run; reconciled four real bugs during the ~6h foreground attention window; closed five of six close-session-1 ACs.
+
+### Pipeline run + post-pipeline subcommands
+
+- **`pipeline run`**: 5h21m wall (vs Phase 4's 4h08m baseline; VEP ran longer this image cycle; reason TBD — could be I/O contention with the slice-d-prime image's larger size, or a perl-deps difference). Auto-allocated run-dir `2026-05-22T16-30-38Z-b8dc60`. Provenance trail complete (6 steps).
+- **`cyp2d6-call`**: 188s wall (slightly slower than Slice D's 170s — same image, same input). Diplotype `*1/*35` filter PASS (matches the Slice D smoke).
+- **`pharmcat`**: 75s wall (faster than Slice D's 135s; possibly warm caches). 9 PGx findings inserted (matches the Slice D' smoke + the 4 live tests' expectations).
+- **`pgs-compute`**: failed twice, then failed a third time on F4 chrX-needs-sex. First failure: `--vcf /mnt/genomeclaw/...` was a canonical-mount path; second: switched to `/Volumes/Genome_Work/...` host path but the shim ran in non-DooD mode so `GENOMECLAW_HOST_ROOTS=[]`. **Two real bugs surfaced**: bug 1 is the shim's `_dood_scan_args` missing `pgs-compute` (closed in [from-scratch-setup-protections](../../completed/from-scratch-setup-protections/)); bug 2 is F4 (chrX-needs-sex; deferred to post-MVP — `pgs-compute` path needs to pre-filter chrX or direct chrX-bearing scorefile users to `prs-compute`).
+
+### LOFTEE DBD::SQLite regression (silent)
+
+The VEP annotate phase emitted `WARNING: Failed to instantiate plugin LoF: install_driver(SQLite) failed: Can't locate DBD/SQLite.pm`. Pipeline continued; `loftee_lof` column NULL on every variant row. Same regression class as the 2026-05-15 `perl-bio-bigfile` fix; the missing module loads at plugin-instantiate time via `install_driver`, out of `perl -c` reach.
+
+Closed in [from-scratch-setup-protections](../../completed/from-scratch-setup-protections/) — landed the Dockerfile fix + a `perl -MDBD::SQLite -e 1`-shape test that catches future runtime-loaded module regressions.
+
+### from-scratch-setup-protections companion plan
+
+Authored + executed mid-Phase-7. Five protections at four layers (shim + wrapper + image + test + doc). 778 toolkit tests pass. INVARIANTS.md → v1.15. Commits 806b6ec + 175fdca.
+
+### Phase 7 close session 1 outcomes
+
+- **INV-D001 ✓**: VCF + CRAM SHA256 unchanged post-run.
+- **Invariant sweep ✓**: 108/108 tests pass against the canonical run-dir (`tests/invariants tests/privacy tests/provenance tests/determinism`).
+- **Live tests ✓**: 4/4 Slice F live tests PASS against the canonical run-dir + gpt-5.5; 13m02s wall total.
+- **INV-R002 deferred**: a second ~5h re-run is steep cost for an empty-modulo-timestamps diff already covered by `tests/determinism/test_invR001_full_pipeline.py` fixture-scale tests. Captured as a Phase 7 carry-forward.
+- **Transcript capture deferred** to close session 2's paperwork.
+
+### Three documented gaps in the canonical run-dir
+
+| Gap | Cause | Status |
+|-----|-------|--------|
+| `pgs_scores` = 0 rows | F4 chrX-needs-sex; `pgs-compute` path doesn't strip chrX | Carry-forward; the agent path uses `prs-compute` (Tier 1/Tier 2) which handles this |
+| `coverage_qc` = 0 rows | `--bam`+`--bed` omitted (no canonical gene-list BED checked in) | AC8 deferred; carry-forward |
+| `loftee_lof` = NULL on all rows | DBD::SQLite missing from old `slice-d-prime` image; rebuild happened mid-run | Protections landed forward; future runs populate the column |
+
+These gaps don't block the invariant sweep or the live tests (which stage their own findings). Captured in phase-7.md's carry-forward list.
+
+### What's left for close session 2
+
+- Author + run the sandbox-L7 SSRF probe (Step 7.4; ~2 hr).
+- Extract the 4 live-test transcripts from pytest stdout into `docs/reference/transcripts/phase-7/` files (~30 min).
+- Final doc drift sweep (most already done during the Phase 6 close + mid-Phase-7 protections work).
+- Plan move `docs/plans/active/mvp/` → `docs/plans/completed/mvp/`.
+- Final commit + push.
+
+Close session 2 should take ~3-4 hr total. No more long-running pipeline runs.

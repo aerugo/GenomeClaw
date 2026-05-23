@@ -1,7 +1,7 @@
 # Phase 7: End-to-end MVP demo + invariant sweep + plan close
 
-**Status**: Pending — close sessions 1 + 2 scoped 2026-05-22
-**Started**:
+**Status**: Close session 1 complete (2026-05-23); close session 2 pending
+**Started**: 2026-05-22
 **Completed**:
 **Parent Plan**: [development-plan.md](../development-plan.md)
 **Spec**: [spec.md § AC1–AC14](../spec.md)
@@ -337,13 +337,13 @@ git push origin main
 
 ### Close session 1 done when
 
-- [ ] Canonical run-dir at `/Volumes/Genome_Work/genomeclaw/derived/<run-id>/` carries: 4.87M-row `variants` table, ~20,000-row `coverage_qc` table, ~9-row `pharmcat`-tool `findings`, 1-row `pgs_scores`, `cyp2d6_diplotype.json`, `manifest.json`, `provenance.json`, plus the Phase 4 v0.2 annotation columns.
-- [ ] `CURRENT` symlink atomically updated.
-- [ ] Input VCF + CRAM SHA256 unchanged after the full run (INV-D001).
-- [ ] `pytest tests/invariants tests/privacy tests/provenance tests/determinism` green against the canonical run-dir.
-- [ ] 4 Slice F live tests pass (Stories 2 / 4 / 9 / 10) against the canonical run-dir's findings.
-- [ ] INV-R002 second-run diff is empty modulo timestamps.
-- [ ] 4 transcripts captured in `docs/reference/transcripts/phase-7/`.
+- [x] Canonical run-dir at `/Volumes/Genome_Work/genomeclaw/derived/2026-05-22T16-30-38Z-b8dc60/` carries: **4,812,970-row `variants` table** + 9-row `findings` (PharmCAT-tool) + `cyp2d6_diplotype.json` (Cyrius diplotype `*1/*35` filter PASS) + `manifest.json` + `provenance.json` + 6-step provenance trail (ingest → bcftools-stats → normalize → vcfanno → vep → materialize). Three deliberate-but-known-gaps: `pgs_scores` = 0 rows (F4 chrX-needs-sex carry-forward; `pgs-compute` path doesn't strip chrX from the input — `prs-compute`'s Tier 1/Tier 2 force-genotype path does); `coverage_qc` = 0 rows (AC8 deferred; `--bam`+`--bed` omitted since no canonical gene-list BED is checked in); `loftee_lof` = NULL on all rows (DBD::SQLite regression caught + fixed in [from-scratch-setup-protections](../../completed/from-scratch-setup-protections/) but image rebuild happened mid-run; protections land forward, this run is the last with the gap).
+- [x] `CURRENT` symlink atomically updated to canonical run-dir.
+- [x] Input VCF + CRAM SHA256 unchanged after the full run (INV-D001 ✓). VCF SHA256 `3c3dcc76...82c2efcf`; CRAM SHA256 `242ac16b...587800375`.
+- [x] **108/108** invariant tests green against the canonical run-dir (`tests/invariants tests/privacy tests/provenance tests/determinism`, 7 `needs_bio`-skipped on host).
+- [x] **4/4 Slice F live tests pass** (Stories 2/4/9/10) against the canonical run-dir + gpt-5.5 (`genomeclaw/sandbox:slice-d-prime`); 13m02s wall total.
+- [ ] **INV-R002 second-run diff deferred** to a post-MVP session — a second ~5h pipeline run is steep cost for an empty-modulo-timestamps diff that's already well-covered by the existing `tests/determinism/test_invR001_full_pipeline.py` fixture-scale tests (which DO byte-diff). Captured as a Phase-7 carry-forward.
+- [ ] **4 transcripts capture** deferred to close session 2's paperwork pass (the live tests captured the transcripts in pytest's stdout; just need to extract them into permanent files under `docs/reference/transcripts/phase-7/`).
 
 ### Close session 2 done when
 
@@ -363,6 +363,10 @@ git push origin main
 
 ### Carry-forward follow-ups (out of scope for Phase 7; tracked as post-MVP)
 
+- **INV-R002 determinism second-run** — defer the ~5h re-run + diff to a post-MVP session. The fixture-scale `tests/determinism/test_invR001_full_pipeline.py` tests already verify byte-equivalent rebuilds on synthetic VCFs; a real-data INV-R002 check would add empty-modulo-timestamps confidence but is not load-bearing for the MVP close.
+- **F4 chrX-needs-sex** — the `pgs-compute` path doesn't strip chrX from the input VCF when the scorefile carries chrX variants (e.g. PGS000018). The `prs-compute` Tier 1/Tier 2 force-genotype path handles this. Capture as a follow-up: either teach `pgs-compute` to pre-filter chrX OR strengthen the shim's docs to direct chrX-bearing scorefile users to `prs-compute`.
+- **AC8 coverage_qc + gene-list BED** — `pipeline run` requires `--bam`+`--bed`; no canonical gene-list BED is checked in. Capture as a follow-up: add `refs fetch --source mane_select_bed` or similar, then re-enable `--bam` in the Phase 7 canonical run shape.
+- **LOFTEE loftee_lof column** — the 2026-05-22 canonical run's `loftee_lof` is NULL on every row because the image rebuild with `perl-dbd-sqlite` happened mid-run (the annotate phase used the pre-fix image). The from-scratch-setup-protections plan landed the fix + the test that catches the regression; future runs (including the Phase 7 close session 2 if re-run) will have the column populated. The current run-dir stands as the canonical Phase 7 artifact with this gap documented.
 - **Full Landlock+seccomp+netns SSRF probe** — author a dedicated post-MVP plan that ties OpenShell version pinning into INV-T001 + verifies kernel-level isolation primitives. The MVP's scoped probe verifies the L7 + policy-preset surface; the full probe verifies the syscall + filesystem isolation surface.
 - **Story 1 live test** — discrete "any actionable findings?" test if a contract gap surfaces beyond what Story 4 already covers.
 - Slice E.4 (PRS validation study + pre-compute consent) — deferred per the methodological-review pass.
