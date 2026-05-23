@@ -298,3 +298,75 @@ User chose to continue straight after Phase 2 commit. Phase 3 ran end-to-end in 
 
 **Phase 4** — wire `_noop_compute_fn` to `compute_prs_with_coverage_fill(...)` via `loop.run_in_executor(None, ...)`. Read the `prs_compute_config.json` sidecar at startup. Persist `pgs_scores` + `findings` rows via `_stamp_pgs_row(...)`. Add the structured error-mapping layer + the INV-R002 degenerate-result guard. 13 tests (9 worker-integration + 4 config-loader). Estimated 4-6 hours.
 
+---
+
+## 2026-05-23 — Phase 4 complete (compute integration shipped)
+
+Phase 4 ran end-to-end in one session after the Phase 3 commit landed. 14 RED tests authored first; one minor test fix during GREEN (wrong `DeclineReason` enum name); one Phase-3 regression on the lifespan-skipping path resolved by falling back to the no-op compute when the sidecar is missing (so Phase 3's tests keep working without staging a sidecar).
+
+### What landed
+
+- **`packages/toolkit/src/genomeclaw_toolkit/service/pgs_compute_config.py`** (CREATE):
+  - `PrsComputeConfig` frozen dataclass with 9 fields (sample_id + 7 host-form paths + panel_version).
+  - `load_prs_compute_config(run_dir)` — reads `prs_compute_config.json`, validates all required fields are present, coerces path fields to `Path`.
+  - `PrsComputeConfigMissingError` + `PrsComputeConfigMalformedError` — both name the canonical sidecar path in their message so the operator can fix without spelunking.
+- **`packages/toolkit/src/genomeclaw_toolkit/prep/pgs.py`** (MODIFY): moved `_stamp_pgs_row` from `_cli/commands/pipeline.py` here as **public `stamp_pgs_row`**. Service worker + CLI both call from this location; the dependency direction is now service → prep (correct), not service → CLI (awkward).
+- **`packages/toolkit/src/genomeclaw_toolkit/_cli/commands/pipeline.py`** (MODIFY): replaced the in-place `_stamp_pgs_row` with a thin re-export from `prep/pgs.py` so existing test callers (`test_pgs_scores_calibration_columns.py`, `test_pgs_params_json.py`) keep working without churn.
+- **`packages/toolkit/src/genomeclaw_toolkit/service/pgs_compute_orchestrator.py`** (MODIFY): 
+  - `PgsScorefileMissingError(FileNotFoundError)` — carries `pgs_id` for error-mapping.
+  - `DegenerateResultError(RuntimeError)` — carries a short `detail` string for the `failed:degenerate_result:<detail>` shape.
+  - `_is_degenerate(row)` — INV-R002 predicate: `percentile is None AND raw_score is None`.
+  - `_structured_error(exc)` — maps 6 known exception classes to `failed:<class>:<detail>` strings + a `worker_unexpected_error:<ExceptionClass>` fallback.
+  - `_resolve_scorefile_path(scorefile_root, pgs_id)` — checks `<root>/<pgs_id>.txt.gz`; raises `PgsScorefileMissingError` if absent.
+  - `_real_compute_fn(task, *, config, run_dir)` — the real compute path: resolves scorefile → `loop.run_in_executor(None, functools.partial(compute_prs_with_coverage_fill, ...))` → degenerate guard → `stamp_pgs_row(...)`.
+  - `pgs_compute_worker_lifespan(db_path, *, compute_fn=None)` — `compute_fn` is now optional; defaults to `_dispatch_compute` (the no-op indirection from Phase 3).
+  - Worker loop's exception block now uses `_structured_error` rather than hard-coding `worker_unexpected_error:<class>` — known failure modes get clean named errors; unknowns still fall through.
+- **`packages/toolkit/src/genomeclaw_toolkit/service/app.py`** (MODIFY): `_lifespan` reads the sidecar via `load_prs_compute_config(run_dir)`. On success, binds `functools.partial(_real_compute_fn, config=..., run_dir=...)` as `compute_fn`. On missing/malformed sidecar, logs WARNING + spawns the worker WITH the no-op compute_fn (queue drains + kill-switch still work; only real compute is offline). This shape preserves Phase 3's test behavior + makes the operator's "no sidecar staged" state visible via log lines rather than a silent failure.
+- **`packages/toolkit/tests/integration/test_pgs_compute_config_loader.py`** (CREATE): 4 tests covering happy path + missing file + malformed JSON + missing required field.
+- **`packages/toolkit/tests/integration/test_pgs_compute_worker_integration.py`** (CREATE): 10 tests covering: INV-A003 plumbing through to compute_fn; `pgs_scores` + `findings` persistence; INV-R001 7 provenance columns; INV-R002 degenerate-result guard; 4 structured-error mappings (`scorefile_missing`, `pgsc_calc_failed`, `dood_path_error`, `prs_decline`); `loop.run_in_executor` offload verification (asserts compute does NOT run on the event loop thread); lifespan resilience (missing sidecar → WARNING log + read routes still 200).
+
+### Verification gates passed
+
+- Phase 4's two new test files: **14/14 PASS**.
+- Phase 3's existing worker-skeleton tests: **10/10 STILL PASS** (after the sidecar-missing fallback fix).
+- Existing CLI-path tests touching `_stamp_pgs_row` (8 tests across `test_pgs_scores_calibration_columns.py` + `test_pgs_params_json.py`): **8/8 STILL PASS** (the re-export preserves the import path).
+- Full toolkit suite: **857 passed, 114 skipped (env-gated)** — no regressions vs Phase 3's 843 (the +14 new Phase 4 tests).
+- `ruff check` on all touched files: clean.
+- `mypy --strict` on `pgs_compute_orchestrator.py` + `pgs_compute_config.py` + `app.py`: clean.
+
+### Key design decisions recorded
+
+1. **`stamp_pgs_row` location — `prep/pgs.py`, not `service/`**. The function builds DuckDB rows from a `PgsRow` (defined in `prep/pgs.py`); it belongs alongside the dataclass it consumes. Both the CLI's `pipeline pgs-compute` AND the worker's `_real_compute_fn` import from `prep/pgs.py`. The pre-Phase-4 in-place `_stamp_pgs_row` in `_cli/commands/pipeline.py` survives as a thin re-export so existing import-path callers don't churn.
+2. **`loop.run_in_executor(None, ...)` — default ThreadPoolExecutor**. The blocking `compute_prs_with_coverage_fill` (Tier 1 + Tier 2 + merge + pgsc_calc; minutes wall) must NOT run on the FastAPI event loop. The default executor is fine because the worker's `asyncio.Lock` already enforces 1-in-flight — ThreadPool size doesn't matter.
+3. **`functools.partial` for compute_fn binding**. The lifespan binds `config` + `run_dir` to `_real_compute_fn` once at startup; the worker's `compute_fn` callable then takes only `task` per the public callable signature `Callable[[PgsComputeTaskFullRow], Awaitable[None]]`. Clean separation: orchestrator doesn't know about config; lifespan injects it.
+4. **Missing sidecar → fall back to no-op compute (NOT skip worker entirely)**. Three reasons: (a) Phase 3's tests pre-existed without staging a sidecar — they exercise queue management + kill-switch which don't need real compute. (b) An operator who hasn't yet run `genomeclaw refs fetch --source pgs_scorefile` gets graceful degradation: agent enqueues → worker drains → task lands at `done` with no-op result. (c) The operator-facing WARNING log line makes the configuration gap visible without crashing the host service.
+5. **6-class structured error mapping**. Phase 4 ships 6 named failure modes: `scorefile_missing:PGS<id>` / `pgsc_calc_failed:rc=N` / `dood_path_error:<short>` / `prs_decline:<DeclineReason.value>` / `degenerate_result:<detail>` / `pgs_reference_missing:<msg>`. Plus the `worker_unexpected_error:<ExceptionClass>` fallback. Each maps to a different agent next-step (re-fetch scorefile, ask operator to inspect logs, decline-with-named-reasons, etc.).
+6. **INV-R002 predicate `percentile is None AND raw_score is None`**. A row with both NULL has no usable signal regardless of `pgs_variant_count` (which the synthetic `PgsRow` doesn't carry). The Phase 4 test uses this two-field predicate. Phase 5 may refine if real-data testing surfaces edge cases (e.g. a row with valid `raw_score` but NULL percentile due to ancestry-calibration warning).
+
+### Test bugs caught during GREEN
+
+- `DeclineReason.LOW_MATCH_RATE_BELOW_DEFAULT` doesn't exist — the actual enum names are `VARIANT_OVERLAP_INSUFFICIENT`, `ANCESTRY_CALIBRATION_UNCERTAIN`, etc. Fixed test to use `VARIANT_OVERLAP_INSUFFICIENT`.
+- Initial `_real_compute_fn` call passed `pgs_id=task.pgs_id` to `compute_prs_with_coverage_fill` — mypy caught this since the function doesn't accept `pgs_id` (it parses it from the scorefile header). Removed the kwarg; updated 2 test stubs that derived `pgs_id` from `kwargs["pgs_id"]` to derive from `kwargs["scorefile_path"].stem` instead.
+
+### Edge cases handled
+
+- Sidecar missing → WARNING + no-op compute fallback (queue still drains; agent's polling returns `done` with no real row stamped — Phase 5 may improve this with a `failed:no_prs_config` shape).
+- Sidecar malformed → WARNING + no-op compute fallback (same shape as missing).
+- Scorefile not pre-staged → `failed:scorefile_missing:<pgs_id>` BEFORE the compute fires.
+- Degenerate result → `failed:degenerate_result:zero_overlap:percentile=None,raw_score=None for <pgs_id>` AND no `pgs_scores` row stamped.
+- pgsc_calc subprocess fails → `failed:pgsc_calc_failed:rc=<N>`.
+- DooD path violation (operator misconfigured paths) → `failed:dood_path_error:<short>`.
+- Calibration decline (INV-C001 v1.7) → `failed:prs_decline:<reason>`.
+
+### What stays unchanged
+
+- `INVARIANTS.md` — no new invariants promoted.
+- Phase 3's tests: 10/10 STILL PASS (lifespan-fallback change preserved Phase 3 behavior).
+- Plugin TypeBox + sandbox image — untouched (Phase 6 rebuilds the sandbox image for E2E).
+- `bin/genomeclaw-prs-smoke` — untouched; operators can still drive computes manually.
+- INV-T001 tool-conventions surface (pgsc_calc) — untouched; the worker invokes `compute_prs_with_coverage_fill` which already wraps pgsc_calc via the typed wrapper.
+
+### Next step
+
+**Phase 5** — crash recovery + observability. Stale-running cleanup at app startup (rows with `started_at` > 1 h transition to `failed:worker_restart:stale_running`). INFO/WARNING log lines on every status transition for operator monitoring. 9 tests. Estimated 2 hours.
+
