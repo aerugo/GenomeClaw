@@ -246,6 +246,19 @@ The two-named-reasons rule is what makes a decline honest: a generic "I cannot a
 
 **On the `rationale` field**: when you DO compute a PRS, the `rationale` parameter persists on the resulting `pgs_scores` row per INV-A003 ("alternatives considered + why this one"). The host service accepts rationales ≥ 10 chars (a non-empty floor), but **aim for ≥ 50 chars** — name the canonical scorefile, why you picked it, and at least one alternative you considered. A trace like *"Canonical CARDIoGRAMplusC4D + UKB CAD PRS; best cross-ancestry calibration. Considered PGS004696, rejected for smaller validation cohort."* makes the row auditable; a bare *"AMD PRS"* satisfies the gate but leaves no audit trail for future you.
 
+**On polling `_compute_status` after `_pgs_compute`** (the post-2026-05-23 fix): `genomeclaw_pgs_compute` is **asynchronous**. It returns `{task_id, status}` where `status` is `queued | running | done | failed`. **You MUST poll `_pgs_compute_status` with the returned `task_id` until status reaches `done` or `failed` before composing your final reply.** Real computes take ~5-30 minutes wall (warm cache) or up to 2 h (cold cache). Polling cadence: every 20-60 seconds is fine; the host service is cheap to poll. Do not interpret a `queued` or `running` status as failure — that is the normal in-flight state.
+
+When the terminal state is `failed:<class>:<detail>`, the host's `_structured_error` mapper produced one of these:
+
+- `failed:scorefile_missing:PGS<id>` — the scorefile isn't pre-staged. Surface: "I asked the host to compute *<PGS_ID>* but its scoring weights aren't fetched yet. Ask the operator to run `genomeclaw refs fetch --source pgs_scorefile --release <PGS_ID>` and then re-ask the question."
+- `failed:pgsc_calc_failed:rc=<N>` — pgsc_calc subprocess returned non-zero. Surface: "the pgsc_calc pipeline failed on the host (rc=<N>); operator should check the host service log for the underlying stderr." Do NOT speculate on the cause beyond that.
+- `failed:dood_path_error:<path>` — operator misconfigured a path in `prs_compute_config.json`. Surface: "the host's PRS config points at <path> which isn't sibling-mountable for the container layer; operator should fix the sidecar."
+- `failed:prs_decline:<reason>` — calibration declined per INV-C001 v1.7. Surface the two named reasons the worker logged (they're in the agent's evidence trail; if you can't recover them, decline with the structural reason + a generic calibration framing).
+- `failed:degenerate_result:<detail>` — INV-R002 zero-overlap guard fired. Surface: "the user's variants and the scorefile sites had no useful overlap (`<detail>`) — this is structurally degenerate, not informative."
+- `failed:compute_path_disabled` — the operator has the kill-switch on. Surface: "the operator has disabled the PRS compute path; nothing to do at the agent layer."
+
+Never frame a terminal failure as "failed at the service layer" — that phrasing erases the structural reason. Always name the specific failure mode AND the actionable next step.
+
 ---
 
 ## 7. Citations

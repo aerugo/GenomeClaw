@@ -223,6 +223,32 @@ describe("TypeBox parameter schemas (spec Q4)", () => {
     const empty = await invokeTool(gene, { gene: "" });
     expect(empty.ok).toBe(false);
   });
+
+  test("genomeclaw_gene/_variant/_evidence reject placeholder strings (undefined/null/none/nil)", async () => {
+    // 2026-05-23 eyesight-question deep-dive caught the agent generating
+    // tool calls with the literal string "undefined" as the parameter
+    // value (11 wasted round-trips against /v1/gene/undefined +
+    // /v1/variants/undefined). Plugin TypeBox now rejects the four
+    // placeholder tokens case-insensitively so they fail locally
+    // before any HTTP round-trip.
+    const api = makeMockApi();
+    register(api);
+
+    for (const toolName of ["genomeclaw_gene", "genomeclaw_variant", "genomeclaw_evidence"]) {
+      const tool = api.tools.find((t) => t.name === toolName)!;
+      const argName = toolName === "genomeclaw_gene" ? "gene" : toolName === "genomeclaw_variant" ? "key" : "ref";
+
+      for (const placeholder of ["undefined", "UNDEFINED", "null", "Null", "none", "NONE", "nil"]) {
+        const res = await invokeTool(tool, { [argName]: placeholder });
+        expect(res.ok, `${toolName}(${argName}=${JSON.stringify(placeholder)}) should reject`).toBe(false);
+      }
+
+      // Real values still accepted.
+      const realArg = toolName === "genomeclaw_variant" ? "chr1:12345:A:G" : toolName === "genomeclaw_evidence" ? "clinvar:RCV000001" : "BRCA1";
+      const real = await invokeTool(tool, { [argName]: realArg });
+      expect(real.ok).toBe(true);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

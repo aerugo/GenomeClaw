@@ -227,18 +227,28 @@ const FindingsParams = Type.Object(
   { additionalProperties: false },
 );
 
+// Placeholder-string rejection: the agent occasionally generates tool
+// calls with the literal string "undefined" / "null" / "none" / "nil"
+// when its argument-resolution path produced no real value. These would
+// otherwise pass minLength: 1 and produce wasted 404/400 round-trips
+// against /v1/gene/undefined etc. (observed in the 2026-05-23
+// eyesight-question deep-dive). The pattern is a negative-lookahead JSON
+// Schema regex; it rejects the four placeholder tokens case-insensitively
+// while accepting every real gene symbol / variant key / evidence ref.
+const _NOT_PLACEHOLDER = "^(?![Uu][Nn][Dd][Ee][Ff][Ii][Nn][Ee][Dd]$)(?![Nn][Uu][Ll][Ll]$)(?![Nn][Oo][Nn][Ee]$)(?![Nn][Ii][Ll]$).+$";
+
 const VariantParams = Type.Object(
-  { key: Type.String({ minLength: 1 }) },
+  { key: Type.String({ minLength: 1, pattern: _NOT_PLACEHOLDER }) },
   { additionalProperties: false },
 );
 
 const EvidenceParams = Type.Object(
-  { ref: Type.String({ minLength: 1 }) },
+  { ref: Type.String({ minLength: 1, pattern: _NOT_PLACEHOLDER }) },
   { additionalProperties: false },
 );
 
 const GeneParams = Type.Object(
-  { gene: Type.String({ minLength: 1 }) },
+  { gene: Type.String({ minLength: 1, pattern: _NOT_PLACEHOLDER }) },
   { additionalProperties: false },
 );
 
