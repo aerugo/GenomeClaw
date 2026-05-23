@@ -70,6 +70,30 @@ from genomeclaw_toolkit.schemas import SCHEMA_VERSION
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Default coverage-QC panel (AC2 — auto-engage when bam given, no bed).
+# ---------------------------------------------------------------------------
+
+_DEFAULT_PANEL_BED_NAME = "coverage_panel_default_v1.bed.gz"
+"""Filename of the bundled default gene-panel BED (shipped inside the package)."""
+
+_DEFAULT_PANEL_VERSION = "v1"
+"""Version token recorded in coverage_qc.params_json (INV-R001)."""
+
+_DEFAULT_LOW_COVERAGE_THRESHOLD = "20x"
+"""Low-coverage threshold recorded in coverage_qc.params_json (INV-R001)."""
+
+
+def _default_panel_bed_path() -> Path | None:
+    """Resolve the bundled default-panel BED path, or None if not staged.
+
+    Resolves to ``<package_root>/data/<_DEFAULT_PANEL_BED_NAME>``.
+    Returns ``None`` when the file is absent so callers can emit a WARNING
+    and skip the coverage_qc step gracefully.
+    """
+    candidate = Path(__file__).parent.parent / "data" / _DEFAULT_PANEL_BED_NAME
+    return candidate if candidate.exists() else None
+
 
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
@@ -146,6 +170,7 @@ def ingest(
     sample_id: str,
     bam: Path | None = None,
     bed: Path | None = None,
+    no_coverage_qc: bool = False,
     reference_fasta: Path | None = None,
     started_at: datetime | None = None,
     progress_callback: Callable[[_ProgressEvent], None] | None = None,
@@ -163,10 +188,17 @@ def ingest(
             row's provenance + in the manifest.
         bam: optional source BAM or CRAM. When given, ``mosdepth`` runs
             against it and a per-gene coverage_qc table is populated.
-            Requires ``bed``. CRAM input (``.cram`` suffix) additionally
-            requires ``reference_fasta``.
+            When ``bed`` is not given, the bundled default panel BED is
+            used automatically (see ``_default_panel_bed_path()``).
+            CRAM input (``.cram`` suffix) additionally requires
+            ``reference_fasta``.
         bed: optional gene-list BED for ``mosdepth``'s ``--by`` flag.
-            Required when ``bam`` is provided.
+            When omitted and ``bam`` is given, the bundled default panel
+            BED is used. Pass an explicit path to override the default.
+        no_coverage_qc: when ``True``, skip the mosdepth step entirely
+            even when ``bam`` is given. Useful for quick ingests where
+            coverage data is not needed. Opt-out for the default-panel
+            auto-engage behaviour.
         reference_fasta: optional bgzipped reference fasta (with
             ``.fai`` + ``.gzi`` sidecars from ``samtools faidx``).
             Required when ``bam`` is a CRAM; ignored for BAM. Recorded
@@ -189,8 +221,6 @@ def ingest(
         raise FileNotFoundError(f"derived root not found: {derived_root}")
     if bam is not None and not bam.exists():
         raise FileNotFoundError(f"bam not found: {bam}")
-    if bam is not None and bed is None:
-        raise ValueError("bed is required when bam is provided")
     if bed is not None and not bed.exists():
         raise FileNotFoundError(f"bed not found: {bed}")
     if bam is not None and bam.suffix == ".cram" and reference_fasta is None:
@@ -200,6 +230,28 @@ def ingest(
         )
     if reference_fasta is not None and not reference_fasta.exists():
         raise FileNotFoundError(f"reference_fasta not found: {reference_fasta}")
+
+    # Auto-engage the default coverage-QC panel when bam is given but bed
+    # is not explicitly supplied and the operator hasn't opted out.
+    # INV-R001: the panel provenance (version, path, threshold) is threaded
+    # into coverage_qc.params_json below, at the write step.
+    _panel_is_default = False
+    if bam is not None and bed is None and not no_coverage_qc:
+        default_panel = _default_panel_bed_path()
+        if default_panel is not None:
+            log.info(
+                "Auto-engaging default coverage-QC panel: %s (version=%s)",
+                _DEFAULT_PANEL_BED_NAME,
+                _DEFAULT_PANEL_VERSION,
+            )
+            bed = default_panel
+            _panel_is_default = True
+        else:
+            log.warning(
+                "Default coverage-QC panel BED not found at the canonical path; "
+                "skipping the coverage_qc step. Run `genomeclaw doctor` to verify "
+                "the install, or pass --bed to supply an explicit panel."
+            )
 
     if started_at is None:
         started_at = datetime.now(tz=UTC)
@@ -345,9 +397,11 @@ def ingest(
     )
 
     # mosdepth — populate coverage_qc + append step (cases 20, 21).
+    # Fires when: bam is given + bed is resolved (explicit or auto-engaged default)
+    # + the operator hasn't opted out via no_coverage_qc=True.
     bam_path: Path | None = None
     bam_sha: str | None = None
-    if bam is not None and bed is not None:
+    if bam is not None and bed is not None and not no_coverage_qc:
         emit_beat(
             progress_callback,
             phase="ingest",
@@ -374,7 +428,21 @@ def ingest(
         )
         coverage_rows = parse_regions_bed(mosdepth_result.regions_bed)
 
-        coverage_params: dict[str, Any] = {"bed": str(bed)}
+        # INV-R001: params_json records the panel BED path + version + threshold.
+        # When the default panel was auto-engaged, record the canonical panel
+        # metadata so the row is self-describing.  For operator-supplied custom
+        # BEDs, record "custom" as the version.
+        if _panel_is_default:
+            coverage_params: dict[str, Any] = {
+                "panel_version": _DEFAULT_PANEL_VERSION,
+                "panel_path": _DEFAULT_PANEL_BED_NAME,
+                "low_coverage_threshold": _DEFAULT_LOW_COVERAGE_THRESHOLD,
+            }
+        else:
+            coverage_params = {
+                "panel_version": "custom",
+                "panel_path": str(bed),
+            }
         mosdepth_step_params: dict[str, Any] = {}
         mosdepth_step_inputs: list[dict[str, Any]] = [
             {"path": str(bam), "sha256": bam_sha},
@@ -478,4 +546,11 @@ def ingest(
     return run_dir
 
 
-__all__ = ["autodetect_sample_inputs", "ingest"]
+__all__ = [
+    "autodetect_sample_inputs",
+    "ingest",
+    "_DEFAULT_PANEL_BED_NAME",
+    "_DEFAULT_PANEL_VERSION",
+    "_DEFAULT_LOW_COVERAGE_THRESHOLD",
+    "_default_panel_bed_path",
+]

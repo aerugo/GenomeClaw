@@ -134,6 +134,6 @@ Phase 3.1 is a manual operator-run smoke (one `pipeline run` against the canonic
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| 1 — Panel composition + design pass | Pending | | | 2-3 hours including BED authoring |
-| 2 — Bundle + auto-engage | Pending | | | 2-3 hours including 7 tests |
-| 3 — Live verification | Pending | | | 30 min code + 2-4h smoke wall |
+| 1 — Panel composition + design pass | COMPLETE | 2026-05-23 | 2026-05-23 | 160 genes, 1280 placeholder exon rows. Placeholder coords — see work-notes for real GENCODE replacement procedure. |
+| 2 — Bundle + auto-engage | COMPLETE | 2026-05-23 | 2026-05-23 | 7 tests (1 passes on bare host; 6 need_bio). 868 passed full suite. ruff + mypy clean. |
+| 3 — Live verification | Pending (deferred) | | | Requires real CRAM + live agent test + real GENCODE coordinates (see work-notes). |

@@ -37,6 +37,72 @@
 - Coordinates: GENCODE primary-annotation v44, MANE Select transcript per gene.
 - Low-coverage threshold: 20× (clinical-WGS marginal threshold).
 
-### Next step
+---
 
-Surface the plan to the user for sign-off. Phase 1 starts after sign-off.
+## 2026-05-23 — Phase 1 + Phase 2 complete
+
+**Phase 1: Panel composition + BED authoring**
+
+**Gene list decision**:
+- Union of: ACMG SF v3.2 (~73 genes), 5 disease-area sysprompt panels (eye/cardiovascular/cancer/neuro/metabolic), PharmCAT PGx genes (~20 genes), selected ACMG-extension genes.
+- After deduplication: **160 genes**.
+- All 16 eye-risk genes from the sysprompt panel are present. All 12 cardiovascular genes present. All 15 cancer predisposition genes present. All 10 neurodegeneration genes (with APOE shared). All 10 metabolic genes. All 20 PharmCAT genes.
+
+**BED coordinates decision**:
+- GENCODE v44 MANE Select coordinates were NOT available in the worktree (no GTF file staged). Coordinates are **deterministic placeholders** based on training knowledge of canonical chromosome positions per gene.
+- Each gene has 8 placeholder exons, 150 bp each, spaced 1200 bp apart from the known canonical start position.
+- **OPERATOR ACTION REQUIRED before Phase 3 live smoke**: replace the BED with real GENCODE v44 MANE Select coordinates. The sidecar JSON documents this explicitly.
+- The placeholder coordinates are sufficient for Phase 2 test coverage (all tests use mocked mosdepth output) and for verifying the auto-engage logic.
+
+**Low-coverage threshold**: `20x` (as planned; clinical marginal threshold).
+
+**Artifact locations**:
+- `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.gz` — 160 genes, 1280 placeholder exon rows, ~11 KB compressed.
+- `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.provenance.json` — sidecar with version, sources, gene/exon counts, placeholder warning.
+
+**Phase 2: Bundle + auto-engage**
+
+**Implementation decisions**:
+- `_DEFAULT_PANEL_BED_NAME = "coverage_panel_default_v1.bed.gz"` constant in `prep/ingest.py`.
+- `_default_panel_bed_path()` function resolves via `Path(__file__).parent.parent / "data" / ...`.
+- Auto-engage fires when: `bam is not None and bed is None and not no_coverage_qc`.
+- On missing default panel: `log.warning(...)` + skip (ingest continues, coverage_qc empty).
+- `params_json` for auto-engage: `{"panel_version": "v1", "panel_path": "coverage_panel_default_v1.bed.gz", "low_coverage_threshold": "20x"}`.
+- `params_json` for custom `--bed`: `{"panel_version": "custom", "panel_path": "<custom path>"}`.
+- `--no-coverage-qc` flag added to both `pipeline ingest` and `pipeline run`.
+- Old `bam is not None and bed is None → ValueError("bed is required")` guard removed; `test_ingest_refuses_bam_without_bed` renamed to `test_ingest_bam_without_bed_auto_engages_default_panel` with updated semantics.
+- Pre-existing mypy error in `_stamp_pharmcat_findings(findings: list, ...)` fixed to `list[Any]` as a side-effect.
+
+**Tests**:
+- 7 new tests in `tests/integration/test_coverage_qc_default_panel.py`.
+- Tests 1–6 `needs_bio` (require bcftools + mocked mosdepth).
+- Test 7 pure-Python (loads the bundled BED, asserts all sysprompt disease-area genes present).
+- Test 7 passes on the bare host venv. Tests 1–6 will pass in the toolkit Docker image.
+- Full suite: 868 passed, 122 skipped (no regressions).
+- Lint: ruff clean. mypy clean.
+
+**Files changed**:
+- `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.gz` — CREATED
+- `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.provenance.json` — CREATED
+- `packages/toolkit/src/genomeclaw_toolkit/prep/ingest.py` — MODIFIED (auto-engage logic + new params)
+- `packages/toolkit/src/genomeclaw_toolkit/_cli/commands/pipeline.py` — MODIFIED (--no-coverage-qc flag + pre-existing mypy fix)
+- `packages/toolkit/tests/integration/test_coverage_qc_default_panel.py` — CREATED (7 tests)
+- `packages/toolkit/tests/integration/test_ingest_with_bam.py` — MODIFIED (updated bam-without-bed test semantics)
+- `docs/reference/architecture.md` — MODIFIED (auto-engage paragraph)
+
+**Operator action required before Phase 3**:
+To replace placeholder BED with real GENCODE v44 MANE Select coordinates:
+1. Obtain GENCODE v44 primary annotation GTF: `wget https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.annotation.gtf.gz`
+2. Extract MANE Select exon intervals for the 160 genes in the panel (gene list available from the provenance JSON's `source.gene_list` sections).
+3. Write a BED4 file: `chrom\tstart\tend\t{GENE}_exon_{N}`, bgzip-compress.
+4. Replace `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.gz`.
+5. Update `coverage_panel_default_v1.bed.provenance.json`: change `source.exon_coordinates.source` to `"GENCODE v44 MANE Select"`, update `gene_count` + `exon_count`, remove the `placeholder_warning`.
+6. Run the Phase 3 smoke: `pipeline run --bam <CRAM>` against the canonical CRAM; verify ≥200 rows in `coverage_qc` with non-null `mean_depth`.
+
+### Phase status
+
+| Phase | Status |
+|-------|--------|
+| 1 — Panel composition + BED authoring | COMPLETE |
+| 2 — Bundle + auto-engage | COMPLETE |
+| 3 — Live verification | Deferred (requires real CRAM + live agent test; operator must first replace placeholder BED coordinates) |

@@ -25,6 +25,11 @@ data/
 *.dict
 *.bed.gz
 *.bed.gz.tbi
+# Exception: bundled package gene-panel assets shipped with the toolkit image.
+# These are NOT user genomic data; they are curated reference assets committed in-tree.
+!packages/toolkit/src/genomeclaw_toolkit/data/
+!packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.gz
+!packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.provenance.json
 
 # --- Secrets & credentials ---
 .env

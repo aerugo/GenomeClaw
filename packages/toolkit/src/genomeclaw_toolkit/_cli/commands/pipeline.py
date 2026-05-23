@@ -29,7 +29,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from pydantic import BaseModel, ConfigDict
@@ -213,8 +213,27 @@ def pipeline_ingest(
     ] = None,
     bed: Annotated[
         Path | None,
-        typer.Option("--bed", help="Gene-list BED (required when --bam given)."),
+        typer.Option(
+            "--bed",
+            help=(
+                "Gene-list BED for mosdepth --by. When --bam is given and --bed is "
+                "omitted, the bundled default coverage panel "
+                "(coverage_panel_default_v1.bed.gz) is used automatically. "
+                "Pass an explicit path to override."
+            ),
+        ),
     ] = None,
+    no_coverage_qc: Annotated[
+        bool,
+        typer.Option(
+            "--no-coverage-qc",
+            help=(
+                "Skip the mosdepth coverage-QC step entirely, even when --bam is "
+                "provided. Disables the default-panel auto-engage. Useful for "
+                "quick ingests where coverage data is not needed."
+            ),
+        ),
+    ] = False,
     reference_fasta: Annotated[
         Path | None,
         typer.Option("--reference-fasta", help="Bgzipped reference fasta (CRAM + left-align)."),
@@ -238,6 +257,7 @@ def pipeline_ingest(
                 sample_id=resolved_sample_id,
                 bam=bam,
                 bed=bed,
+                no_coverage_qc=no_coverage_qc,
                 reference_fasta=reference_fasta,
                 progress_callback=callback,
             )
@@ -426,8 +446,25 @@ def pipeline_run(
     ] = None,
     bed: Annotated[
         Path | None,
-        typer.Option("--bed", help="Gene-list BED (required when --bam given)."),
+        typer.Option(
+            "--bed",
+            help=(
+                "Gene-list BED for mosdepth --by. When --bam is given and --bed is "
+                "omitted, the bundled default coverage panel is used automatically. "
+                "Pass an explicit path to override."
+            ),
+        ),
     ] = None,
+    no_coverage_qc: Annotated[
+        bool,
+        typer.Option(
+            "--no-coverage-qc",
+            help=(
+                "Skip the mosdepth coverage-QC step even when --bam is provided. "
+                "Disables the default-panel auto-engage."
+            ),
+        ),
+    ] = False,
     reference_fasta: Annotated[
         Path | None,
         typer.Option("--reference-fasta", help="Bgzipped reference fasta."),
@@ -467,6 +504,7 @@ def pipeline_run(
                 sample_id=resolved_sample_id,
                 bam=bam,
                 bed=bed,
+                no_coverage_qc=no_coverage_qc,
                 reference_fasta=reference_fasta,
                 progress_callback=callback,
             )
@@ -1150,7 +1188,7 @@ class _PharmcatPayload(BaseModel):
 
 def _stamp_pharmcat_findings(
     run_dir: Path,
-    findings: list,
+    findings: list[Any],
     *,
     vcf: Path,
     cyp2d6_diplotype_json: Path | None,

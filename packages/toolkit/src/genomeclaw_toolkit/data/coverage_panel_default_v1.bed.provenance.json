@@ -1,0 +1,40 @@
+{
+  "version": "v1",
+  "created_at": "2026-05-23",
+  "source": {
+    "gene_list": [
+      {
+        "source": "ACMG_SF_v3.2",
+        "url": "https://www.acmg.net/docs/SF_v3.2_FINAL.pdf",
+        "description": "ACMG Secondary Findings v3.2 actionable genes (2023). ~73 genes covering hereditary cancer, cardiomyopathy, arrhythmia, aortic disease, familial hypercholesterolaemia, and other actionable Mendelian conditions."
+      },
+      {
+        "source": "GenomeClaw disease-area sysprompt panels",
+        "ref": "packages/nemoclaw-plugin/sandbox/agent-system-prompt.md@16f31d6",
+        "panels": {
+          "eyesight": ["CFH", "ARMS2", "HTRA1", "C2", "C3", "CFB", "ABCA4", "USH2A", "RPE65", "RHO", "RPGR", "MYOC", "OPTN", "TBK1", "CYP1B1", "TIMP3"],
+          "cardiovascular": ["LDLR", "APOB", "PCSK9", "APOE", "LPA", "MYH7", "MYBPC3", "TNNT2", "KCNQ1", "KCNH2", "SCN5A", "FBN1"],
+          "cancer_predisposition": ["BRCA1", "BRCA2", "TP53", "MLH1", "MSH2", "MSH6", "PMS2", "APC", "MUTYH", "CDH1", "PTEN", "STK11", "PALB2", "ATM", "CHEK2"],
+          "neurodegeneration": ["APP", "PSEN1", "PSEN2", "APOE", "MAPT", "GRN", "C9orf72", "LRRK2", "SNCA", "GBA", "HTT"],
+          "metabolic": ["TCF7L2", "HNF1A", "HNF4A", "GCK", "MC4R", "FTO", "PPARG", "KCNJ11", "GLP1R", "IRS1"]
+        }
+      },
+      {
+        "source": "PharmCAT-flagged pharmacogenomic genes",
+        "ref": "prep/pharmcat.py + _pharmcat_conventions.py",
+        "genes": ["CYP2D6", "CYP2C19", "CYP2C9", "CYP2B6", "CYP3A4", "CYP3A5", "CYP4F2", "CYP1A2", "DPYD", "TPMT", "UGT1A1", "SLCO1B1", "VKORC1", "F5", "IFNL3", "NUDT15", "G6PD", "ABCG2", "NAT2", "CFTR"]
+      }
+    ],
+    "exon_coordinates": {
+      "source": "PLACEHOLDER — pending real GENCODE v44 MANE Select replacement",
+      "description": "Each gene has 8 deterministic placeholder exons: start = canonical_chromosome_start + (exon_index * 1200), length 150 bp. Chromosome starts are from training knowledge (GRCh38). Real GENCODE v44 MANE Select coordinates must be substituted before any live mosdepth coverage run (Phase 3 prerequisite). See work-notes.md for the replacement procedure.",
+      "build": "GRCh38",
+      "transcript_filter_intended": "MANE Select where present; GENCODE canonical otherwise",
+      "placeholder_warning": "DO NOT use for clinical interpretation. Per-exon coverage numbers will not align with real genomic positions until real GENCODE coordinates are substituted."
+    }
+  },
+  "gene_count": 160,
+  "exon_count": 1280,
+  "low_coverage_threshold_default": "20x",
+  "curation_notes": "Union of ACMG SF v3.2, GenomeClaw five disease-area sysprompt panels, and PharmCAT-flagged pharmacogenomic genes. Deduplicated: APOE appears in both cardiovascular and neurodegeneration panels and is counted once. PTEN, MUTYH, PCSK9 appear in both ACMG and disease-area panels; counted once. Placeholder exon coordinates — see source.exon_coordinates.placeholder_warning. Operator action required before Phase 3 live smoke: replace this file with real GENCODE v44 MANE Select coordinates (see docs/plans/active/coverage-qc-gene-list-bed/work-notes.md)."
+}
