@@ -1,8 +1,8 @@
 # Phase 2 — Bundle BED + auto-engage on ingest
 
-**Status**: Pending (gated on Phase 1 producing the BED + sidecar JSON)
-**Started**:
-**Completed**:
+**Status**: COMPLETE
+**Started**: 2026-05-23
+**Completed**: 2026-05-23
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---

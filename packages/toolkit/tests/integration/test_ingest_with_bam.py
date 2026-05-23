@@ -157,25 +157,42 @@ def test_provenance_json_records_bcftools_stats_and_mosdepth_steps(
 
 
 @pytest.mark.needs_bio
-def test_ingest_refuses_bam_without_bed(
+def test_ingest_bam_without_bed_auto_engages_default_panel(
     tiny_vcf_gz: Path,
     tiny_bam: Path,
     genomeclaw_layout: dict[str, Path],
 ) -> None:
-    """``bam`` requires ``bed``; without it ingest refuses before any output."""
+    """``bam`` without ``bed`` auto-engages the bundled default coverage panel.
+
+    Pre-Phase-2 behaviour raised ValueError("bed is required"). Phase-2
+    changed the contract: the default panel BED is used automatically and
+    the ingest succeeds; ``coverage_qc`` is populated from mosdepth output.
+    """
     from genomeclaw_toolkit.prep.ingest import ingest
 
-    with pytest.raises(ValueError, match="bed is required"):
-        ingest(
-            vcf=tiny_vcf_gz,
-            reference_dir=genomeclaw_layout["reference"],
-            derived_root=genomeclaw_layout["derived"],
-            sample_id="test-001",
-            bam=tiny_bam,
-        )
+    run_dir = ingest(
+        vcf=tiny_vcf_gz,
+        reference_dir=genomeclaw_layout["reference"],
+        derived_root=genomeclaw_layout["derived"],
+        sample_id="test-001",
+        bam=tiny_bam,
+        # No bed= — should auto-engage the default panel
+    )
 
-    # No derived store written.
-    assert list(genomeclaw_layout["derived"].iterdir()) == []
+    # A derived store must have been written.
+    import duckdb
+
+    conn = duckdb.connect(str(run_dir / "variants.duckdb"), read_only=True)
+    try:
+        row_count = conn.execute("SELECT COUNT(*) FROM coverage_qc").fetchone()
+    finally:
+        conn.close()
+
+    # The default panel has ~160 genes × 8 placeholder exons = 1280 BED rows;
+    # mosdepth emits one output row per BED row. We just assert it's non-zero.
+    assert row_count is not None and row_count[0] > 0, (
+        "Expected coverage_qc rows from auto-engaged default panel; got 0"
+    )
 
 
 # ---------------------------------------------------------------------------
