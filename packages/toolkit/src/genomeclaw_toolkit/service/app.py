@@ -61,6 +61,7 @@ from genomeclaw_toolkit.service.pgs_compute_config import (
 )
 from genomeclaw_toolkit.service.pgs_compute_orchestrator import (
     _real_compute_fn,
+    cleanup_stale_running_tasks,
     create_pgs_compute_tasks_db_if_missing,
     enqueue_pgs_compute_task,
     pgs_compute_worker_lifespan,
@@ -155,6 +156,16 @@ def build_app(*, derived_root: Path) -> FastAPI:
             run_dir = cache.active.run_dir
             db_path = run_dir / "pgs_compute_tasks.sqlite"
             create_pgs_compute_tasks_db_if_missing(db_path)
+            # Phase 5: transition any `running` row left over from an
+            # unclean prior shutdown to `failed:worker_restart:stale_running`
+            # before the worker starts polling. Emits a WARNING per cleaned
+            # row so the operator sees them on tail -f.
+            cleaned = cleanup_stale_running_tasks(db_path)
+            if cleaned:
+                _LOG.warning(
+                    "Cleaned %d stale-running PGS compute task(s) on startup",
+                    len(cleaned),
+                )
             compute_fn = None  # None → pgs_compute_worker_lifespan picks the no-op default.
             try:
                 prs_config = load_prs_compute_config(run_dir)

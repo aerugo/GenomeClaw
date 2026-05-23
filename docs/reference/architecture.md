@@ -142,6 +142,8 @@ flowchart TB
 
   Consent for PGS Catalog egress is one-time at install per `INV-P001` (not per-compute); the agent's choice rationale is persisted per `INV-A003`; the PRS-decline pattern in `INV-C001` v1.7 prevents computes against immature literature.
 
+  **Worker (the E.3 background loop, per [agent-prs-compute-fix](../plans/active/agent-prs-compute-fix/))**: the host service's FastAPI `lifespan` hook spawns an in-process `asyncio` task that polls `pgs_compute_tasks.sqlite`, atomically claims one row at a time (SQLite `UPDATE...RETURNING`), and drains it via `compute_prs_with_coverage_fill(...)` running off the event loop via `loop.run_in_executor(None, ...)`. Concurrency cap = 1 in-flight via a per-loop `asyncio.Lock`. The worker reads a per-deployment `prs_compute_config.json` sidecar at startup for the sample CRAM + reference paths; if absent, the worker still drains (with a no-op compute) but emits a clear WARNING log line. **Stale-running cleanup**: any row left in `running` for longer than `GENOMECLAW_PGS_STALE_RUNNING_WINDOW_S` (default 1 h) transitions to `failed:worker_restart:stale_running` at the next app startup — the operator's `tail -f` on the host log surfaces both the cleanup (WARNING) and every subsequent transition (INFO with structured `task_id` / `pgs_id` / `transition` fields).
+
 (Per MVP spec Q3 — Decision Taken: there is no `/v1/report` endpoint. Report-shaped responses are assembled by the agent from `/v1/findings` + `/v1/health` + its training.)
 
 **Output shape**: minimal-sufficient by default (`INV-P002`). A future `?class=bulk` opt-in is reserved but not enabled in v0. Per MVP spec Q4: array-shaped query parameters use the FastAPI repeated-query-parameter convention (`?genes=A&genes=B`), not comma-separated strings.

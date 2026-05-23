@@ -30,7 +30,7 @@ import sqlite3
 import subprocess
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal
 
 from genomeclaw_toolkit.prep._paths import DooDPathError, as_sibling_mountable
@@ -201,6 +201,66 @@ def _resolve_compute_enabled() -> bool:
     """
     raw = os.environ.get("GENOMECLAW_PGS_COMPUTE_ENABLED", "true").strip().lower()
     return raw not in ("false", "0", "no", "off")
+
+
+def _stale_running_window_s() -> int:
+    """Window (seconds) past which a ``running`` row is considered stale.
+
+    Default 1 hour. A warm-cache PRS compute completes in ≤30 min; a
+    cold-cache compute can take ≤2 h. The 1 h default sits above the
+    warm-cache budget + below the cold-cache budget. Operators staging
+    a fresh deployment may want to bump to 4 h (14400 s) for the first
+    cold-cache compute.
+    """
+    return int(os.environ.get("GENOMECLAW_PGS_STALE_RUNNING_WINDOW_S", "3600"))
+
+
+def cleanup_stale_running_tasks(
+    db_path: Path, *, window_s: int | None = None
+) -> list[str]:
+    """Transition every ``running`` row older than the window to ``failed``.
+
+    Runs once at app startup before the worker loop spawns. The error
+    string is ``worker_restart:stale_running`` so the agent's
+    ``/v1/pgs/compute/{task_id}`` polling surfaces a clear next step
+    rather than the row sitting at ``running`` indefinitely after an
+    unclean shutdown.
+
+    Returns the list of cleaned ``task_id`` strings (for logging at the
+    caller side; the function emits WARNING records itself for each
+    transitioned row so an operator's log tail sees them).
+    """
+    if window_s is None:
+        window_s = _stale_running_window_s()
+    cutoff = (datetime.now(tz=UTC) - timedelta(seconds=window_s)).isoformat()
+    completed_at = datetime.now(tz=UTC).isoformat()
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        rows = conn.execute(
+            """
+            UPDATE pgs_compute_tasks
+            SET status = 'failed',
+                error = 'worker_restart:stale_running',
+                completed_at = ?
+            WHERE status = 'running' AND started_at < ?
+            RETURNING task_id, pgs_id
+            """,
+            [completed_at, cutoff],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    for task_id, pgs_id in rows:
+        _LOG.warning(
+            "PGS compute worker found stale running task; transitioning to failed",
+            extra={
+                "task_id": task_id,
+                "pgs_id": pgs_id,
+                "transition": "stale_running_to_failed",
+            },
+        )
+    return [r[0] for r in rows]
 
 
 def _atomic_claim_one(db_path: Path) -> PgsComputeTaskFullRow | None:
@@ -444,16 +504,50 @@ async def pgs_compute_worker_loop(
                     claimed = _atomic_claim_one(db_path)
                     if claimed is not None:
                         _mark_failed(db_path, claimed.task_id, "compute_path_disabled")
+                        _LOG.info(
+                            "PGS compute task rejected: kill-switch off",
+                            extra={
+                                "task_id": claimed.task_id,
+                                "pgs_id": claimed.pgs_id,
+                                "transition": "queued_to_failed_compute_path_disabled",
+                            },
+                        )
                 else:
                     claimed = _atomic_claim_one(db_path)
                     if claimed is not None:
+                        _LOG.info(
+                            "PGS compute task claimed",
+                            extra={
+                                "task_id": claimed.task_id,
+                                "pgs_id": claimed.pgs_id,
+                                "transition": "queued_to_running",
+                            },
+                        )
                         try:
                             await compute_fn(claimed)
                             _mark_done(db_path, claimed.task_id)
+                            _LOG.info(
+                                "PGS compute task completed",
+                                extra={
+                                    "task_id": claimed.task_id,
+                                    "pgs_id": claimed.pgs_id,
+                                    "transition": "running_to_done",
+                                },
+                            )
                         except asyncio.CancelledError:
                             raise
                         except Exception as exc:
-                            _mark_failed(db_path, claimed.task_id, _structured_error(exc))
+                            err = _structured_error(exc)
+                            _mark_failed(db_path, claimed.task_id, err)
+                            _LOG.info(
+                                "PGS compute task failed",
+                                extra={
+                                    "task_id": claimed.task_id,
+                                    "pgs_id": claimed.pgs_id,
+                                    "transition": "running_to_failed",
+                                    "error": err,
+                                },
+                            )
                             _LOG.exception(
                                 "PGS compute worker failed task %s",
                                 claimed.task_id,
@@ -503,6 +597,7 @@ __all__ = [
     "PgsComputeTaskRow",
     "PgsScorefileMissingError",
     "PgsTaskStatus",
+    "cleanup_stale_running_tasks",
     "create_pgs_compute_tasks_db_if_missing",
     "enqueue_pgs_compute_task",
     "pgs_compute_worker_lifespan",
