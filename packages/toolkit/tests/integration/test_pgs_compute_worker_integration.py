@@ -318,7 +318,23 @@ def test_invR002_degenerate_result_does_not_stamp(tmp_path: Path, monkeypatch):
 
 
 def test_worker_maps_scorefile_missing_to_structured_error(tmp_path: Path, monkeypatch):
-    """Scorefile not at the canonical path → ``failed:scorefile_missing:PGS_X``."""
+    """Phase 2 update: scorefile absent + compute enabled → auto-fetch → ``scorefile_unfetchable``.
+
+    Pre-Phase-2, a missing scorefile produced ``scorefile_missing:<pgs_id>``. Phase 2
+    (worker-self-sufficient-compute) adds ``_ensure_scorefile_staged``: when the scorefile
+    is absent and compute is enabled, the worker auto-fetches from PGS Catalog. An
+    invalid/fake PGS ID returns a 404 → ``scorefile_unfetchable:<pgs_id>:404``.
+
+    The ``scorefile_missing`` code path is still reachable via ``_structured_error``
+    (when ``_resolve_scorefile_path`` raises in the no-kill-switch-off path), but in
+    end-to-end flow with compute enabled, a missing scorefile surfaces as
+    ``scorefile_unfetchable`` after the auto-fetch attempt.
+
+    INV-P001: see also ``test_cache_miss_kill_switch_off_propagates_missing_error`` in
+    ``test_pgs_compute_scorefile_autofetch.py`` for the kill-switch path.
+    """
+    from genomeclaw_toolkit.service import pgs_compute_orchestrator
+
     monkeypatch.setenv("GENOMECLAW_PGS_WORKER_POLL_INTERVAL_S", "0.02")
     _stage_run_with_config(tmp_path)  # config staged but NO scorefile touched
 
@@ -327,7 +343,9 @@ def test_worker_maps_scorefile_missing_to_structured_error(tmp_path: Path, monke
         final = _wait_for_terminal(client, _enqueue(client, pgs_id="PGS_MISSING").json()["task_id"])
 
     assert final["status"] == "failed"
-    assert final["error"] == "scorefile_missing:PGS_MISSING", final["error"]
+    # Phase 2: missing scorefile with compute enabled → auto-fetch → 404 →
+    # scorefile_unfetchable (the fake PGS ID has no real PGS Catalog entry).
+    assert final["error"].startswith("scorefile_unfetchable:PGS_MISSING:"), final["error"]
 
 
 def test_worker_maps_pgsc_calc_failure_to_structured_error(tmp_path: Path, monkeypatch):

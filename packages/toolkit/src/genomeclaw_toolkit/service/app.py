@@ -62,6 +62,7 @@ from genomeclaw_toolkit.service.pgs_compute_config import (
 )
 from genomeclaw_toolkit.service.pgs_compute_orchestrator import (
     _real_compute_fn,
+    _resolve_compute_enabled,
     cleanup_stale_running_tasks,
     create_pgs_compute_tasks_db_if_missing,
     enqueue_pgs_compute_task,
@@ -229,7 +230,15 @@ def build_app(*, derived_root: Path) -> FastAPI:
                 # sidecar paths are perfectly valid host-form paths.
                 _publish_host_roots_from_config(prs_config)
                 compute_fn = functools.partial(
-                    _real_compute_fn, config=prs_config, run_dir=run_dir
+                    _real_compute_fn,
+                    config=prs_config,
+                    run_dir=run_dir,
+                    # Phase 2 (worker-self-sufficient-compute): thread the
+                    # kill-switch fn so _ensure_scorefile_staged can gate
+                    # PGS Catalog egress at fetch-decision time (not at
+                    # startup). Re-evaluated on each compute so a mid-run
+                    # flip takes effect immediately.
+                    compute_enabled_fn=_resolve_compute_enabled,
                 )
             worker_ctx = pgs_compute_worker_lifespan(db_path, compute_fn=compute_fn)
             await worker_ctx.__aenter__()

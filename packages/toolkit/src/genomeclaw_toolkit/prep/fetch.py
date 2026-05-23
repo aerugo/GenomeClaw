@@ -1554,12 +1554,101 @@ def remove_partial_dir(reference_root: Path, source: str, release: str) -> None:
         shutil.rmtree(target)
 
 
+class PgsScorefileUnfetchableError(RuntimeError):
+    """The PGS Catalog scorefile could not be fetched after retries.
+
+    Raised by :func:`fetch_pgs_scorefile` when a 404 is returned (the PGS
+    ID doesn't exist) or when all retry attempts are exhausted on transient
+    5xx errors. The ``reason`` attribute carries a short stable string
+    (``"404"`` or ``"server_unreachable"``) for the worker's structured
+    error mapper to embed in ``failed:scorefile_unfetchable:<pgs_id>:<reason>``.
+    """
+
+    def __init__(self, pgs_id: str, reason: str) -> None:
+        """Build the error with the PGS ID + reason string for structured-error mapping."""
+        super().__init__(f"could not fetch scorefile for {pgs_id}: {reason}")
+        self.pgs_id = pgs_id
+        self.reason = reason
+
+
+def fetch_pgs_scorefile(
+    pgs_id: str,
+    scorefile_root: Path,
+    *,
+    base_url: str = _DEFAULT_BASE_URLS["pgs_scorefile"],
+    max_retries: int = 3,
+) -> Path:
+    """Download ``pgs_id``'s hmPOS_GRCh38 scoring file from PGS Catalog.
+
+    Idempotent: if ``<scorefile_root>/<pgs_id>/<pgs_id>_hmPOS_GRCh38.txt.gz``
+    already exists, returns the path without hitting the network.
+
+    Retries transient 5xx with exponential backoff (1 s, 4 s, 16 s);
+    a persistent 5xx OR a 404 raises :class:`PgsScorefileUnfetchableError`
+    with a short reason string (``"404"`` or ``"server_unreachable"``).
+
+    The URL template matches the ``_LAYOUTS["pgs_scorefile"]`` relpath so
+    this function uses the same canonical endpoint as the operator-facing
+    ``genomeclaw refs fetch --source pgs_scorefile`` path, without routing
+    through the heavyweight :func:`fetch` orchestrator (which calls
+    ``preflight.assert_reference_writable()`` and raises
+    :class:`VersionAlreadyExists` on a cache hit rather than returning the
+    existing path — undesirable here).
+
+    Args:
+        pgs_id: PGS Catalog ID, e.g. ``"PGS004606"``.
+        scorefile_root: Parent directory under which the canonical layout
+            ``<pgs_id>/<pgs_id>_hmPOS_GRCh38.txt.gz`` is maintained.
+        base_url: Override for the EBI FTP root. Tests inject a
+            ``pytest_httpserver`` URL here.
+        max_retries: Number of fetch attempts before giving up with
+            ``server_unreachable``. Default 3 (1 s / 4 s / 16 s backoff).
+
+    Returns:
+        Absolute :class:`pathlib.Path` to the on-disk canonical file.
+
+    Raises:
+        PgsScorefileUnfetchableError: 404 or all retries exhausted on 5xx.
+    """
+    target = scorefile_root / pgs_id / f"{pgs_id}_hmPOS_GRCh38.txt.gz"
+    if target.exists():
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Build the URL from the _LAYOUTS template, substituting the PGS ID
+    # for the {release_n} placeholder — same substitution as fetch() does.
+    relpath = _LAYOUTS["pgs_scorefile"].files[0].relpath.replace("{release_n}", pgs_id)
+    url = base_url.rstrip("/") + "/" + relpath.lstrip("/")
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            data = _http_get(url)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise PgsScorefileUnfetchableError(pgs_id, "404") from exc
+            # Transient 5xx — retry with exponential backoff.
+            last_exc = exc
+            if attempt + 1 < max_retries:
+                time.sleep(4**attempt)
+            continue
+        # Success — write to canonical path atomically (write_bytes is not
+        # atomic, but a crash mid-write leaves no partial file on disk
+        # since the file didn't exist yet; a future retry re-fetches).
+        target.write_bytes(data)
+        return target
+
+    raise PgsScorefileUnfetchableError(pgs_id, "server_unreachable") from last_exc
+
+
 __all__ = [
     "ChecksumMismatch",
     "DownloadStalled",
+    "PgsScorefileUnfetchableError",
     "Source",
     "TruncatedDownload",
     "VersionAlreadyExists",
     "fetch",
+    "fetch_pgs_scorefile",
     "remove_partial_dir",
 ]

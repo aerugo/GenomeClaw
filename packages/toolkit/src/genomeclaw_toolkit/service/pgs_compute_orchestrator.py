@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Literal
 from genomeclaw_toolkit.prep._paths import DooDPathError, as_sibling_mountable
 from genomeclaw_toolkit.prep._pgs_qc import PRSDeclineError
 from genomeclaw_toolkit.prep.coverage_fill import compute_prs_with_coverage_fill
+from genomeclaw_toolkit.prep.fetch import PgsScorefileUnfetchableError, fetch_pgs_scorefile
 from genomeclaw_toolkit.prep.pgs import (
     PgsReferenceMissingError,
     PgsRow,
@@ -354,6 +355,11 @@ class PgsScorefileMissingError(FileNotFoundError):
     ``scorefile_missing:<pgs_id>`` so the agent's polling surfaces a clear
     next step (operator should run
     ``genomeclaw refs fetch --source pgs_scorefile --pgs-id <pgs_id>``).
+
+    Phase 2 (worker-self-sufficient-compute): :func:`_ensure_scorefile_staged`
+    catches this error and auto-fetches the scorefile before re-raising or
+    returning the path. If the kill-switch is off, it propagates directly
+    without touching the network (INV-P001).
     """
 
     def __init__(self, pgs_id: str) -> None:
@@ -390,6 +396,8 @@ def _structured_error(exc: Exception) -> str:
     """
     if isinstance(exc, PgsScorefileMissingError):
         return f"scorefile_missing:{exc.pgs_id}"
+    if isinstance(exc, PgsScorefileUnfetchableError):
+        return f"scorefile_unfetchable:{exc.pgs_id}:{exc.reason}"
     if isinstance(exc, subprocess.CalledProcessError):
         return f"pgsc_calc_failed:rc={exc.returncode}"
     if isinstance(exc, DooDPathError):
@@ -428,11 +436,72 @@ def _resolve_scorefile_path(scorefile_root: Path, pgs_id: str) -> Path:
     raise PgsScorefileMissingError(pgs_id)
 
 
+async def _ensure_scorefile_staged(
+    scorefile_root: Path,
+    pgs_id: str,
+    *,
+    compute_enabled_fn: Callable[[], bool],
+) -> Path:
+    """Resolve the scorefile path, auto-fetching from PGS Catalog if absent.
+
+    If the canonical-layout file already exists, returns immediately (no
+    network call). If it's missing and the kill-switch is on, catches the
+    :class:`PgsScorefileMissingError` and auto-fetches from PGS Catalog via
+    :func:`~genomeclaw_toolkit.prep.fetch.fetch_pgs_scorefile` (run on the
+    default :class:`~concurrent.futures.ThreadPoolExecutor` since the fetch
+    is synchronous + I/O-bound).
+
+    Kill-switch gate (INV-P001): when ``compute_enabled_fn()`` returns
+    ``False``, propagates :class:`PgsScorefileMissingError` without touching
+    the network. No PGS Catalog egress occurs under the kill-switch.
+
+    Args:
+        scorefile_root: Parent directory containing the canonical
+            ``<pgs_id>/<pgs_id>_hmPOS_GRCh38.txt.gz`` layout.
+        pgs_id: PGS Catalog ID to resolve.
+        compute_enabled_fn: Kill-switch predicate; re-evaluated at
+            fetch-decision time so mid-run kill-switch changes are honoured.
+
+    Returns:
+        Absolute :class:`~pathlib.Path` to the staged scorefile.
+
+    Raises:
+        PgsScorefileMissingError: Kill-switch is off AND the file is missing.
+        PgsScorefileUnfetchableError: Fetch attempted but PGS Catalog
+            returned 404 or exhausted retries on 5xx.
+    """
+    try:
+        return _resolve_scorefile_path(scorefile_root, pgs_id)
+    except PgsScorefileMissingError:
+        if not compute_enabled_fn():
+            # Kill-switch off — propagate without egress (INV-P001).
+            raise
+        _LOG.info(
+            "Auto-fetching PGS scorefile from PGS Catalog",
+            extra={"transition": "auto_fetch_scorefile_started", "pgs_id": pgs_id},
+        )
+        loop = asyncio.get_running_loop()
+        path = await loop.run_in_executor(
+            None,
+            functools.partial(fetch_pgs_scorefile, pgs_id, scorefile_root),
+        )
+        _LOG.info(
+            "Auto-fetched PGS scorefile",
+            extra={
+                "transition": "auto_fetch_scorefile_done",
+                "pgs_id": pgs_id,
+                "bytes": path.stat().st_size,
+            },
+        )
+        return path
+
+
 async def _real_compute_fn(
     task: PgsComputeTaskFullRow,
     *,
     config: PrsComputeConfig,
     run_dir: Path,
+    compute_enabled_fn: Callable[[], bool] = _resolve_compute_enabled,
 ) -> None:
     """Run the real PRS compute + persist the result row.
 
@@ -442,8 +511,18 @@ async def _real_compute_fn(
     is irrelevant for correctness. Errors propagate as exceptions; the
     worker loop maps them to ``failed:<class>:<detail>`` via
     :func:`_structured_error`.
+
+    Phase 2 (worker-self-sufficient-compute): :func:`_ensure_scorefile_staged`
+    catches missing scorefiles and auto-fetches from PGS Catalog when the
+    kill-switch is on. The ``compute_enabled_fn`` kwarg is bound via
+    :func:`functools.partial` in ``app.py``'s lifespan so the kill-switch
+    re-evaluation works in the real service path.
     """
-    scorefile_path = _resolve_scorefile_path(config.scorefile_root, task.pgs_id)
+    scorefile_path = await _ensure_scorefile_staged(
+        config.scorefile_root,
+        task.pgs_id,
+        compute_enabled_fn=compute_enabled_fn,
+    )
 
     loop = asyncio.get_running_loop()
     pgs_row: PgsRow = await loop.run_in_executor(
