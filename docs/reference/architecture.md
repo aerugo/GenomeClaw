@@ -18,7 +18,7 @@ GenomeClaw is **not** a fork of NemoClaw, OpenClaw, or OpenShell. It is composed
 |----------|---------------|------------|----------|
 | **Host pipeline CLI** (`genomeclaw`) | inside the `genomeclaw/toolkit` Docker image, on the host (see [Host-side packaging](#host-side-packaging--genomeclawtoolkit-docker-image)) | Heavyweight bioinformatics pipeline (samtools/bcftools/mosdepth/VEP/Cyrius/`pgsc_calc`/PharmCAT, with `cyvcf2`/`pysam`/DuckDB Python on top). Reads raw artifacts read-only, writes derived store. | Raw FASTQ/BAM/VCF |
 | **Host service** (`genomeclaw-service`) | inside the same `genomeclaw/toolkit` image; published as `127.0.0.1:8643` from the container | Small read-only HTTP/JSON API exposing minimal-sufficient queries against the derived store. | Derived store |
-| **Host shim** (`bin/genomeclaw`) | host filesystem, on PATH | Thin Bash wrapper around `docker run --rm genomeclaw/toolkit:<tag> genomeclaw ...` with the canonical bind-mounts. Optional inner-loop bypass via `GENOMECLAW_NATIVE=1`. | n/a |
+| **Host shim** (`bin/genomeclaw`) | host filesystem, on PATH | Thin Bash wrapper around `docker run --rm genomeclaw/toolkit:<tag> genomeclaw ...` with the canonical bind-mounts. The only subcommands that bypass docker are `host setup` / `host doctor` / `host eject` — they touch host-only facilities (diskutil, colima) that can't run in a container. `host service` runs INSIDE the toolkit image (per [worker-self-sufficient-compute Phase 3](../plans/active/worker-self-sufficient-compute/phases/phase-3.md)) so the worker has bcftools / pgsc_calc / etc. on PATH; the shim auto-publishes port 8643 + appends `--host 0.0.0.0` so docker-NAT bridge forwards inbound from `host.openshell.internal:8643`. Optional manual override via `GENOMECLAW_NATIVE=1` for inner-loop development. | n/a |
 | **NemoClaw plugin** (`@genomeclaw/nemoclaw-plugin`) | inside OpenShell sandbox at `/sandbox/.openclaw/extensions/genomeclaw/` | TypeScript OpenClaw plugin registering agent-callable commands. Calls the host service over HTTP. | Host service |
 | **OpenShell policy preset** (`genomeclaw.yaml`) | merged into NemoClaw blueprint at onboard time | Network egress rule whitelisting `host.openshell.internal:<port>` for the plugin's binaries. | n/a |
 
@@ -33,7 +33,10 @@ GenomeClaw/
 ├── README.md
 ├── CLAUDE.md
 ├── bin/
-│   └── genomeclaw             Host shim (docker run wrapper); GENOMECLAW_NATIVE=1 bypass
+│   └── genomeclaw             Host shim (docker run wrapper). `host service` runs IN
+│                              the toolkit image (worker-self-sufficient-compute Phase 3)
+│                              so bcftools / pgsc_calc are on PATH for the worker.
+│                              Only `host setup/doctor/eject` stay native (diskutil + colima).
 ├── docs/
 │   ├── reference/
 │   │   ├── INVARIANTS.md           Canonical INV-xxx rules

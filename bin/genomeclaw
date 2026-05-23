@@ -42,12 +42,27 @@ set -euo pipefail
 # image).
 export GENOMECLAW_SHIM_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
-# Subcommand groups that intrinsically need host-side facilities
-# (diskutil, colima/lima config edits, drive eject) bypass docker by
-# force, even without GENOMECLAW_NATIVE=1. These run via a host-installed
-# `genomeclaw` (uv-managed venv).
-case "${1:-}" in
-  host)
+# Subcommand routing for the `host` group:
+#
+#   host setup    — touches diskutil + colima; HOST-ONLY (native).
+#   host doctor   — checks host filesystem + colima status; HOST-ONLY (native).
+#   host eject    — `diskutil eject`; HOST-ONLY (native).
+#   host service  — runs the FastAPI worker that needs bcftools / pgsc_calc /
+#                   etc. — DOCKER-ONLY (worker-self-sufficient-compute
+#                   Phase 3). Auto-enables DooD so docker.sock + the
+#                   identical-path overlay + GENOMECLAW_HOST_ROOTS get
+#                   propagated to the running service container; pgsc_calc
+#                   spawns DooD siblings from inside.
+#
+# Pattern note: `"host service"` matches first (more specific than `"host"*`),
+# so the docker path wins for the service. The remaining host subcommands
+# fall through to native via `GENOMECLAW_NATIVE=1`.
+case "${1:-} ${2:-}" in
+  "host service")
+    : "${GENOMECLAW_DOOD:=1}"
+    GENOMECLAW_IS_HOST_SERVICE=1  # internal flag; consumed below to add -p 8643:8643
+    ;;
+  "host "*)
     : "${GENOMECLAW_NATIVE:=1}"
     ;;
 esac
@@ -353,6 +368,32 @@ if [[ -n "${GENOMECLAW_SMOKE_RUN_ID:-}" ]]; then
   smoke_label_args+=("--label" "genomeclaw-smoke=${GENOMECLAW_SMOKE_RUN_ID}")
 fi
 
+# `host service` lives in the toolkit container per Phase 3 of
+# worker-self-sufficient-compute. Publish the bind port (default 8643;
+# operator override via GENOMECLAW_HOST_SERVICE_PORT) so the sandbox can
+# reach the container's uvicorn via host.openshell.internal:<port>.
+# Uvicorn must bind 0.0.0.0 inside the container for the docker-NAT
+# bridge to forward inbound connections; the canonical CLI default of
+# 127.0.0.1 only accepts container-local traffic, so we append --host
+# 0.0.0.0 to the argv if the operator didn't already supply --host.
+host_service_args=()
+host_service_extra_argv=()
+if [[ "${GENOMECLAW_IS_HOST_SERVICE:-0}" == "1" ]]; then
+  service_port="${GENOMECLAW_HOST_SERVICE_PORT:-8643}"
+  host_service_args+=("--publish" "${service_port}:${service_port}")
+  # Append --host 0.0.0.0 only if operator didn't already pass --host.
+  has_host_flag=0
+  for arg in "$@"; do
+    if [[ "$arg" == "--host" || "$arg" == --host=* ]]; then
+      has_host_flag=1
+      break
+    fi
+  done
+  if (( has_host_flag == 0 )); then
+    host_service_extra_argv+=("--host" "0.0.0.0")
+  fi
+fi
+
 cmd=(
   docker run --rm
   --user "${dood_user}"
@@ -362,9 +403,11 @@ cmd=(
   ${dood_socket_mounts[@]+"${dood_socket_mounts[@]}"}
   ${mounts[@]+"${mounts[@]}"}
   ${smoke_label_args[@]+"${smoke_label_args[@]}"}
+  ${host_service_args[@]+"${host_service_args[@]}"}
   "$image"
   genomeclaw
   "$@"
+  ${host_service_extra_argv[@]+"${host_service_extra_argv[@]}"}
 )
 
 if [[ "${GENOMECLAW_DEBUG:-0}" == "1" ]]; then
