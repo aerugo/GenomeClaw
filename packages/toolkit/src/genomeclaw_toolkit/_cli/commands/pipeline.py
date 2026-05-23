@@ -56,7 +56,6 @@ from genomeclaw_toolkit.prep.materialize import materialize as materialize_impl
 from genomeclaw_toolkit.prep.normalize import normalize as normalize_impl
 from genomeclaw_toolkit.prep.pgs import (
     PgsReferenceMissingError,
-    PgsRow,
 )
 from genomeclaw_toolkit.prep.pgs import (
     compute_pgs as compute_pgs_impl,
@@ -559,121 +558,12 @@ class _PgsComputePayload(BaseModel):
     calibration_warning: str | None
 
 
-def _stamp_pgs_row(
-    run_dir: Path,
-    row: PgsRow,
-    *,
-    vcf: Path,
-    min_overlap_used: float | None = None,
-    keep_ambiguous_used: bool | None = None,
-) -> None:
-    """INSERT the `PgsRow` into `pgs_scores` with INV-R001 provenance + matching finding row.
-
-    Provenance: `source_path` is the VCF; `source_sha256` is unset for the
-    manual CLI path (the wrapper doesn't re-hash the VCF — for the real-data
-    smoke, the ingest's manifest carries the canonical hash). `tool` is
-    "pgsc_calc"; `tool_version` is "agent-driven" (the precise pgsc_calc
-    version is captured in the work-dir manifest by Nextflow itself; for
-    INV-R001 the canonical record is the run's manifest.json).
-
-    ``min_overlap_used`` + ``keep_ambiguous_used`` are persisted into
-    ``params_json`` so a future debugger / report reader can tell, from the
-    stored row alone, what threshold pgsc_calc was invoked against. Both
-    are optional for backwards compat with prior callers; the CLI's
-    ``pipeline_pgs_compute`` resolves them once via
-    :func:`genomeclaw_toolkit.prep.pgs._resolve_min_overlap` and threads
-    the value through.
-    """
-    import json as _json
-    from datetime import UTC, datetime
-    from uuid import uuid4
-
-    import duckdb
-
-    from genomeclaw_toolkit.prep.store import create_store
-
-    store_path = run_dir / "variants.duckdb"
-    # Bootstrap an empty store if one doesn't exist yet — lets `prs-compute`
-    # land its row in a fresh smoke dir without a preceding `host setup`/init
-    # step. Existing stores are left untouched (create_store raises on existing
-    # path; we catch that to keep this idempotent).
-    if not store_path.exists():
-        create_store(store_path)
-    now = datetime.now(tz=UTC)
-    params_dict: dict[str, object] = {"pgs_id": row.pgs_id, "vcf": str(vcf)}
-    if min_overlap_used is not None:
-        params_dict["min_overlap_used"] = min_overlap_used
-    if keep_ambiguous_used is not None:
-        params_dict["keep_ambiguous_used"] = keep_ambiguous_used
-    params = _json.dumps(params_dict)
-
-    conn = duckdb.connect(str(store_path))
-    try:
-        conn.execute(
-            """
-            INSERT INTO pgs_scores (
-                pgs_id, trait_label, percentile_in_user_ancestry, raw_score,
-                study_population, calibration_warning,
-                agent_choice_rationale, requested_for_question,
-                calibration_status, decline_reason, superseded_by,
-                source_path, source_sha256, tool, tool_version,
-                params_json, schema_version, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
-                      ?, '', 'pgsc_calc', 'agent-driven',
-                      ?, ?, ?)
-            """,
-            [
-                row.pgs_id,
-                row.trait_label,
-                row.percentile_in_user_ancestry,
-                row.raw_score,
-                row.study_population,
-                row.calibration_warning,
-                row.agent_choice_rationale,
-                row.requested_for_question,
-                row.calibration_status,
-                row.decline_reason,
-                str(vcf),
-                params,
-                SCHEMA_VERSION,
-                now,
-            ],
-        )
-        # Matching clinical-non-actionable finding row per Q8 v1.6 + INV-E001.
-        finding_id = f"fnd-pgs-{row.pgs_id}-{uuid4().hex[:8]}"
-        summary = (
-            f"{row.trait_label}: {row.percentile_in_user_ancestry}th percentile "
-            "in your ancestry-matched reference population "
-            "(PRS — population-level estimate, not a pathogenic variant call)."
-            if row.percentile_in_user_ancestry is not None
-            else f"{row.trait_label}: PRS percentile unavailable; see calibration_warning."
-        )
-        conn.execute(
-            """
-            INSERT INTO findings (
-                id, category, title, summary,
-                evidence_ref, evidence_quality,
-                gene_symbols, drugs, clinical_escalation,
-                source_path, source_sha256, tool, tool_version,
-                params_json, schema_version, created_at
-            ) VALUES (?, 'clinical-non-actionable', ?, ?, ?, 'moderate',
-                      [], NULL, NULL,
-                      ?, '', 'pgsc_calc', 'agent-driven',
-                      ?, ?, ?)
-            """,
-            [
-                finding_id,
-                f"{row.trait_label} — PRS",
-                summary,
-                f"pgs_catalog:{row.pgs_id}",
-                str(vcf),
-                params,
-                SCHEMA_VERSION,
-                now,
-            ],
-        )
-    finally:
-        conn.close()
+# INV-R001 + INV-E001 row-stamping moved to :mod:`genomeclaw_toolkit.prep.pgs`
+# in Phase 4 of agent-prs-compute-fix so both the CLI subcommand AND the
+# host-service worker can write rows from the same code path. The thin
+# re-export below preserves the historical ``_stamp_pgs_row`` import path
+# for in-tree test callers.
+from genomeclaw_toolkit.prep.pgs import stamp_pgs_row as _stamp_pgs_row  # noqa: E402
 
 
 @app.command("pgs-compute")

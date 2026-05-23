@@ -736,9 +736,127 @@ def compute_pgs(
     )
 
 
+def stamp_pgs_row(
+    run_dir: "Path",
+    row: PgsRow,
+    *,
+    vcf: "Path",
+    min_overlap_used: float | None = None,
+    keep_ambiguous_used: bool | None = None,
+) -> None:
+    """INSERT the ``PgsRow`` into ``pgs_scores`` + matching ``findings`` row.
+
+    Stamped with the 7 INV-R001 provenance columns. ``tool`` is ``pgsc_calc``;
+    ``tool_version`` is ``agent-driven`` (the precise pgsc_calc version is
+    captured in the run's manifest by Nextflow). ``source_path`` is the
+    VCF; ``source_sha256`` is empty for callers that don't re-hash the VCF
+    (the ingest manifest carries the canonical hash for the real-data
+    smoke).
+
+    ``min_overlap_used`` + ``keep_ambiguous_used`` land in ``params_json``
+    so a future debugger reading the stored row alone can tell what
+    threshold pgsc_calc ran against.
+
+    Phase 4 of agent-prs-compute-fix relocated this from
+    ``_cli/commands/pipeline.py`` to remove the service→CLI dependency:
+    both the CLI's ``pipeline pgs-compute`` subcommand AND the worker's
+    ``_real_compute_fn`` call here.
+    """
+    import json as _json
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    import duckdb
+
+    from genomeclaw_toolkit.prep.store import create_store
+    from genomeclaw_toolkit.schemas import SCHEMA_VERSION
+
+    store_path = run_dir / "variants.duckdb"
+    # Bootstrap an empty store if one doesn't exist yet — lets the worker
+    # (or `prs-compute`) land its row in a fresh smoke dir without a
+    # preceding `host setup`/init step.
+    if not store_path.exists():
+        create_store(store_path)
+    now = datetime.now(tz=UTC)
+    params_dict: dict[str, object] = {"pgs_id": row.pgs_id, "vcf": str(vcf)}
+    if min_overlap_used is not None:
+        params_dict["min_overlap_used"] = min_overlap_used
+    if keep_ambiguous_used is not None:
+        params_dict["keep_ambiguous_used"] = keep_ambiguous_used
+    params = _json.dumps(params_dict)
+
+    conn = duckdb.connect(str(store_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO pgs_scores (
+                pgs_id, trait_label, percentile_in_user_ancestry, raw_score,
+                study_population, calibration_warning,
+                agent_choice_rationale, requested_for_question,
+                calibration_status, decline_reason, superseded_by,
+                source_path, source_sha256, tool, tool_version,
+                params_json, schema_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+                      ?, '', 'pgsc_calc', 'agent-driven',
+                      ?, ?, ?)
+            """,
+            [
+                row.pgs_id,
+                row.trait_label,
+                row.percentile_in_user_ancestry,
+                row.raw_score,
+                row.study_population,
+                row.calibration_warning,
+                row.agent_choice_rationale,
+                row.requested_for_question,
+                row.calibration_status,
+                row.decline_reason,
+                str(vcf),
+                params,
+                SCHEMA_VERSION,
+                now,
+            ],
+        )
+        finding_id = f"fnd-pgs-{row.pgs_id}-{uuid4().hex[:8]}"
+        summary = (
+            f"{row.trait_label}: {row.percentile_in_user_ancestry}th percentile "
+            "in your ancestry-matched reference population "
+            "(PRS — population-level estimate, not a pathogenic variant call)."
+            if row.percentile_in_user_ancestry is not None
+            else f"{row.trait_label}: PRS percentile unavailable; see calibration_warning."
+        )
+        conn.execute(
+            """
+            INSERT INTO findings (
+                id, category, title, summary,
+                evidence_ref, evidence_quality,
+                gene_symbols, drugs, clinical_escalation,
+                source_path, source_sha256, tool, tool_version,
+                params_json, schema_version, created_at
+            ) VALUES (?, 'clinical-non-actionable', ?, ?, ?, 'moderate',
+                      [], NULL, NULL,
+                      ?, '', 'pgsc_calc', 'agent-driven',
+                      ?, ?, ?)
+            """,
+            [
+                finding_id,
+                f"{row.trait_label} — PRS",
+                summary,
+                f"pgs_catalog:{row.pgs_id}",
+                str(vcf),
+                params,
+                SCHEMA_VERSION,
+                now,
+            ],
+        )
+    finally:
+        conn.close()
+
+
 __all__ = [
     "PgsReferenceMissingError",
     "PgsRow",
     "apply_calibration_decision",
     "compute_pgs",
+    "stamp_pgs_row",
 ]
