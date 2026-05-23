@@ -249,6 +249,49 @@ describe("TypeBox parameter schemas (spec Q4)", () => {
       expect(real.ok).toBe(true);
     }
   });
+
+  test("execute() arg-guard catches bypassed TypeBox (openclaw runtime path)", async () => {
+    // The openclaw runtime does NOT enforce TypeBox `pattern` (only
+    // minLength + additionalProperties), so the placeholder regex on
+    // GeneParams/VariantParams/EvidenceParams won't fire in production
+    // when the agent emits {gene: "undefined"}. The runtime guard at
+    // execute() entry MUST catch it. This test invokes execute()
+    // directly (bypassing the mock's Value.Check) to prove the guard
+    // works on the actual openclaw codepath.
+    const api = makeMockApi();
+    register(api);
+
+    for (const [toolName, argName] of [
+      ["genomeclaw_gene", "gene"],
+      ["genomeclaw_variant", "key"],
+      ["genomeclaw_evidence", "ref"],
+      ["genomeclaw_pgs_get", "pgs_id"],
+      ["genomeclaw_pgs_compute_status", "task_id"],
+    ] as const) {
+      const tool = api.tools.find((t) => t.name === toolName)!;
+
+      // Direct execute() invocation bypassing TypeBox — mimics the
+      // openclaw runtime's known argument-resolution failure mode.
+      for (const placeholder of ["undefined", "null", "none", "nil"]) {
+        const result = (await tool.execute(
+          { [argName]: placeholder } as never,
+          { logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } } as never,
+        )) as { isError?: boolean; content: { text: string }[] };
+        expect(result.isError, `${toolName}(${argName}="${placeholder}") should return isError=true`).toBe(true);
+        expect(result.content[0].text).toMatch(/placeholder string/i);
+      }
+
+      // Also: missing arg + non-object args body (the 2026-05-23
+      // "call_xxx|fc_yyy" bare-string POST body bug).
+      const noField = (await tool.execute({} as never, { logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } } as never)) as { isError?: boolean; content: { text: string }[] };
+      expect(noField.isError).toBe(true);
+      expect(noField.content[0].text).toMatch(/missing or not a string/i);
+
+      const bareString = (await tool.execute("call_xyz|fc_abc" as never, { logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } } as never)) as { isError?: boolean; content: { text: string }[] };
+      expect(bareString.isError).toBe(true);
+      expect(bareString.content[0].text).toMatch(/expected an object of arguments/i);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

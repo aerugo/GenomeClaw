@@ -205,6 +205,73 @@ async function safePost<T = unknown>(
 }
 
 // ---------------------------------------------------------------------------
+// Runtime arg-guard against placeholder strings (2026-05-23 iteration finding)
+// ---------------------------------------------------------------------------
+//
+// The agent's openclaw runtime occasionally emits the literal string
+// "undefined" / "null" / "none" / "nil" as a tool-call argument value
+// when its tool-arg resolution failed upstream (observed in the 2026-05-23
+// eyesight question trace: 7x `genomeclaw_gene(gene="undefined")` calls
+// that all 404'd against /v1/gene/undefined). TypeBox can't catch this
+// because:
+//   - `minLength: 1` passes — "undefined" is 9 chars
+//   - `pattern` is NOT enforced by openclaw's runtime validator
+//     (only minLength + additionalProperties)
+//
+// The guard below fires at the TOP of each tool's execute() body, catches
+// the placeholder pattern + (also) the related shape bug where openclaw
+// occasionally passes a bare string instead of the {args} object. Both
+// surface as a tool failure visible to the agent — the agent can see the
+// hint + re-emit the tool call with real args, rather than firing dead
+// HTTP round-trips.
+
+const PLACEHOLDER_TOKENS = new Set(["undefined", "null", "none", "nil"]);
+
+interface ArgGuardOptions {
+  toolName: string;
+  argName: string;
+  hint?: string;
+}
+
+function rejectIfPlaceholder(
+  args: unknown,
+  fieldName: string,
+  opts: ArgGuardOptions,
+): ReturnType<typeof failedTextResult> | null {
+  // Shape guard: openclaw 2026-05-23 trace showed it occasionally passes
+  // the bare OpenAI tool-call ID ("call_xxx|fc_yyy") as the args value
+  // instead of an {args} object. Catch that explicitly.
+  if (args === null || typeof args !== "object") {
+    return failedTextResult(
+      `${opts.toolName}: expected an object of arguments but received ${typeof args} ` +
+        `(value: ${JSON.stringify(args)?.slice(0, 200) ?? "?"}). ` +
+        `This usually means the agent's tool-call args serializer lost the JSON shape. ` +
+        `Re-emit the tool call with a proper JSON object body.`,
+      { receivedArgs: args, toolName: opts.toolName },
+    );
+  }
+  const value = (args as Record<string, unknown>)[fieldName];
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return failedTextResult(
+      `${opts.toolName}: required argument \`${opts.argName}\` is missing or not a string ` +
+        `(got ${typeof value}: ${JSON.stringify(value)?.slice(0, 100) ?? "?"}). ` +
+        (opts.hint ?? "Pass the real value."),
+      { receivedArgs: args, toolName: opts.toolName },
+    );
+  }
+  if (PLACEHOLDER_TOKENS.has(value.trim().toLowerCase())) {
+    return failedTextResult(
+      `${opts.toolName}: argument \`${opts.argName}\` is the placeholder string ` +
+        `"${value}" — this usually means the agent's tool-call argument resolution ` +
+        `lost track of the real value upstream. Re-emit the tool call with the ` +
+        `actual ${opts.argName}. ${opts.hint ?? ""}`.trimEnd(),
+      { receivedArgs: args, toolName: opts.toolName },
+    );
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // TypeBox parameter schemas (spec Q4)
 // ---------------------------------------------------------------------------
 
@@ -336,6 +403,12 @@ export default function register(api: OpenClawPluginApi): void {
     parameters: VariantParams,
     outputClass: "summary",
     execute: async (args: Static<typeof VariantParams>, _ctx: AgentToolContext) => {
+      const reject = rejectIfPlaceholder(args, "key", {
+        toolName: "genomeclaw_variant",
+        argName: "key",
+        hint: 'Pass a canonical variant key like "chr1-12345-A-T".',
+      });
+      if (reject) return reject;
       return safeCall(host, `/v1/variants/${encodeURIComponent(args.key)}`);
     },
   });
@@ -352,6 +425,12 @@ export default function register(api: OpenClawPluginApi): void {
     parameters: EvidenceParams,
     outputClass: "summary",
     execute: async (args: Static<typeof EvidenceParams>, _ctx: AgentToolContext) => {
+      const reject = rejectIfPlaceholder(args, "ref", {
+        toolName: "genomeclaw_evidence",
+        argName: "ref",
+        hint: 'Pass an evidence ref like "clinvar:RCV000001" or "pgs_catalog:PGS000018".',
+      });
+      if (reject) return reject;
       return safeCall(host, `/v1/evidence/${encodeURIComponent(args.ref)}`);
     },
   });
@@ -366,6 +445,12 @@ export default function register(api: OpenClawPluginApi): void {
     parameters: GeneParams,
     outputClass: "summary",
     execute: async (args: Static<typeof GeneParams>, _ctx: AgentToolContext) => {
+      const reject = rejectIfPlaceholder(args, "gene", {
+        toolName: "genomeclaw_gene",
+        argName: "gene",
+        hint: 'Pass an HGNC symbol like "BRCA1" or "CFH".',
+      });
+      if (reject) return reject;
       return safeCall(host, `/v1/gene/${encodeURIComponent(args.gene)}`);
     },
   });
@@ -401,6 +486,12 @@ export default function register(api: OpenClawPluginApi): void {
     parameters: PgsGetParams,
     outputClass: "summary",
     execute: async (args: Static<typeof PgsGetParams>, _ctx: AgentToolContext) => {
+      const reject = rejectIfPlaceholder(args, "pgs_id", {
+        toolName: "genomeclaw_pgs_get",
+        argName: "pgs_id",
+        hint: 'Pass a PGS Catalog ID like "PGS000018" or "PGS004606".',
+      });
+      if (reject) return reject;
       return safeCall(host, `/v1/pgs/computed/${encodeURIComponent(args.pgs_id)}`);
     },
   });
@@ -427,6 +518,19 @@ export default function register(api: OpenClawPluginApi): void {
     parameters: PgsComputeParams,
     outputClass: "summary",
     execute: async (args: Static<typeof PgsComputeParams>, _ctx: AgentToolContext) => {
+      for (const [field, hint] of [
+        ["pgs_id", 'A PGS Catalog ID like "PGS000018".'],
+        ["trait_label", 'A trait name like "coronary artery disease".'],
+        ["rationale", "An ≥10-char explanation of alternatives considered + why this scorefile."],
+        ["requested_for_question", "The verbatim user question that triggered the compute."],
+      ] as const) {
+        const reject = rejectIfPlaceholder(args, field, {
+          toolName: "genomeclaw_pgs_compute",
+          argName: field,
+          hint,
+        });
+        if (reject) return reject;
+      }
       return safePost(host, "/v1/pgs/compute", args);
     },
   });
@@ -446,6 +550,12 @@ export default function register(api: OpenClawPluginApi): void {
     parameters: PgsComputeStatusParams,
     outputClass: "summary",
     execute: async (args: Static<typeof PgsComputeStatusParams>, _ctx: AgentToolContext) => {
+      const reject = rejectIfPlaceholder(args, "task_id", {
+        toolName: "genomeclaw_pgs_compute_status",
+        argName: "task_id",
+        hint: "Pass the task_id returned from the prior `genomeclaw_pgs_compute` call.",
+      });
+      if (reject) return reject;
       return safeCall(host, `/v1/pgs/compute/${encodeURIComponent(args.task_id)}`);
     },
   });
