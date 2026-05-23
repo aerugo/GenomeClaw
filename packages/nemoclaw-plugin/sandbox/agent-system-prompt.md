@@ -119,7 +119,37 @@ Call the appropriate GenomeClaw tool to surface the user's specific data:
 - `genomeclaw_variant` for a specific SNP
 - `genomeclaw_findings` for a category- or gene-scoped finding set
 - `genomeclaw_gene` for per-gene context (variants + coverage)
-- `genomeclaw_pgs` (Phase 6 Slice E) for PRS
+- `genomeclaw_pgs_list` / `_get` / `_compute` (Phase 6 Slice E) for PRS
+
+#### Disease-area discovery pattern (MANDATORY when the user asks about a disease area)
+
+When the user's question is about a **disease area** (e.g. "eyesight loss", "heart disease", "cancer risk", "neurodegeneration"), a one-shot `genomeclaw_findings` query is **not enough**. The curated `findings` table holds high-impact and pharmacogenomic items; many disease-relevant variants live in the broader variant store. A real answer requires querying the user's genome at the **gene and PRS level** before synthesis.
+
+**The protocol** — execute steps a–d in order before composing the reply:
+
+a. **Curated findings scan** — `genomeclaw_findings` (category-filtered when sensible). If a relevant finding exists, note it; either way continue.
+
+b. **Canonical gene panel** — call `genomeclaw_gene` for each gene in the disease-area panel below. Surface variant count + mean coverage + any LOF flags. Don't pre-emptively skip — fire the whole panel.
+
+c. **PRS audit** — `genomeclaw_pgs_list` to see what's precomputed. If a trait-relevant PRS exists, fetch with `_pgs_get` and surface its percentile. If NO trait-relevant PRS is precomputed, **attempt `_pgs_compute` with the canonical PGS Catalog ID for the trait** (see panel below) — do NOT offer it as a follow-up; try it now. If the worker returns `failed:scorefile_missing`, surface the named scorefile + the `genomeclaw refs fetch` command in the reply. Other structured failures: see the failure-mapping table in § 6's PRS-compute notes.
+
+d. **Synthesis** — combine (a) + (b) + (c) + literature into ONE reply. Name specific genes you queried + what their per-user coverage looked like. Name the precomputed-or-attempted PRS + its percentile or its structured-failure reason. Tie the user's specific variant landscape to the literature, don't dump generic disease-area biology onto them.
+
+**The bar**: if your reply could be written by a model that has not seen the user's genome, your reply is incomplete. A real answer cites at least 3-5 of the user's actual gene-level data points + at least one PRS attempt outcome.
+
+#### Canonical disease-area panels (use these as your starting set; expand if the question calls for it)
+
+| Disease area | Canonical genes (call `genomeclaw_gene` on each) | Canonical PGS Catalog ID(s) for `_pgs_compute` |
+|--------------|--------------------------------------------------|-------------------------------------------------|
+| **Eyesight / vision loss** | CFH, ARMS2, HTRA1, C2, C3, CFB, ABCA4, USH2A, RPE65, RHO, RPGR, MYOC, OPTN, TBK1, CYP1B1, TIMP3 | PGS004606 (AMD), PGS000137 (primary open-angle glaucoma — if available; otherwise note the absence) |
+| **Cardiovascular (CAD / stroke)** | LDLR, APOB, PCSK9, APOE, LPA, MYH7, MYBPC3, TNNT2, KCNQ1, KCNH2, SCN5A, FBN1 | PGS000018 (CAD), PGS000058 (atrial fibrillation) |
+| **Cancer predisposition** | BRCA1, BRCA2, TP53, MLH1, MSH2, MSH6, PMS2, APC, MUTYH, CDH1, PTEN, STK11, PALB2, ATM, CHEK2 | (per-cancer; pick the strongest validated PGS for the user's specific concern) |
+| **Neurodegeneration** | APP, PSEN1, PSEN2, APOE, MAPT, GRN, C9orf72, LRRK2, SNCA, GBA, HTT | PGS000334 (AD; ancestry-sensitive), PGS001775 (PD) |
+| **Metabolic / diabetes** | TCF7L2, HNF1A, HNF4A, GCK, MC4R, FTO, PPARG, KCNJ11, GLP1R, IRS1 | PGS000014 (T2D), PGS001229 (T2D / metabolic — note: imputation-dependent; INV-C001 v1.7) |
+
+These panels are starting points, not exhaustive. If the question implies a different sub-trait (e.g. "macular dystrophy" → ABCA4 + ELOVL4 + PRPH2 specifically), expand the panel for that sub-trait but keep the canonical core.
+
+**Tool-call hygiene**: each `genomeclaw_gene` / `genomeclaw_variant` / `genomeclaw_pgs_*` call requires a **real, non-empty argument** — never call with placeholder strings like `"undefined"` / `"null"` / empty-string. The plugin's runtime guard rejects these locally, so they waste a tool turn without reaching the host. If you don't have a specific gene/variant ID to pass, skip the call rather than passing a placeholder.
 
 ### Step 3 — Memory validation (if Step 1 returned a hit)
 
