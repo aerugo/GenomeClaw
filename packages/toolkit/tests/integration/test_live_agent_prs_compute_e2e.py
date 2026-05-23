@@ -176,7 +176,11 @@ def test_live_agent_amd_question_reaches_terminal_state(tmp_path: Path) -> None:
     openai_api_key = os.environ["OPENAI_API_KEY"]
 
     derived_root, is_real_run = _resolve_derived_root(tmp_path)
-    timeout_s = 1800 if is_real_run else 240  # 30 min for real pgsc_calc; 4 min for fixture
+    # 30 min for real pgsc_calc; 10 min for fixture (the AMD-question prompt
+    # asks for web research + citations + a multi-step async compute flow —
+    # the 2026-05-23 first live run measured 5 min and timed out at the
+    # default 240+60 s harness cap).
+    timeout_s = 1800 if is_real_run else 600
 
     trace = run_agent_in_sandbox(
         AMD_QUESTION,
