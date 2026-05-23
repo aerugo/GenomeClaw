@@ -577,3 +577,64 @@ Path A verifies the **plumbing**: validation gate → host service enqueue → w
 - ⏳ `git mv docs/plans/active/agent-prs-compute-fix → docs/plans/completed/agent-prs-compute-fix`.
 - ⏳ Atomic commit + push (closes the plan from the project's `docs/plans/active/` index).
 
+---
+
+## 2026-05-23 — Post-MVP iteration on the real run-dir surfaced 3 Phase 4 gaps
+
+After the plan closed, the user asked the agent the eyesight question against the canonical run-dir (real data, real sandbox). The first invocation produced a high-quality reply but said *"compute attempt failed at the service layer"* — investigation surfaced **three real Phase 4 design gaps the test suite didn't catch**, all of which are now fixed in subsequent commits on `main`.
+
+### Gap 1 — `_resolve_scorefile_path` used the wrong subpath shape
+
+**Symptom**: Worker failed with `scorefile_missing:PGS<id>` even when scorefile was operator-fetched at the canonical location.
+
+**Root cause**: Phase 4's resolver looked for `<scorefile_root>/<pgs_id>.txt.gz`, but the canonical layout (per `prep/fetch.py:819`, `prep/doctor.py:573`, `bin/genomeclaw-prs-smoke:57`) is `<scorefile_root>/<pgs_id>/<pgs_id>_hmPOS_GRCh38.txt.gz`. The Phase 4 worker integration test helper pinned the WRONG shape (calcified the bug). 3 sources of truth all disagreed with the resolver.
+
+**Fix**: Try canonical layout first, fall back to flat for backwards-compat. Update test helper to stage at the canonical path. Commit `d0f9c4e`.
+
+### Gap 2 — `GENOMECLAW_HOST_ROOTS` not auto-published from sidecar
+
+**Symptom**: Every compute failed with `dood_path_error:GENOMECLAW_HOST_ROOTS=[] is empty`.
+
+**Root cause**: `prep/_paths.as_sibling_mountable` requires `GENOMECLAW_HOST_ROOTS` env var to validate paths bound for DooD-spawned siblings. The shim publishes it when the toolkit runs inside a container (`GENOMECLAW_DOOD=1`); the host service running OUTSIDE the toolkit container has no such shim. Phase 4 designed the worker to read host-form paths from the sidecar but forgot to derive the allowlist from them.
+
+**Fix**: `_publish_host_roots_from_config(config)` derives the allowlist from the sidecar's raw/reference/scratch parents + appends to any operator-supplied value (idempotent). Called from lifespan startup AFTER `load_prs_compute_config` succeeds + BEFORE worker spawns. Commit `fa822b3`.
+
+### Gap 3 — Agent system prompt didn't mandate `_pgs_compute_status` polling
+
+**Symptom**: Agent occasionally called `_pgs_compute`, got a 202+task_id back, composed final reply WITHOUT polling — producing the imprecise "failed at the service layer" framing observed in the original 2026-05-23 trace.
+
+**Root cause**: The Phase 2 sysprompt note encouraged ≥50-char rationales but didn't explain the async polling contract.
+
+**Fix**: Added an explicit MUST-POLL directive + structured-failure framing table mapping each of Phase 4's 6 `_structured_error` classes to operator-actionable plain-language next steps. Commit `7d084e7`.
+
+### Bonus — TypeBox placeholder guard (effective in vitest, not openclaw runtime)
+
+The eyesight-question trace showed the agent calling `genomeclaw_gene` and `genomeclaw_variant` with the literal string `"undefined"` as the parameter value (11 wasted round-trips). Added a TypeBox `pattern` regex rejecting `undefined|null|none|nil` case-insensitively. **Discovery**: openclaw's agent runtime does NOT enforce TypeBox `pattern` (only `minLength` + `additionalProperties`). Effective in vitest (22/22 pass) but NOT in the live agent runtime. Follow-up plan should move the check into each tool's `execute()` body.
+
+### Post-fix verification — final eyesight-question outcome
+
+After all 4 fixes landed + sandbox rebuilt as `genomeclaw/sandbox:phase-6b` + AMD scorefile (`PGS004606`) fetched + `prs_compute_config.json` staged in the canonical run-dir:
+
+**Eyesight question** (*"Do I have any risk factors for loss of eyesight?"*):
+- Wall: **1m41s** (down from 3m37s pre-fix)
+- Reply: high-quality calibrated answer — names CFH/ARMS2/HTRA1 for AMD, primary open-angle glaucoma risk factors, monogenic retinal disease caveat, offers targeted PRS pass as follow-up
+- No HTTP 422; no "failed at service layer" framing; properly cited sources (PMC, ScienceDirect)
+- 14 tool calls, 0 failures
+
+**Direct compute prompt** (*"Compute AMD PRS PGS004606 right now"*):
+- Task `bf14e62e` terminal state: `failed:worker_unexpected_error:BcftoolsError`
+- Agent polled `_compute_status` 5× until terminal, surfaced structured error cleanly
+- No HTTP 422; no hung-queued state; structured error correctly propagates
+
+`BcftoolsError` is the next architectural gap: the host service runs outside the toolkit container; `bcftools` isn't on the macOS host PATH; the worker can't execute the Tier 1/Tier 2 force-genotype steps. Two paths to resolve in a follow-up plan: (1) operator install `brew install bcftools samtools htslib mosdepth`; (2) refactor the worker to spawn a DooD toolkit container for the compute. Option 2 is the right architectural answer.
+
+### Open follow-ups (post-iteration)
+
+1. **`bcftools-on-host-or-dood`** — pick architectural option 1 vs 2 above. Path A live test (`test_live_agent_prs_compute_e2e.py`, synthetic-fixture scorefile_missing) keeps passing; Path B (real-compute green percentile) remains operator-action-required.
+2. **`agent-undefined-args-guard`** — move placeholder rejection from TypeBox `pattern` to each tool's `execute()` body for openclaw-runtime enforcement.
+3. **`openclaw-toolcall-serialization`** — investigate 2-3x POSTs the agent fired with a bare OpenAI tool-call ID string (`call_xxx|fc_yyy`) instead of a JSON object body. Pydantic correctly returned 422 with `model_attributes_type`; upstream cause is in the openclaw runtime's tool-call args serializer.
+
+### Final assessment
+
+The agent-prs-compute-fix plan **achieves its stated goal**: the 2026-05-23 AMD-question HTTP 422 incident is closed, the agent reaches structured terminal states, and the user-facing eyesight question produces a high-quality calibrated answer. The post-iteration discoveries reveal additional Phase 4 design gaps the test suite didn't catch — all 3 are fixed in commits `d0f9c4e` + `fa822b3` + `7d084e7` + the work-notes capture the lessons for future plans.
+
