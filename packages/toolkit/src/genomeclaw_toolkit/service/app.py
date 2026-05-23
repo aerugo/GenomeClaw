@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
+import logging
 import signal
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -52,7 +54,13 @@ from genomeclaw_toolkit.schemas.variant import (
     VariantsListResponse,
     VariantSummary,
 )
+from genomeclaw_toolkit.service.pgs_compute_config import (
+    PrsComputeConfigMalformedError,
+    PrsComputeConfigMissingError,
+    load_prs_compute_config,
+)
 from genomeclaw_toolkit.service.pgs_compute_orchestrator import (
+    _real_compute_fn,
     create_pgs_compute_tasks_db_if_missing,
     enqueue_pgs_compute_task,
     pgs_compute_worker_lifespan,
@@ -80,6 +88,8 @@ from genomeclaw_toolkit.service.store import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from pathlib import Path
+
+_LOG = logging.getLogger(__name__)
 
 
 class _ActiveRunCache:
@@ -130,16 +140,41 @@ def build_app(*, derived_root: Path) -> FastAPI:
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         """Spawn the E.3 PGS compute worker; cancel on shutdown.
 
-        The worker drains ``pgs_compute_tasks.sqlite`` for the active run.
+        Reads ``prs_compute_config.json`` from the active run-dir. If
+        present, binds the worker's ``compute_fn`` to
+        :func:`_real_compute_fn` via :func:`functools.partial`. If missing
+        or malformed, logs a clear WARNING + skips spawning the worker —
+        the read routes still work; only the compute path is offline.
+
         If no active run is resolved (e.g. the host service is up but
         ``CURRENT`` is broken), the worker is not spawned — the
         ``/v1/health`` 503 path still serves the operator the diagnostic.
         """
         worker_ctx = None
         if cache.active is not None:
-            db_path = cache.active.run_dir / "pgs_compute_tasks.sqlite"
+            run_dir = cache.active.run_dir
+            db_path = run_dir / "pgs_compute_tasks.sqlite"
             create_pgs_compute_tasks_db_if_missing(db_path)
-            worker_ctx = pgs_compute_worker_lifespan(db_path)
+            compute_fn = None  # None → pgs_compute_worker_lifespan picks the no-op default.
+            try:
+                prs_config = load_prs_compute_config(run_dir)
+            except PrsComputeConfigMissingError as exc:
+                _LOG.warning(
+                    "prs_compute_config.json missing; PGS compute worker will queue + "
+                    "ack tasks but cannot run real compute. %s",
+                    exc,
+                )
+            except PrsComputeConfigMalformedError as exc:
+                _LOG.warning(
+                    "prs_compute_config.json malformed; PGS compute worker will queue + "
+                    "ack tasks but cannot run real compute. %s",
+                    exc,
+                )
+            else:
+                compute_fn = functools.partial(
+                    _real_compute_fn, config=prs_config, run_dir=run_dir
+                )
+            worker_ctx = pgs_compute_worker_lifespan(db_path, compute_fn=compute_fn)
             await worker_ctx.__aenter__()
         try:
             yield

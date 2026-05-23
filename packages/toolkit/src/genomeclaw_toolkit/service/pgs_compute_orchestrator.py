@@ -23,17 +23,31 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import sqlite3
+import subprocess
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
+from genomeclaw_toolkit.prep._paths import DooDPathError, as_sibling_mountable
+from genomeclaw_toolkit.prep._pgs_qc import PRSDeclineError
+from genomeclaw_toolkit.prep.coverage_fill import compute_prs_with_coverage_fill
+from genomeclaw_toolkit.prep.pgs import (
+    PgsReferenceMissingError,
+    PgsRow,
+    compute_pgs,  # noqa: F401 -- re-export shape for symmetry with worker imports
+    stamp_pgs_row,
+)
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
     from pathlib import Path
+
+    from genomeclaw_toolkit.service.pgs_compute_config import PrsComputeConfig
 
 _LOG = logging.getLogger(__name__)
 
@@ -257,20 +271,139 @@ def _mark_failed(db_path: Path, task_id: str, error: str) -> None:
 
 
 async def _noop_compute_fn(_task: PgsComputeTaskFullRow) -> None:
-    """Phase 3 stub. Phase 4 replaces with ``compute_prs_with_coverage_fill(...)``."""
+    """Phase 3 stub. Phase 4 wires the real path through :func:`_real_compute_fn`."""
     await asyncio.sleep(0)
 
 
 async def _dispatch_compute(task: PgsComputeTaskFullRow) -> None:
     """Indirection so :func:`monkeypatch.setattr` on ``_noop_compute_fn`` takes effect.
 
-    The lifespan binds the worker's ``compute_fn`` to this dispatcher; the
-    dispatcher re-resolves ``_noop_compute_fn`` from module globals on each
-    call. Without this indirection, the worker would capture the function
-    object at task-spawn time and tests couldn't swap in a stub after the
-    app is built.
+    The Phase 3 lifespan binds the worker's ``compute_fn`` to this
+    dispatcher when no PRS config is available; Phase 4's lifespan binds
+    :func:`_real_compute_fn` instead. The dispatcher re-resolves
+    ``_noop_compute_fn`` from module globals on each call so tests can
+    swap in a stub after the app is built.
     """
     await _noop_compute_fn(task)
+
+
+class PgsScorefileMissingError(FileNotFoundError):
+    """The requested PGS Catalog scorefile isn't pre-staged.
+
+    Phase 4 surface. The worker fails the task with
+    ``scorefile_missing:<pgs_id>`` so the agent's polling surfaces a clear
+    next step (operator should run
+    ``genomeclaw refs fetch --source pgs_scorefile --pgs-id <pgs_id>``).
+    """
+
+    def __init__(self, pgs_id: str) -> None:
+        """Build the error with the missing PGS Catalog ID attached for error mapping."""
+        super().__init__(f"scorefile for {pgs_id} not pre-staged")
+        self.pgs_id = pgs_id
+
+
+class DegenerateResultError(RuntimeError):
+    """INV-R002 guard: refuse to cache a degenerate PRS result.
+
+    A row with ``percentile_in_user_ancestry is None`` AND ``raw_score is None``
+    has no usable signal; persisting it would mislead the agent into
+    treating an empty cell as an authoritative result.
+    """
+
+    def __init__(self, detail: str) -> None:
+        """Build the error with the detail string for ``failed:degenerate_result:<detail>``."""
+        super().__init__(detail)
+        self.detail = detail
+
+
+def _is_degenerate(row: PgsRow) -> bool:
+    """INV-R002 predicate: True when the row carries no usable signal."""
+    return row.percentile_in_user_ancestry is None and row.raw_score is None
+
+
+def _structured_error(exc: Exception) -> str:
+    """Map a compute exception to the ``failed:<class>:<detail>`` shape.
+
+    Known failure modes return a stable, parseable string the agent can
+    branch on. Unknown exceptions fall through to
+    ``worker_unexpected_error:<ExceptionClass>``.
+    """
+    if isinstance(exc, PgsScorefileMissingError):
+        return f"scorefile_missing:{exc.pgs_id}"
+    if isinstance(exc, subprocess.CalledProcessError):
+        return f"pgsc_calc_failed:rc={exc.returncode}"
+    if isinstance(exc, DooDPathError):
+        # Surface a short detail rather than the full multi-line hint message.
+        first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+        return f"dood_path_error:{first_line}"
+    if isinstance(exc, PRSDeclineError):
+        return f"prs_decline:{exc.reason.value}"
+    if isinstance(exc, DegenerateResultError):
+        return f"degenerate_result:{exc.detail}"
+    if isinstance(exc, PgsReferenceMissingError):
+        return f"pgs_reference_missing:{exc!s}"
+    return f"worker_unexpected_error:{type(exc).__name__}"
+
+
+def _resolve_scorefile_path(scorefile_root: Path, pgs_id: str) -> Path:
+    """Resolve the pre-staged scorefile path; raise if absent.
+
+    Matches the convention :mod:`prep.coverage_fill` uses: scorefiles live
+    under ``<scorefile_root>/<pgs_id>.txt.gz`` (the post-fetch destination
+    of ``genomeclaw refs fetch --source pgs_scorefile``).
+    """
+    candidate = scorefile_root / f"{pgs_id}.txt.gz"
+    if not candidate.exists():
+        raise PgsScorefileMissingError(pgs_id)
+    return candidate
+
+
+async def _real_compute_fn(
+    task: PgsComputeTaskFullRow,
+    *,
+    config: PrsComputeConfig,
+    run_dir: Path,
+) -> None:
+    """Run the real PRS compute + persist the result row.
+
+    The blocking compute runs via :meth:`asyncio.AbstractEventLoop.run_in_executor`
+    on the default ThreadPoolExecutor — the concurrency cap of 1 (held in
+    the worker loop's :class:`asyncio.Lock`) means the ThreadPool's size
+    is irrelevant for correctness. Errors propagate as exceptions; the
+    worker loop maps them to ``failed:<class>:<detail>`` via
+    :func:`_structured_error`.
+    """
+    scorefile_path = _resolve_scorefile_path(config.scorefile_root, task.pgs_id)
+
+    loop = asyncio.get_running_loop()
+    pgs_row: PgsRow = await loop.run_in_executor(
+        None,
+        functools.partial(
+            compute_prs_with_coverage_fill,
+            sample_id=config.sample_id,
+            cram_path=config.cram_path,
+            sites_tsv=config.sites_tsv,
+            alleles_tsv=config.alleles_tsv,
+            scorefile_path=scorefile_path,
+            fasta=config.fasta,
+            panel_version=config.panel_version,
+            reference_root=as_sibling_mountable(config.reference_root),
+            output_root=run_dir,
+            work_dir=as_sibling_mountable(config.work_dir_root),
+            agent_choice_rationale=task.rationale,
+            requested_for_question=task.requested_for_question,
+            trait_label=task.trait_label,
+        ),
+    )
+
+    if _is_degenerate(pgs_row):
+        raise DegenerateResultError(
+            f"zero_overlap:percentile=None,raw_score=None for {task.pgs_id}"
+        )
+
+    # The persistence step runs on the event loop; it's a single DuckDB
+    # write that returns in milliseconds. No executor offload needed.
+    stamp_pgs_row(run_dir, pgs_row, vcf=config.cram_path)
 
 
 async def pgs_compute_worker_loop(
@@ -320,11 +453,7 @@ async def pgs_compute_worker_loop(
                         except asyncio.CancelledError:
                             raise
                         except Exception as exc:
-                            _mark_failed(
-                                db_path,
-                                claimed.task_id,
-                                f"worker_unexpected_error:{type(exc).__name__}",
-                            )
+                            _mark_failed(db_path, claimed.task_id, _structured_error(exc))
                             _LOG.exception(
                                 "PGS compute worker failed task %s",
                                 claimed.task_id,
@@ -340,15 +469,25 @@ async def pgs_compute_worker_loop(
 @contextlib.asynccontextmanager
 async def pgs_compute_worker_lifespan(
     db_path: Path,
+    *,
+    compute_fn: Callable[[PgsComputeTaskFullRow], Awaitable[None]] | None = None,
 ) -> AsyncIterator[asyncio.Task[None]]:
     """Spawn the worker for the duration of the context, cancel on exit.
 
     Used by the host service's FastAPI lifespan hook. Tests construct the
     app via :class:`TestClient` whose ``__enter__`` runs the lifespan
     startup + ``__exit__`` runs the shutdown.
+
+    ``compute_fn`` defaults to :func:`_dispatch_compute` (the Phase 3
+    no-op indirection) when the caller hasn't supplied a real compute
+    binding. Phase 4's app lifespan binds ``functools.partial(_real_compute_fn,
+    config=..., run_dir=...)`` when the sidecar resolves cleanly.
     """
+    if compute_fn is None:
+        compute_fn = _dispatch_compute
     worker_task = asyncio.create_task(
-        pgs_compute_worker_loop(db_path), name="pgs_compute_worker"
+        pgs_compute_worker_loop(db_path, compute_fn=compute_fn),
+        name="pgs_compute_worker",
     )
     try:
         yield worker_task
@@ -359,8 +498,10 @@ async def pgs_compute_worker_lifespan(
 
 
 __all__ = [
+    "DegenerateResultError",
     "PgsComputeTaskFullRow",
     "PgsComputeTaskRow",
+    "PgsScorefileMissingError",
     "PgsTaskStatus",
     "create_pgs_compute_tasks_db_if_missing",
     "enqueue_pgs_compute_task",
