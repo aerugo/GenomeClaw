@@ -94,10 +94,17 @@ def _make_fake_pgs_row(*, pgs_id: str = "PGS_TEST", percentile: float | None = 7
 
 
 def _stage_scorefile(run_dir: Path, pgs_id: str) -> None:
-    """Touch the scorefile path the worker resolves so it doesn't 404."""
+    """Touch the scorefile at the canonical layout so the worker resolves it.
+
+    Phase 4 + post-fix: the canonical layout is
+    ``<scorefile_root>/<pgs_id>/<pgs_id>_hmPOS_GRCh38.txt.gz`` per
+    ``prep/fetch.py`` + ``prep/doctor.py`` + ``bin/genomeclaw-prs-smoke``.
+    """
     config = json.loads((run_dir / "prs_compute_config.json").read_text())
     scorefile_root = Path(config["scorefile_root"])
-    (scorefile_root / f"{pgs_id}.txt.gz").write_bytes(b"")
+    pgs_dir = scorefile_root / pgs_id
+    pgs_dir.mkdir(parents=True, exist_ok=True)
+    (pgs_dir / f"{pgs_id}_hmPOS_GRCh38.txt.gz").write_bytes(b"")
 
 
 def _enqueue(client, *, pgs_id="PGS_TEST", rationale="phase-4 worker integration test"):

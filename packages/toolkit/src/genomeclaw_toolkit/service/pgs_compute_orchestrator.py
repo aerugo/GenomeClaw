@@ -408,14 +408,24 @@ def _structured_error(exc: Exception) -> str:
 def _resolve_scorefile_path(scorefile_root: Path, pgs_id: str) -> Path:
     """Resolve the pre-staged scorefile path; raise if absent.
 
-    Matches the convention :mod:`prep.coverage_fill` uses: scorefiles live
-    under ``<scorefile_root>/<pgs_id>.txt.gz`` (the post-fetch destination
-    of ``genomeclaw refs fetch --source pgs_scorefile``).
+    The canonical PGS-Catalog scorefile layout (per :mod:`prep.fetch`,
+    :mod:`prep.doctor`, and ``bin/genomeclaw-prs-smoke``) is:
+
+        ``<scorefile_root>/<pgs_id>/<pgs_id>_hmPOS_GRCh38.txt.gz``
+
+    The harmonised-positions (``_hmPOS_``) GRCh38 build is what
+    ``compute_prs_with_coverage_fill`` expects. The earlier flat-layout
+    fallback (``<scorefile_root>/<pgs_id>.txt.gz``) is also accepted for
+    backwards-compat with operators who staged scorefiles by hand against
+    an older convention.
     """
-    candidate = scorefile_root / f"{pgs_id}.txt.gz"
-    if not candidate.exists():
-        raise PgsScorefileMissingError(pgs_id)
-    return candidate
+    canonical = scorefile_root / pgs_id / f"{pgs_id}_hmPOS_GRCh38.txt.gz"
+    if canonical.exists():
+        return canonical
+    flat_fallback = scorefile_root / f"{pgs_id}.txt.gz"
+    if flat_fallback.exists():
+        return flat_fallback
+    raise PgsScorefileMissingError(pgs_id)
 
 
 async def _real_compute_fn(
