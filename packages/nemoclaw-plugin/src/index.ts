@@ -246,10 +246,13 @@ const GeneParams = Type.Object(
 //
 // PGS Catalog ID is the canonical key (not curator-named trait). Compute
 // is async + agent-triggered; rationale + alternatives considered persist
-// per INV-A003. The `rationale` field carries a minLength: 50 gate at the
+// per INV-A003. The `rationale` field carries a minLength: 10 gate at the
 // TypeBox layer (defence-in-depth with the host-service 422); together
-// they enforce INV-A003's "alternatives considered + why this one"
-// contract by rejecting one-word rationales before any compute fires.
+// they enforce a non-empty rationale floor without rejecting agent-typical
+// brevity. The agent system prompt continues to encourage ≥50-char
+// "alternatives considered" framing; the 50-char gate was relaxed after
+// the 2026-05-23 AMD-question incident where reasoning-pressured rationales
+// (~41 chars) were 422'd, breaking the compute path.
 
 const PgsListParams = Type.Object({}, { additionalProperties: false });
 
@@ -262,7 +265,7 @@ const PgsComputeParams = Type.Object(
   {
     pgs_id: Type.String({ minLength: 1 }),
     trait_label: Type.String({ minLength: 1 }),
-    rationale: Type.String({ minLength: 50 }),
+    rationale: Type.String({ minLength: 10 }),
     requested_for_question: Type.String({ minLength: 1 }),
   },
   { additionalProperties: false },

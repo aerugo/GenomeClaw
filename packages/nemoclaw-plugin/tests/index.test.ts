@@ -432,10 +432,12 @@ describe("genomeclaw_pgs_* tools (Q8 v1.6)", () => {
     expect(body.requested_for_question).toBe("my dad had a heart attack at 58");
   });
 
-  test("genomeclaw_pgs_compute rejects rationale shorter than 50 chars at the TypeBox layer", async () => {
+  test("genomeclaw_pgs_compute rejects rationale shorter than 10 chars at the TypeBox layer", async () => {
     // Defence-in-depth with the host-service 422: even before any HTTP call
-    // fires, the plugin's TypeBox schema should reject a short rationale,
-    // forcing the agent's `INV-A003` "alternatives considered" contract.
+    // fires, the plugin's TypeBox schema should reject a trivially-short
+    // rationale, enforcing the INV-A003 non-empty floor. Phase 2 lowered
+    // the threshold from 50 to 10 after the 2026-05-23 AMD-question
+    // incident; the 10-char floor still rejects single-token rationales.
     const api = makeMockApi();
     register(api);
     const compute = api.tools.find((t) => t.name === "genomeclaw_pgs_compute");
@@ -445,7 +447,7 @@ describe("genomeclaw_pgs_* tools (Q8 v1.6)", () => {
     const out = await invokeTool(compute, {
       pgs_id: "PGS000018",
       trait_label: "coronary artery disease",
-      rationale: "too short",
+      rationale: "short",  // 5 chars, below the 10-char floor
       requested_for_question: "?",
     });
     expect(out.ok).toBe(false);

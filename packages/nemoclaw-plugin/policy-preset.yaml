@@ -81,7 +81,7 @@ network_policies:
           # `/v1/pgs/compute` is the ONLY POST path the policy allows
           # for the host service — it enqueues a host-side pgsc_calc
           # task, not a write to the derived store. The host service
-          # validates the PgsComputeRequest body (rationale minLength 50)
+          # validates the PgsComputeRequest body (rationale minLength 10)
           # so a malformed POST gets rejected with 422 at the route layer.
           - allow: { method: GET, path: "/v1/pgs/computed" }
           - allow: { method: GET, path: "/v1/pgs/computed/*" }

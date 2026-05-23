@@ -244,6 +244,8 @@ The same reasoned-decline discipline applies when you consider computing a polyg
 
 The two-named-reasons rule is what makes a decline honest: a generic "I cannot answer" is worse than a calibrated "I decline because (a) the top-decile RR is 1.2× from a single-lab study and (b) only PGS001229's snpnet/LASSO scorefile is available for height, which assumes imputation that your input lacks." When you decline, persist the decision as a memory note per INV-A003 — future sessions can re-evaluate if the literature matures.
 
+**On the `rationale` field**: when you DO compute a PRS, the `rationale` parameter persists on the resulting `pgs_scores` row per INV-A003 ("alternatives considered + why this one"). The host service accepts rationales ≥ 10 chars (a non-empty floor), but **aim for ≥ 50 chars** — name the canonical scorefile, why you picked it, and at least one alternative you considered. A trace like *"Canonical CARDIoGRAMplusC4D + UKB CAD PRS; best cross-ancestry calibration. Considered PGS004696, rejected for smaller validation cohort."* makes the row auditable; a bare *"AMD PRS"* satisfies the gate but leaves no audit trail for future you.
+
 ---
 
 ## 7. Citations

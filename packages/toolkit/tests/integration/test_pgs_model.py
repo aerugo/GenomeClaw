@@ -68,16 +68,18 @@ def test_pgs_row_response_model_pinned_shape() -> None:
         )
 
 
-def test_pgs_compute_request_requires_long_rationale() -> None:
-    """`PgsComputeRequest` rejects `rationale` shorter than 50 chars.
+def test_pgs_compute_request_requires_non_empty_rationale() -> None:
+    """`PgsComputeRequest` rejects `rationale` shorter than 10 chars.
 
     The `rationale` field is the agent's explanation of *why this PGS* —
     alternatives considered, why this one over them, calibration story.
-    A 50-char minimum forces the agent to write more than a one-word
-    answer, and matches the plugin-side TypeBox `minLength: 50` defence.
-    Together they implement `INV-A003`'s "alternatives considered" contract.
+    Phase 2 (agent-prs-compute-fix) lowered the threshold from 50 to 10
+    after the 2026-05-23 AMD-question incident where reasoning-pressured
+    rationales (~41 chars) were 422'd. The 10-char floor still rejects
+    trivially-empty rationales; the agent system prompt continues to
+    encourage ≥50-char "alternatives considered" framing.
     """
-    # Happy path — long enough rationale.
+    # Happy path — long-form canonical rationale.
     valid = PgsComputeRequest(
         pgs_id="PGS000018",
         trait_label="coronary artery disease",
@@ -98,14 +100,24 @@ def test_pgs_compute_request_requires_long_rationale() -> None:
             requested_for_question="why?",
         )
 
-    # Reject too-short.
+    # Reject below the new 10-char floor.
     with pytest.raises(ValidationError):
         PgsComputeRequest(
             pgs_id="PGS000018",
             trait_label="coronary artery disease",
-            rationale="canonical CAD PRS",  # 17 chars
+            rationale="too short",  # 9 chars
             requested_for_question="why?",
         )
+
+    # Accept at-or-above the 10-char floor (regression guard for the
+    # 2026-05-23 agent-typical short rationale).
+    short_but_valid = PgsComputeRequest(
+        pgs_id="PGS000018",
+        trait_label="coronary artery disease",
+        rationale="canonical CAD PRS",  # 17 chars; rejected on old main, accepted now
+        requested_for_question="why?",
+    )
+    assert short_but_valid.pgs_id == "PGS000018"
 
 
 def test_finding_accepts_clinical_non_actionable_prs_row() -> None:

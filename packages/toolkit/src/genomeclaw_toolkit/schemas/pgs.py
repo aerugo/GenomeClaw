@@ -14,10 +14,15 @@ Architectural choices (per [docs/reports/agent-driven-prs-computation.md](
   per-row provenance** under `INV-A003`. The compute-request body requires
   them; the response body returns them; the wrapper stamps them into the
   `pgs_scores` row.
-- **`rationale` must be ≥ 50 chars** at the request layer — defence-in-depth
-  with the plugin's TypeBox `minLength: 50` gate. Together they enforce the
-  "alternatives considered + why this one" contract; an agent that supplies
-  a one-word rationale gets rejected before any compute starts.
+- **`rationale` must be non-empty** at the request layer (≥ 10 chars) —
+  defence-in-depth with the plugin's TypeBox `minLength: 10` gate. The
+  INV-A003 rule is "alternatives considered + why this one"; the 10-char
+  floor stops trivially-empty rationales without rejecting agent-typical
+  brevity. The 50-char threshold the earlier slice enforced rejected
+  agent-generated rationales under reasoning pressure (2026-05-23 AMD-
+  question incident); the agent system prompt continues to encourage
+  ≥50-char "alternatives considered" framing without the host service
+  enforcing it as a 422 boundary.
 """
 
 from __future__ import annotations
@@ -94,17 +99,19 @@ class PgsListResponse(BaseModel):
 class PgsComputeRequest(BaseModel):
     """Request body for `POST /v1/pgs/compute`.
 
-    The 50-char minimum on `rationale` forces the agent to write more than a
-    one-word answer + enforces the `INV-A003` "alternatives considered" contract
-    at the host-service layer (defence-in-depth with the plugin's TypeBox
-    `minLength: 50`).
+    The 10-char minimum on `rationale` stops trivially-empty rationales
+    while accepting agent-typical brevity (2026-05-23 AMD-question incident:
+    the earlier 50-char gate rejected `"Canonical AMD PRS; smoker-relevant trait."`
+    at 41 chars). The INV-A003 rule is "alternatives considered + why this one";
+    the agent system prompt continues to encourage that framing without the
+    host service enforcing a specific char threshold.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     pgs_id: str = Field(min_length=1)
     trait_label: str = Field(min_length=1)
-    rationale: str = Field(min_length=50)
+    rationale: str = Field(min_length=10)
     requested_for_question: str = Field(min_length=1)
 
 
