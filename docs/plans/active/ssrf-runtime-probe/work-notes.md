@@ -99,3 +99,65 @@ Recommendation: **Path Y with a single multi-call agent turn**. One LLM call per
 - `packages/toolkit/tests/integration/test_live_smoke_harness.py` — CREATED (4 harness unit tests, all PASS).
 - `packages/toolkit/tests/conftest.py` — MODIFIED (auto-skip predicate for `live_ssrf_probe` marker).
 - `packages/toolkit/pyproject.toml` — MODIFIED (registered `live_ssrf_probe` marker).
+
+---
+
+## 2026-05-24 — Phase 1b: Path Y LANDED + GREEN
+
+Implemented Path Y end-to-end. The probe-sweep pytest test passes against the real sandbox in ~98 s wall (1 OpenAI Responses call, ~$0.10-0.50 per run).
+
+**Implementation arc** (five iterations through openclaw runtime bugs):
+
+1. **v1 — TypeBox `Type.Array(Type.Object(...))` strip**: agent sent `{"probes":[{...},...]}` correctly (verified in `raw_params=...` gateway log), but `args.probes` arrived at `execute()` as `undefined`. OpenClaw's TypeBox validator silently drops array-of-object params between raw_params and the callback.
+2. **v2 — defensive coercion**: `Array.from(Object.values(args.probes))` — but `args.probes` is `undefined`, so `Object.values(undefined)` throws. Same root issue, different symptom.
+3. **v3 — `probesJson: string` workaround**: take the array as a JSON-encoded string and parse inside the tool. The string param arrived as the literal `"undefined"` — this is **Q-001** (agent-quirks.md) hitting the SSRF tool. OpenClaw's openai-responses path intermittently mangles tool-call args.
+4. **v4 — `confirm: "run"` sentinel arg**: even a short string arg got corrupted to `undefined`. Q-001 isn't size-dependent.
+5. **v6 — zero-arg tool** (`Type.Object({}, { additionalProperties: false })`, pattern from `genomeclaw_status`): immune to both bugs because there's no arg to corrupt. The probe set is **hardcoded** in the plugin TypeScript. ALL 5 PROBES PASSED.
+
+**Empirical findings (worth their own openclaw issues)**:
+- TypeBox `Type.Array(Type.Object(...))` is structurally broken in the openclaw runtime — probably the schema compiler doesn't handle nested object schemas in arrays. The other tools that use `Type.Array(Type.String(...))` work fine, so it's specific to array-of-object.
+- Q-001 affects ANY string arg through the openai-responses path, not just long ones — even a 3-character `"run"` got mangled. Affects all openai-responses agent runs in a context-conditional way.
+
+**Path Y final shape**:
+
+- `packages/nemoclaw-plugin/src/index.ts`: optional `genomeclaw_ssrf_probe_batch` tool registered only when `GENOMECLAW_ENABLE_SSRF_PROBE=1`. Zero-arg surface. Hardcoded 5-tuple probe set inside the plugin TypeScript (must stay in lockstep with the pytest's `EXPECTED` dict). Each probe runs `fetch()` from inside the plugin's enforcement context, classifies the result, returns the array.
+- `packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py`: `@pytest.mark.live_ssrf_probe @pytest.mark.live_llm`-gated. Spawns sandbox with `sleep infinity`, `docker cp`s the freshly-built plugin (`packages/nemoclaw-plugin/dist/index.js`) over the baked-in one, chowns root:root (openclaw rejects non-sandbox-owned plugins), starts gateway via `docker exec`, invokes the agent with the zero-arg prompt, parses the fenced JSON code block from the agent's reply, asserts each `rejection_class` is in the per-tuple allow-set + the ALLOW probe actually returned HTTP 200 with a real `/v1/health` body.
+- `packages/nemoclaw-plugin/dist/index.js`: rebuilt (`npm run build`).
+
+**Test result (98 s wall, 1 LLM call)**:
+
+```
+PASSED [100%]
+  allow_host_service_health: allow_ok  (HTTP 200, body status:ok schema_version:v0.2)
+  deny_host_service_off_port: deny_other  (<fetch error: fetch failed>)
+  deny_rfc1918_non_gateway: deny_other  (<fetch error: aborted>)
+  deny_public_example_com: deny_other  (<fetch error: fetch failed>)
+  deny_public_cloudflare_dns: deny_other  (<fetch error: fetch failed>)
+```
+
+**What this proves (and doesn't)**:
+
+- **Proves**: the policy allows the configured host+port+path (HTTP 200 with real body proves the host service IS reachable from the plugin); un-allowlisted destinations are unreachable (all 4 deny probes fail at the network layer).
+- **Does NOT prove**: which layer denies the un-allowlisted destinations. The body is `<fetch error: fetch failed>` for all deny probes — no OpenShell-shaped rejection message (e.g., `"blocked: internal address"`). The destination could be denied by OpenShell's L7 policy, OR by the sandbox container's DNS (which may not resolve `example.com`), OR by the lack of a route to `192.168.99.99`. The privacy invariant (un-allowlisted traffic doesn't escape) holds either way; the categorical evidence is weaker than spec AC3 wanted.
+
+**Phase 2 scope** (still pending — recommend splitting into a follow-up plan):
+
+- Sharpen the rejection-class classifier by capturing the actual OpenShell rejection body when one fires. Need to probe a destination that IS reachable AT NETWORK LAYER but BLOCKED BY POLICY (e.g., `host.openshell.internal:8643` with a non-allowlisted PATH like `/v1/raw-secrets` — the path matrix should fire and return a policy-shaped body).
+- Pin OpenShell rejection-message format as `tools/openshell/probe-output.txt` golden baseline (INV-T001 style).
+- Document the three coverage layers in INVARIANTS.md v1.16.
+
+**Files changed (Phase 1b)**:
+- `packages/nemoclaw-plugin/src/index.ts` — MODIFIED (added zero-arg `genomeclaw_ssrf_probe_batch` tool, env-gated)
+- `packages/nemoclaw-plugin/dist/index.js` — REBUILT
+- `packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py` — MODIFIED (replaced Phase 1 skipped tests with the Path Y live test)
+
+### Phase status (updated)
+
+| Phase | Status |
+|-------|--------|
+| 1 — Long-running harness + 5-tuple probe | COMPLETE (harness shipped 2026-05-24; probe approach pivoted to Path Y) |
+| 1b — Path Y custom plugin + zero-arg sweep | COMPLETE (2026-05-24, 5/5 PASS) |
+| 2 — Rejection-class classifier hardening + version pin + golden baseline | Pending (separate follow-up plan) |
+| 3 — INVARIANTS.md v1.16 docs | Pending Phase 2 |
+
+The core privacy-enforcement evidence is now in place. Phase 2 + 3 can ship as one follow-up plan.

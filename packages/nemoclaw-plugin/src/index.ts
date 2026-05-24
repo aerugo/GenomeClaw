@@ -564,7 +564,117 @@ export default function register(api: OpenClawPluginApi): void {
   // is deliberately absent — the agent composes report-shaped responses
   // from `genomeclaw_status` + `genomeclaw_findings` + framing knowledge.
 
+  // ── genomeclaw_ssrf_probe_batch (TEST-ONLY, env-gated) ─────────────────
+  //
+  // Per [docs/plans/active/ssrf-runtime-probe/](../../../docs/plans/active/ssrf-runtime-probe/)
+  // Phase 1b Path Y. Registers ONLY when `GENOMECLAW_ENABLE_SSRF_PROBE=1`.
+  // Production builds (without the env var) carry no test tool — the
+  // production tool count stays at 9; this tool only exists when the
+  // operator explicitly opts in for a probe sweep.
+  //
+  // Why this tool exists: the OpenShell L7 policy only fires on requests
+  // routed through openclaw's enforcement context. A `docker exec node`
+  // or `docker exec curl` bypasses the policy entirely (Phase 1 GREEN
+  // finding). This tool's `fetch()` is part of the plugin running inside
+  // the openclaw process, so the policy DOES fire — the tool issues a
+  // list of probes from inside the enforcement context and reports each
+  // result classified into `allow_ok | deny_internal_address |
+  // deny_host_not_allowlisted | deny_port_not_allowlisted |
+  // deny_path_not_allowlisted | deny_other`. The pytest harness invokes
+  // this tool ONCE via the agent with the full probe-tuple batch (one
+  // LLM call per probe sweep, not one per tuple — deterministic).
+  const ssrfProbeEnabled = (process.env["GENOMECLAW_ENABLE_SSRF_PROBE"] ?? "") === "1";
+  if (ssrfProbeEnabled) {
+    // OpenClaw's TypeBox runtime strips Type.Array(Type.Object(...)) params
+    // (probesJson is also affected — even a single string arg arrives as
+    // the literal "undefined" intermittently through the openai-responses
+    // path, per Q-001 in agent-quirks.md). Both observations argue for a
+    // zero-arg tool: openclaw can't corrupt what isn't there. The probe
+    // set is hardcoded; the agent invokes the tool with `{}` and it
+    // runs. Pattern matches `genomeclaw_status`'s empty StatusParams.
+    const SsrfProbeParams = Type.Object({}, { additionalProperties: false });
+
+    interface ProbeSpec {
+      id: string;
+      host: string;
+      port: number;
+      method: string;
+      path: string;
+      expected_class: string;
+    }
+
+    // Baked-in probe set — must stay in lockstep with the pytest harness
+    // at packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py
+    // and the tuples enumerated in ssrf-runtime-probe/spec.md AC2.
+    const HARDCODED_PROBES: ProbeSpec[] = [
+      { id: "allow_host_service_health", host: "host.openshell.internal", port: 8643, method: "GET", path: "/v1/health", expected_class: "allow_ok" },
+      { id: "deny_host_service_off_port", host: "host.openshell.internal", port: 8644, method: "GET", path: "/v1/health", expected_class: "deny_other_or_port" },
+      { id: "deny_rfc1918_non_gateway", host: "192.168.99.99", port: 80, method: "GET", path: "/", expected_class: "deny_other_or_internal_or_host" },
+      { id: "deny_public_example_com", host: "example.com", port: 443, method: "GET", path: "/", expected_class: "deny_other_or_host" },
+      { id: "deny_public_cloudflare_dns", host: "1.1.1.1", port: 53, method: "GET", path: "/", expected_class: "deny_other_or_host" },
+    ];
+
+    function classifySsrfResult(status: number | null, body: string): string {
+      if (status !== null && status >= 200 && status < 300) return "allow_ok";
+      const b = body.toLowerCase();
+      if (b.includes("internal address")) return "deny_internal_address";
+      if (b.includes("host not") || b.includes("not in policy") || b.includes("host_not_allowed")) {
+        return "deny_host_not_allowlisted";
+      }
+      if (b.includes("port not") || b.includes("port_not_allowed")) {
+        return "deny_port_not_allowlisted";
+      }
+      if (b.includes("path not") || b.includes("method not") || b.includes("path_not_allowed")) {
+        return "deny_path_not_allowlisted";
+      }
+      return "deny_other";
+    }
+
+    api.registerTool({
+      name: "genomeclaw_ssrf_probe_batch",
+      description:
+        "TEST-ONLY (gated by GENOMECLAW_ENABLE_SSRF_PROBE=1). Fires a baked-in sweep of 5 OpenShell L7 policy probes from inside the plugin's enforcement context. Takes no arguments — invoke with `{}`. Returns the classified results array.",
+      parameters: SsrfProbeParams,
+      outputClass: "summary",
+      execute: async (_args: Static<typeof SsrfProbeParams>, _ctx: AgentToolContext) => {
+        const results: Array<Record<string, unknown>> = [];
+        for (const p of HARDCODED_PROBES) {
+          const { method, path } = p;
+          const url = `http://${p.host}:${String(p.port)}${path}`;
+          const ctrl = new AbortController();
+          const tid = setTimeout(() => ctrl.abort(), 5000);
+          let status: number | null = null;
+          let bodyExcerpt = "";
+          try {
+            const r = await fetch(url, { method, signal: ctrl.signal });
+            status = r.status;
+            const txt = await r.text().catch(() => "");
+            bodyExcerpt = txt.slice(0, 500);
+          } catch (e) {
+            bodyExcerpt = `<fetch error: ${e instanceof Error ? e.message : String(e)}>`;
+          } finally {
+            clearTimeout(tid);
+          }
+          results.push({
+            id: p.id,
+            host: p.host,
+            port: p.port,
+            method,
+            path,
+            status,
+            body_excerpt: bodyExcerpt,
+            rejection_class: classifySsrfResult(status, bodyExcerpt),
+          });
+        }
+        return jsonResult({ results });
+      },
+    });
+    api.logger.info(
+      "GenomeClaw SSRF probe tool registered (TEST-ONLY; GENOMECLAW_ENABLE_SSRF_PROBE=1)",
+    );
+  }
+
   api.logger.info(
-    `GenomeClaw plugin registered (9 tools): host=${cfg.hostService.baseUrl}`,
+    `GenomeClaw plugin registered (${String(ssrfProbeEnabled ? 10 : 9)} tools): host=${cfg.hostService.baseUrl}`,
   );
 }

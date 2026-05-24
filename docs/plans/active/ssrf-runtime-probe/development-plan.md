@@ -215,10 +215,10 @@ After implementation is complete:
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| 1 — Long-running harness + 5-tuple probe | PARTIAL — harness GREEN, probe design flaw discovered | 2026-05-24 | (pivot pending) | Harness extension (`running_sandbox_container`, `run_probe`, shared config-batch builder) shipped + 4 unit tests green. Probe path needs re-architecting: docker-exec'd Node bypasses OpenShell same as docker-exec'd curl. See `work-notes.md` § 2026-05-24 GREEN finding. |
-| 1b — Probe-path pivot (Path X agent / Path Y plugin / Path Z abandon) | Pending design call | | | Operator: pick path. Recommended: Path Y (custom probe plugin + single multi-call agent turn — 1 LLM call per probe sweep, ~30 LOC TS plugin). |
-| 2 — Version pin + golden baseline | Awaiting 1b | | | Trivial after probe path lands green. |
-| 3 — Docs | Awaiting 1+1b+2 | | | INVARIANTS.md v1.15 → v1.16. |
+| 1 — Long-running harness + 5-tuple probe | COMPLETE | 2026-05-24 | 2026-05-24 | Harness extension (`running_sandbox_container`, `run_probe`, shared config-batch builder) + 4 unit tests. Phase 1 probe design (docker-exec'd Node) ruled out by GREEN finding; pivoted to Path Y. |
+| 1b — Path Y custom plugin + zero-arg sweep | COMPLETE | 2026-05-24 | 2026-05-24 | `genomeclaw_ssrf_probe_batch` tool (env-gated) + pytest test. 5/5 PASS in 98s wall. Surfaced 2 openclaw bugs: TypeBox array-of-object strip + Q-001 string-arg corruption — workaround = zero-arg tool with hardcoded probe set. |
+| 2 — Rejection-class classifier hardening + version pin + golden baseline | Pending (follow-up plan) | | | Current classifier emits `deny_other` for all 4 deny probes (fetch fails at network layer; no OpenShell body fragment to classify). Sharpening needs a probe that's network-reachable but policy-blocked (e.g., host.openshell.internal:8643 with a non-allowlisted PATH). Defer to a separate plan. |
+| 3 — INVARIANTS.md v1.16 docs | Pending Phase 2 | | | Three-layer coverage note + INV-T001 wrapper-table entry for OpenShell. |
 
 ---
 
