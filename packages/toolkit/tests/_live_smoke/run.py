@@ -4,7 +4,8 @@ The orchestrator handles the four-part dance Phase 2b's manual smoke
 script did:
 
 1. Stand up the host service against the supplied derived store on a
-   loopback port (default 8643) as a child process.
+   loopback port (default 8645; configurable via
+   ``GENOMECLAW_HOST_SERVICE_PORT``) as a child process.
 2. Pre-stage `IDENTITY.md` + `USER.md` into a tmp workspace dir; bind-
    mount it into the sandbox at `/sandbox/.openclaw/workspace/` so the
    `pi`-harness's BOOTSTRAP.md flow doesn't intercept the first turn
@@ -37,7 +38,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-DEFAULT_HOST_PORT = 8643
+# GenomeClaw's canonical host-service port. Operator-configurable via the
+# GENOMECLAW_HOST_SERVICE_PORT env var (matches the convention used by the
+# `bin/genomeclaw` shim + the in-sandbox plugin baseUrl). 8645 is the
+# default — DevRelClaw uses 8643, so distinct defaults let both projects
+# coexist on one host. See
+# docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md.
+DEFAULT_HOST_PORT = int(os.environ.get("GENOMECLAW_HOST_SERVICE_PORT", "8645"))
 
 
 def _port_is_free(port: int, host: str = "127.0.0.1") -> bool:

@@ -13,8 +13,18 @@ discipline means the existing ``doctor()`` tests stay valid.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
+
+# GenomeClaw's canonical host-service port. 8645 (not 8643) because
+# DevRelClaw's drg-service occupies 8643; both projects coexist on one
+# host by binding distinct ports. See
+# docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md.
+# Operator override via env var; CLI --port still wins.
+_DEFAULT_HOST_SERVICE_PORT: Final[int] = int(
+    os.environ.get("GENOMECLAW_HOST_SERVICE_PORT", "8645")
+)
 
 import typer
 from pydantic import BaseModel, ConfigDict, Field
@@ -508,12 +518,23 @@ def host_service(
     ] = "127.0.0.1",
     port: Annotated[
         int,
-        typer.Option("--port", help="Bind port."),
-    ] = 8643,
+        typer.Option(
+            "--port",
+            help=(
+                "Bind port. Defaults to the GENOMECLAW_HOST_SERVICE_PORT env "
+                "var if set, else 8645 (the GenomeClaw-canonical port; "
+                "DevRelClaw uses 8643). Keep the two distinct so both "
+                "projects coexist on one host."
+            ),
+        ),
+    ] = _DEFAULT_HOST_SERVICE_PORT,
 ) -> None:
     """Launch the read-only host service over the active derived run.
 
-    Binds to ``127.0.0.1:8643`` by default (per [spec.md AC2](../spec.md)).
+    Binds to ``127.0.0.1:8645`` by default (operator-configurable via
+    ``GENOMECLAW_HOST_SERVICE_PORT`` env var or ``--port``). See
+    ``docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md``
+    for the coexistence rationale.
     The service reads ``<derived-root>/CURRENT`` at startup; send the
     process ``SIGHUP`` to re-resolve after a new pipeline run completes.
 

@@ -369,28 +369,40 @@ if [[ -n "${GENOMECLAW_SMOKE_RUN_ID:-}" ]]; then
 fi
 
 # `host service` lives in the toolkit container per Phase 3 of
-# worker-self-sufficient-compute. Publish the bind port (default 8643;
+# worker-self-sufficient-compute. Publish the bind port (default 8645;
 # operator override via GENOMECLAW_HOST_SERVICE_PORT) so the sandbox can
 # reach the container's uvicorn via host.openshell.internal:<port>.
+# 8645 is the GenomeClaw-canonical port — DevRelClaw uses 8643, so both
+# projects coexist on one host (see
+# docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md).
 # Uvicorn must bind 0.0.0.0 inside the container for the docker-NAT
 # bridge to forward inbound connections; the canonical CLI default of
 # 127.0.0.1 only accepts container-local traffic, so we append --host
 # 0.0.0.0 to the argv if the operator didn't already supply --host.
+# We also pass --port through explicitly so the inner CLI binds the
+# same port we just published (otherwise the inner default 8645 would
+# silently win, masking operator overrides via GENOMECLAW_HOST_SERVICE_PORT).
 host_service_args=()
 host_service_extra_argv=()
 if [[ "${GENOMECLAW_IS_HOST_SERVICE:-0}" == "1" ]]; then
-  service_port="${GENOMECLAW_HOST_SERVICE_PORT:-8643}"
+  service_port="${GENOMECLAW_HOST_SERVICE_PORT:-8645}"
   host_service_args+=("--publish" "${service_port}:${service_port}")
   # Append --host 0.0.0.0 only if operator didn't already pass --host.
   has_host_flag=0
+  has_port_flag=0
   for arg in "$@"; do
     if [[ "$arg" == "--host" || "$arg" == --host=* ]]; then
       has_host_flag=1
-      break
+    fi
+    if [[ "$arg" == "--port" || "$arg" == --port=* ]]; then
+      has_port_flag=1
     fi
   done
   if (( has_host_flag == 0 )); then
     host_service_extra_argv+=("--host" "0.0.0.0")
+  fi
+  if (( has_port_flag == 0 )); then
+    host_service_extra_argv+=("--port" "${service_port}")
   fi
 fi
 

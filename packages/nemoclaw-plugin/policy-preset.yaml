@@ -3,6 +3,13 @@
 #
 # OpenShell network policy preset for the GenomeClaw NemoClaw plugin.
 #
+# Port discipline (2026-05-24): GenomeClaw uses port 8645 as canonical;
+# DevRelClaw uses 8643. Both projects coexist on one host by binding
+# distinct ports. To use a different port, rebuild the sandbox image
+# with `--build-arg GENOMECLAW_HOST_PORT=<n>` — the Dockerfile substitutes
+# the value into THIS file at COPY time. See
+# docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md.
+#
 # Modeled on:
 #   nemoclaw-blueprint/policies/presets/local-inference.yaml (NVIDIA/NemoClaw)
 #
@@ -49,7 +56,7 @@ network_policies:
     name: genomeclaw
     endpoints:
       - host: host.openshell.internal
-        port: 8643
+        port: 8645
         protocol: rest
         enforcement: enforce
         allowed_ips:

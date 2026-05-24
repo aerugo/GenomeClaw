@@ -2,7 +2,8 @@
 
 Spawns the sandbox container with the nemoclaw-plugin's optional
 TEST-ONLY ``genomeclaw_ssrf_probe_batch`` tool active
-(``GENOMECLAW_ENABLE_SSRF_PROBE=1``), invokes the agent ONCE with no
+(via the ``/etc/genomeclaw/ssrf-probe-enabled`` marker file the test
+touches before gateway boot), invokes the agent ONCE with no
 arguments, and asserts the returned per-probe rejection_class matches
 expectations.
 
@@ -10,8 +11,12 @@ The probe sweep is HARDCODED inside the plugin (see
 ``packages/nemoclaw-plugin/src/index.ts`` near the
 ``HARDCODED_PROBES`` constant) — five tuples matching spec AC2:
 
-1. ``host.openshell.internal:8643 /v1/health`` → ALLOW (HTTP 200).
-2. ``host.openshell.internal:8644 /v1/health`` → DENY (off-port).
+1. ``host.openshell.internal:<port> /v1/health`` → ALLOW (HTTP 200). The
+   ``<port>`` matches whatever the sandbox image was built with (default
+   8645; configurable via ``--build-arg GENOMECLAW_HOST_PORT=<n>`` on the
+   sandbox image build). Defined inside the plugin via
+   ``HARDCODED_PROBES[0].port``.
+2. ``host.openshell.internal:<port+1> /v1/health`` → DENY (off-port).
 3. ``192.168.99.99:80 /`` → DENY (RFC 1918 non-gateway).
 4. ``example.com:443 /`` → DENY (public, non-allowlisted host).
 5. ``1.1.1.1:53 /`` → DENY (public IP + non-standard port).
@@ -137,13 +142,24 @@ def test_invP002_runtime_probe_sweep(tmp_path: Path) -> None:
              "--name", container_name,
              "--add-host=host.openshell.internal:host-gateway",
              "-e", f"OPENAI_API_KEY={api_key}",
-             "-e", "GENOMECLAW_ENABLE_SSRF_PROBE=1",
              sandbox_image,
              "sleep", "infinity"],
             capture_output=True, text=True, check=False,
         )
         assert spawn.returncode == 0, f"docker run failed: {spawn.stderr!r}"
         try:
+            # Touch the SSRF-probe marker file. The plugin checks for this
+            # at registration time (see src/index.ts marker-file gate); a
+            # filesystem marker is used instead of an env var because the
+            # latter triggers openclaw's plugin-loader static-analysis
+            # credential-harvesting heuristic.
+            mark = subprocess.run(
+                ["docker", "exec", "-u", "0", container_name,
+                 "bash", "-c",
+                 "mkdir -p /etc/genomeclaw && touch /etc/genomeclaw/ssrf-probe-enabled"],
+                capture_output=True, text=True, check=False,
+            )
+            assert mark.returncode == 0, f"marker creation failed: {mark.stderr!r}"
             # docker cp the freshly built plugin in + chown root:root.
             # The cp preserves host UID (501) and openclaw refuses to
             # load plugins not owned by sandbox UID or root.

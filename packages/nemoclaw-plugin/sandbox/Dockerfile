@@ -23,16 +23,36 @@
 #     the same Dockerfile + same plugin source produces the same image.
 #
 # To rebuild: nemoclaw onboard --from packages/nemoclaw-plugin/sandbox/Dockerfile
+# To override the host-service port (default 8645):
+#   docker build --build-arg GENOMECLAW_HOST_PORT=<n> ...
+# OR rely on the GENOMECLAW_HOST_SERVICE_PORT env var which is read by the
+# plugin's TypeScript at runtime + by the host-side shim + by the live-smoke
+# harness, all defaulting to 8645 when unset. The Dockerfile ARG below
+# substitutes the value into policy-preset.yaml at COPY time so the
+# baked-in L7 enforcement stays in lockstep with the runtime config.
+#
 # To reconfigure post-build (no rebuild needed):
 #   nemoclaw <sandbox> config set \
 #     --key plugins.entries.genomeclaw.config.hostService.baseUrl \
-#     --value '"http://host.openshell.internal:8643"' \
+#     --value '"http://host.openshell.internal:8645"' \
 #     --restart
 
 ARG SANDBOX_BASE=ghcr.io/nvidia/nemoclaw/sandbox-base:latest
+ARG GENOMECLAW_HOST_PORT=8645
 FROM ${SANDBOX_BASE}
 
+# ARGs reset on every FROM — re-declare so the RUN below can read it.
+ARG GENOMECLAW_HOST_PORT=8645
+
 USER root
+
+# Stage the policy preset + render the port into it. Default value (8645)
+# matches what ships in policy-preset.yaml; the sed is a no-op unless the
+# operator overrode --build-arg GENOMECLAW_HOST_PORT. Done early so the
+# rest of the build can reference the rendered file at a known path.
+COPY policy-preset.yaml /opt/genomeclaw/policy-preset.yaml
+RUN sed -i "s/port: 8645/port: ${GENOMECLAW_HOST_PORT}/g" /opt/genomeclaw/policy-preset.yaml \
+    && echo "[build] genomeclaw policy preset rendered with host port ${GENOMECLAW_HOST_PORT}"
 
 # Stage the plugin source under /opt and build it there.
 # The build context is `packages/nemoclaw-plugin/`, so `./` here refers to

