@@ -1,10 +1,12 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.15
-**Last Updated**: 2026-05-23
+**Version**: 1.16
+**Last Updated**: 2026-05-24
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.16 (2026-05-24)** — **explicit-runtime-negative-case coverage layer added for `INV-P002`**. The runtime SSRF probe (ssrf-runtime-probe plan Phase 1 + 1b) ships a `@pytest.mark.live_ssrf_probe`-gated test (`packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py`) that invokes a TEST-ONLY plugin tool (`genomeclaw_ssrf_probe_batch`, env-gated by `GENOMECLAW_ENABLE_SSRF_PROBE=1`) which issues a hardcoded 5-tuple probe sweep from inside the plugin's enforcement context. The ALLOW probe asserts HTTP 200 from `host.openshell.internal:8643 /v1/health` with a real body; the four DENY probes (off-port, RFC 1918 non-gateway, public hostname, public IP+non-standard port) each assert their `rejection_class` matches the per-tuple allow-set. This is the third coverage layer for INV-P002 (static YAML shape + implicit-via-live-LLM-tests were already in place). Catches policy-enforcement regression at CI time. Empirically OpenShell doesn't return a structured rejection body for L7 denies — it kills the connection — so deny probes classify as `deny_other` (generic fetch failure); sharpening the classifier would need a follow-up probe shape that's network-reachable but policy-blocked. No new invariant IDs; `INV-P002` rule text unchanged. See `docs/plans/active/ssrf-runtime-probe/` for the plan + the two openclaw runtime bugs surfaced during Path Y implementation (TypeBox array-of-object strip + Q-001 string-arg corruption).
 
 **v1.15 (2026-05-23)** — **scope clarification on `INV-D006` (shim-side propagation) + `INV-T001` (plugin-load coverage)**. Two regressions during MVP Phase 7's canonical real-data run surfaced gaps in how the existing invariants were enforced. INV-D006 was only checked at the wrapper layer (paths annotated `SiblingMountablePath`); a meta-invariant test now also enforces that the shim's `_dood_scan_args` regex list is exhaustive over wrappers that import `as_sibling_mountable`. INV-T001 only covered argv-level pinning for external tools; the VEP plugin set (LOFTEE) loads perl modules at runtime via `do` + `install_driver` paths that `perl -c` syntax-check doesn't reach. The extended `test_vep_loftee_plugin.py` adds an explicit `perl -MDBD::SQLite -e 1`-style probe per runtime-loaded module. No new invariant IDs; the `INV-D006` + `INV-T001` rule text is unchanged. See [docs/plans/active/from-scratch-setup-protections/](../plans/active/from-scratch-setup-protections/) for the protections plan.
 
@@ -330,13 +332,20 @@ Other remote integrations (alternative annotators, telemetry, crash reporting) a
 - The GenomeClaw OpenShell policy preset (`packages/nemoclaw-plugin/policy-preset.yaml`).
 - Any future capability manifest emitted by the plugin.
 
-**How to verify**:
+**How to verify** (three coverage layers, all must hold):
+
+*Layer 1 — Static shape*:
 - Tests asserting default-mode tool outputs exclude bulk fields (full VCF rows, full annotation tables, unfiltered evidence dumps).
 - Tests asserting every registered plugin tool has an `output_class` tag.
-- Tests asserting the policy preset includes the `allowed_ips:` allowlist and limits HTTP methods/paths to the read-only host-service surface.
-- Live policy test (in a NemoClaw sandbox) asserting the sandbox can reach the configured host service URL only via the whitelisted host alias and port, and is denied at every other host or port.
-- Default-config integration tests asserting no outbound call goes anywhere other than the configured agent endpoint and the configured host service.
+- Tests asserting the policy preset includes the `allowed_ips:` allowlist and limits HTTP methods/paths to the read-only host-service surface (`packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py`).
 - Snapshot tests on representative tool outputs to catch accidental field bloat over time.
+
+*Layer 2 — Implicit runtime*:
+- The 4 live LLM tests under `packages/toolkit/tests/_live_smoke/` exercise the policy on every allowed call (any policy-side regression breaking the allowed surface would fail them).
+- Default-config integration tests asserting no outbound call goes anywhere other than the configured agent endpoint and the configured host service.
+
+*Layer 3 — Explicit runtime negative case* (ssrf-runtime-probe plan):
+- `packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py` — `@pytest.mark.live_ssrf_probe @pytest.mark.live_llm`-gated. Spawns the sandbox, docker-cp's the freshly built nemoclaw-plugin with the TEST-ONLY `genomeclaw_ssrf_probe_batch` tool active (`GENOMECLAW_ENABLE_SSRF_PROBE=1`), invokes the agent with no args, parses the per-probe classification array. ALLOW probe asserts HTTP 200 from the policy-permitted endpoint; 4 DENY probes assert un-allowlisted destinations are unreachable. One LLM call per run (~$0.10–0.50), ~98 s wall.
 
 ---
 

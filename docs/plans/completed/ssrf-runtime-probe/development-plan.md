@@ -1,6 +1,6 @@
 # SSRF runtime probe — Development Plan
 
-**Status**: Draft (authored 2026-05-23; awaiting sign-off)
+**Status**: COMPLETE (2026-05-24) — Phase 1 + 1b + 3 done; Phase 2 deferred to a separate plan as out-of-scope hardening.
 **Created**: 2026-05-23
 **Branch**: `feature/ssrf-runtime-probe`
 **Spec**: [spec.md](spec.md)
@@ -217,8 +217,8 @@ After implementation is complete:
 |-------|--------|---------|-----------|-------|
 | 1 — Long-running harness + 5-tuple probe | COMPLETE | 2026-05-24 | 2026-05-24 | Harness extension (`running_sandbox_container`, `run_probe`, shared config-batch builder) + 4 unit tests. Phase 1 probe design (docker-exec'd Node) ruled out by GREEN finding; pivoted to Path Y. |
 | 1b — Path Y custom plugin + zero-arg sweep | COMPLETE | 2026-05-24 | 2026-05-24 | `genomeclaw_ssrf_probe_batch` tool (env-gated) + pytest test. 5/5 PASS in 98s wall. Surfaced 2 openclaw bugs: TypeBox array-of-object strip + Q-001 string-arg corruption — workaround = zero-arg tool with hardcoded probe set. |
-| 2 — Rejection-class classifier hardening + version pin + golden baseline | Pending (follow-up plan) | | | Current classifier emits `deny_other` for all 4 deny probes (fetch fails at network layer; no OpenShell body fragment to classify). Sharpening needs a probe that's network-reachable but policy-blocked (e.g., host.openshell.internal:8643 with a non-allowlisted PATH). Defer to a separate plan. |
-| 3 — INVARIANTS.md v1.16 docs | Pending Phase 2 | | | Three-layer coverage note + INV-T001 wrapper-table entry for OpenShell. |
+| 2 — Classifier hardening + version pin + golden baseline | DEFERRED to a follow-up plan | | | Current classifier emits `deny_other` for all 4 deny probes — empirically OpenShell doesn't return a structured rejection body for L7 denies, it just kills the connection. Sharpening would need a probe shape that's network-reachable but policy-blocked. Not on the critical path for the plan's stated purpose (catch policy-enforcement regression at CI time, which the v1 sweep already does). |
+| 3 — INVARIANTS.md v1.16 docs | COMPLETE | 2026-05-24 | 2026-05-24 | v1.16 bump + INV-P002 "How to verify" reorganised into three coverage layers + the new test file referenced under Layer 3. |
 
 ---
 

@@ -157,7 +157,23 @@ PASSED [100%]
 |-------|--------|
 | 1 — Long-running harness + 5-tuple probe | COMPLETE (harness shipped 2026-05-24; probe approach pivoted to Path Y) |
 | 1b — Path Y custom plugin + zero-arg sweep | COMPLETE (2026-05-24, 5/5 PASS) |
-| 2 — Rejection-class classifier hardening + version pin + golden baseline | Pending (separate follow-up plan) |
-| 3 — INVARIANTS.md v1.16 docs | Pending Phase 2 |
+| 2 — Rejection-class classifier hardening + version pin + golden baseline | DEFERRED to follow-up plan (hardening, not on critical path) |
+| 3 — INVARIANTS.md v1.16 docs | COMPLETE (2026-05-24) |
 
-The core privacy-enforcement evidence is now in place. Phase 2 + 3 can ship as one follow-up plan.
+The core privacy-enforcement evidence is in place. Plan archived to `completed/`.
+
+---
+
+## 2026-05-24 — Plan closure
+
+Per the user's review of the plan's stated purpose ("catch policy-enforcement regression at CI time so genomic data can't accidentally exfiltrate"), the Phase 1 + 1b 5/5 sweep already meets that bar:
+
+- Policy stops enforcing entirely → ALLOW probe still works, DENY probes start succeeding (HTTP 200), test goes RED.
+- Policy weakens to permit a previously-denied destination that IS network-reachable (`example.com:443`) → `rejection_class` flips `deny_other → allow_ok`, test goes RED.
+- ALLOW path breaks → no HTTP 200 + body assertion fails, test goes RED.
+
+Phase 2 (classifier sharpening + version pin + golden baseline) is defense-in-depth — it would catch regressions that LOOSEN the policy on destinations that remain network-unreachable (a narrow class). Not on the critical path. Deferred to a follow-up plan if/when desired.
+
+Phase 3 closed by adding the three-layer coverage note to INVARIANTS.md v1.16 under INV-P002's "How to verify" section. The new test file is referenced under Layer 3.
+
+Plan ready to archive to `completed/`.
