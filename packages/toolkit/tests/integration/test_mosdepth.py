@@ -53,6 +53,38 @@ def test_parse_regions_bed_handles_empty_bed(tmp_path: Path) -> None:
     assert list(parse_regions_bed(bed)) == []
 
 
+def test_parse_regions_bed_aggregates_per_exon_labels_into_gene_rows(tmp_path: Path) -> None:
+    """Per-exon BED labels ("GENE_exon_N") collapse to one row per gene.
+
+    Mean depth is the un-weighted average across the gene's exons;
+    `low_coverage_exons` is the sorted list of per-exon labels whose
+    depth falls below the configured threshold (default 20×).
+    """
+    from genomeclaw_toolkit.prep._mosdepth import parse_regions_bed
+
+    bed_text = (
+        "chr1\t100\t200\tBRCA1_exon_1\t30.0\n"
+        "chr1\t300\t400\tBRCA1_exon_2\t10.0\n"  # below threshold
+        "chr1\t500\t600\tBRCA1_exon_3\t40.0\n"
+        "chr2\t100\t200\tAPOE_exon_1\t25.0\n"
+        "chr3\t100\t200\tRARE_exon_1\t5.0\n"   # below threshold
+    )
+    bed = tmp_path / "mos.regions.bed.gz"
+    bed.write_bytes(gzip.compress(bed_text.encode()))
+
+    rows = list(parse_regions_bed(bed, low_coverage_threshold=20.0))
+
+    assert len(rows) == 3  # 3 distinct genes
+    by_gene = {r.gene: r for r in rows}
+    assert "BRCA1" in by_gene
+    assert by_gene["BRCA1"].mean_depth == pytest.approx((30.0 + 10.0 + 40.0) / 3)
+    assert by_gene["BRCA1"].low_coverage_exons == ["BRCA1_exon_2"]
+    assert by_gene["APOE"].mean_depth == pytest.approx(25.0)
+    assert by_gene["APOE"].low_coverage_exons == []  # >= threshold
+    assert by_gene["RARE"].mean_depth == pytest.approx(5.0)
+    assert by_gene["RARE"].low_coverage_exons == ["RARE_exon_1"]
+
+
 def test_parse_regions_bed_rejects_malformed_row(tmp_path: Path) -> None:
     """A row with fewer than 5 tab-separated columns is a hard error."""
     from genomeclaw_toolkit.prep._mosdepth import (

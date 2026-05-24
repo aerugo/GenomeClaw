@@ -426,7 +426,13 @@ def ingest(
             out_prefix=mos_prefix,
             reference_fasta=reference_fasta,
         )
-        coverage_rows = parse_regions_bed(mosdepth_result.regions_bed)
+        # Strip the "x" suffix from the canonical "20x" form to get a float
+        # threshold for the per-exon < threshold check.
+        threshold_float = float(_DEFAULT_LOW_COVERAGE_THRESHOLD.rstrip("x"))
+        coverage_rows = parse_regions_bed(
+            mosdepth_result.regions_bed,
+            low_coverage_threshold=threshold_float,
+        )
 
         # INV-R001: params_json records the panel BED path + version + threshold.
         # When the default panel was auto-engaged, record the canonical panel
