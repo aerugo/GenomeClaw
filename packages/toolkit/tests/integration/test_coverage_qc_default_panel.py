@@ -31,15 +31,29 @@ import pytest
 
 
 def _make_layout(tmp_path: Path) -> dict[str, Path]:
-    """Minimal per-test layout mirroring the integration conftest."""
+    """Minimal per-test layout mirroring the integration conftest.
+
+    `reference_fasta` is a touched empty file so `ingest()`'s CRAM precondition
+    (`reference_fasta is not None and reference_fasta.exists()`) passes. The
+    real fasta is never opened because these tests mock `run_mosdepth` — the
+    file only needs to exist for the existence check + the provenance sha256.
+    """
     raw = tmp_path / "raw"
     reference = tmp_path / "reference"
     derived = tmp_path / "derived"
     scratch = tmp_path / "scratch"
     for d in (raw, reference, derived, scratch):
         d.mkdir(parents=True)
+    reference_fasta = reference / "GRCh38.fa"
+    reference_fasta.write_bytes(b"")  # touch — content not read (run_mosdepth mocked)
     os.environ.setdefault("GENOMECLAW_SKIP_PREFLIGHT", "1")
-    return {"raw": raw, "reference": reference, "derived": derived, "scratch": scratch}
+    return {
+        "raw": raw,
+        "reference": reference,
+        "derived": derived,
+        "scratch": scratch,
+        "reference_fasta": reference_fasta,
+    }
 
 
 def _make_minimal_vcf(tmp_path: Path) -> Path:
@@ -143,6 +157,7 @@ def test_ingest_with_cram_auto_engages_default_panel(tmp_path: pytest.fixture) -
             derived_root=layout["derived"],
             sample_id="test-auto",
             bam=fake_cram,
+            reference_fasta=layout["reference_fasta"],
             # No bed= — auto-engage should kick in
         )
 
@@ -193,6 +208,7 @@ def test_ingest_with_cram_and_explicit_bed_overrides_default(tmp_path: pytest.fi
             sample_id="test-explicit-bed",
             bam=fake_cram,
             bed=custom_bed,  # explicit override
+            reference_fasta=layout["reference_fasta"],
         )
 
     # mosdepth should have been called with the custom bed, not the default
@@ -236,6 +252,7 @@ def test_ingest_with_cram_and_opt_out_skips_coverage_qc(tmp_path: pytest.fixture
             derived_root=layout["derived"],
             sample_id="test-opt-out",
             bam=fake_cram,
+            reference_fasta=layout["reference_fasta"],
             no_coverage_qc=True,  # opt-out
         )
 
@@ -318,6 +335,7 @@ def test_default_panel_missing_warns_and_skips(
             derived_root=layout["derived"],
             sample_id="test-missing-panel",
             bam=fake_cram,
+            reference_fasta=layout["reference_fasta"],
             # No bed= — expects default panel, but it's patched to missing
         )
 
@@ -368,6 +386,7 @@ def test_invR001_params_json_records_panel_provenance(tmp_path: pytest.fixture) 
             derived_root=layout["derived"],
             sample_id="test-provenance",
             bam=fake_cram,
+            reference_fasta=layout["reference_fasta"],
             # No bed= — auto-engage default panel
         )
 

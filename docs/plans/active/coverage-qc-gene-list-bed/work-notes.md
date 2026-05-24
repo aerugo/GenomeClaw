@@ -150,4 +150,21 @@ Replaced the placeholder BED with real GENCODE v44 MANE Select exon coordinates.
 
 **Open follow-ups (separate plans)**:
 - Phase 3 live verification (canonical CRAM + agent test) — now unblocked.
-- Pre-existing test-setup gap (`_make_layout` reference_fasta) — file a separate fix; the 6 `needs_bio` tests in this file have never actually run successfully end-to-end in their current form.
+
+---
+
+## 2026-05-23 — Phase 3a follow-up: closed the `_make_layout` reference_fasta gap
+
+After Phase 3a landed, ran the 6 `needs_bio` tests in the toolkit image and discovered all 5 CRAM-using tests fail with `ValueError: reference_fasta is required when bam is a CRAM` because `_make_layout` never supplied one. (The test file had been added but never actually exercised end-to-end in container — the `needs_bio` skip on the bare host had hidden the gap.)
+
+**Fix**:
+- `_make_layout` now touches `reference/GRCh38.fa` and returns it under the `reference_fasta` key. The real fasta is never opened because the tests mock `run_mosdepth` — the file only needs to exist for the precondition check + the provenance sha256.
+- Threaded `reference_fasta=layout["reference_fasta"]` into all 5 ingest() call sites that use `bam=fake_cram`. The one site without `bam=` (test_ingest_without_cram_does_not_engage) does not need it.
+
+**Verification**:
+- Toolkit image (`GENOMECLAW_HAS_BIO=1`): 8/8 PASS (was effectively 0/6 needs_bio + 2/2 unconditional).
+- Bare host: 2 passed + 6 skipped (skip messages preserved).
+- Broader integration suite on bare host: 597 passed + 97 skipped, no regressions.
+
+**Files changed**:
+- `packages/toolkit/tests/integration/test_coverage_qc_default_panel.py` — MODIFIED (`_make_layout` provides synthetic reference_fasta; 5 ingest() call sites updated)
