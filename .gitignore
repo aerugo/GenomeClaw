@@ -121,3 +121,8 @@ coverage/
 # --- Claude Code runtime artifacts ---
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+# --- Vendored NemoClaw skill bundle (sparse-checkout of NVIDIA/NemoClaw) ---
+# Fetched via the procedure in docs/reference/agent-quirks.md; updateable
+# with `git -C .nemoclaw pull`. The .claude/skills/ symlinks point into it.
+.nemoclaw/
