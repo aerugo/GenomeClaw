@@ -1,6 +1,6 @@
 # Spec — SSRF runtime probe (post-MVP)
 
-**Status**: Scope-pin (placeholder for a future planning session)
+**Status**: Active — development plan drafted 2026-05-23 ([development-plan.md](development-plan.md))
 **Created**: 2026-05-23 during MVP Phase 7 close session 2
 **Trigger**: Phase 7 close-out deferred the runtime SSRF probe after empirical findings (see Background).
 
@@ -42,9 +42,11 @@ None.
 
 ## Open Questions
 
-1. **How does OpenShell expose a programmatic curl-via-gateway**? Does it require a plugin that registers a "test connectivity" tool, or is there a CLI surface?
-2. **How does the existing live-smoke harness's container stay alive between turns?** Is there a `--hold` mode, or does the container need to be spawned with `bash -c 'sleep infinity'` and have the gateway started separately?
-3. **OpenShell version pinning**: does the probe need OpenShell version captured as an INV-T001-style probe-output baseline? If OpenShell's policy enforcement shape shifts across releases, the probe should pin against a known version.
+**Resolved during plan-authoring (2026-05-23).** Detailed answers in [work-notes.md § 2026-05-23 Plan authored](work-notes.md).
+
+1. ~~**How does OpenShell expose a programmatic curl-via-gateway**?~~ → No `openshell` CLI exists; L7 enforcement is built into the OpenClaw gateway. Probe via a Node script (Node is in the policy's binary allowlist alongside openclaw) `docker exec`d into the running container. Curl is NOT in the allowlist so a curl-based probe would get blocked at the binary layer before the host/port matrix ever fires.
+2. ~~**How does the existing live-smoke harness's container stay alive between turns?**~~ → It doesn't (it's strictly one-shot). Phase 1 of the development plan adds a `running_sandbox_container()` context manager that spawns with `sleep infinity` and starts the gateway via `docker exec`.
+3. ~~**OpenShell version pinning**?~~ → Yes, the rejection-message FORMAT (not just the openclaw binary version) needs pinning. Phase 2 of the plan introduces `tools/openshell/probe-output.txt` golden baseline + an `OpenShellConventions` dataclass with `verified_against_version="2026.4.24"`. Phase 1 doesn't need it; Phase 2 closes the drift-detection loop.
 
 ## Out of Scope
 
