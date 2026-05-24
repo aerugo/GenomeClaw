@@ -199,3 +199,49 @@ Ran the Phase 3 manual smoke against the canonical CRAM end-to-end. **Result: 2,
 | 2 — Bundle + auto-engage | COMPLETE |
 | 3a — Real GENCODE v44 MANE Select coordinates | COMPLETE (2026-05-23) |
 | 3 — Live verification | Partial (offline smoke GREEN 2026-05-24; live agent test still requires OPENAI_API_KEY) |
+
+---
+
+## 2026-05-24 — Phase 3 close + bug fix in `parse_regions_bed`
+
+Re-running the eyesight agent against the new derived run with real BED coordinates surfaced a **bug in `parse_regions_bed`**: it was writing one `coverage_qc` row per BED region (per-exon) instead of one row per gene. With the placeholder BED's `GENE_exon_N` labels this had always been broken — but symmetric to the test fixtures (which also used per-exon labels), so it never failed a test. The real BED made it visible because the agent's `/v1/gene/{symbol}` lookup does `WHERE gene = ?` and `gene='CFH'` doesn't match the inserted `gene='CFH_exon_1'`, `gene='CFH_exon_2'`, etc.
+
+**Bug evidence**: eyesight agent run #1 (against smoke #2 output with the bug live) said "**no rows match gene symbol for all 16 eye-risk genes**" — even though coverage_qc had 2,798 rows including 22 for CFH, 50 for ABCA4, etc. The agent's gene-summary lookups all returned 404 because the `gene` field didn't match a bare gene symbol.
+
+**Fix** (`packages/toolkit/src/genomeclaw_toolkit/prep/_mosdepth.py`): `parse_regions_bed` now detects per-exon labels by the `_exon_` infix, groups rows by `name.rsplit("_exon_", 1)[0]`, computes `mean_depth` as the un-weighted average across the gene's exons, and populates `low_coverage_exons` with the sorted list of per-exon labels whose depth falls below the configured threshold (default 20×, plumbed from `_DEFAULT_LOW_COVERAGE_THRESHOLD` in `ingest.py`). Bare-gene-label BEDs still pass through unchanged for backward compatibility with the existing test fixtures and the smoke-test helpers.
+
+**Smoke #3 verification** (run `2026-05-24T12-52-11Z-f2dae2`, 11m22s wall, real BED bind-mounted alongside the patched source):
+- coverage_qc rows: **160 (one per gene, was 2,798 per-exon)**
+- All 160 panel genes present, distinct gene names = 160
+- Mean depths match smoke #2's per-exon averages (e.g., CFH 28.6×, BRCA1 32.9×, APOE 22.7×, GBA 27.3×, ABCA4 29.7×)
+- `low_coverage_exons` now populated where appropriate:
+  - RPGR: mean 16.0×, low_coverage_exons has 12 entries (of 17 total)
+  - G6PD: mean 13.3×, 12 of 13 exons low
+  - GLA: mean 15.2×, 6 of 7 exons low
+  - OTC: mean 18.1×, 7 of 8 exons low
+
+**Eyesight agent run #2** (against smoke #3 / per-gene-aggregated coverage_qc) — the agent's reply now references real per-gene depths verbatim:
+- "**CFH**, **ARMS2**, and **HTRA1** were well covered"
+- "**C3** had several low-coverage exons"
+- "**RPGR**, with mean depth ~16× and many low-coverage exons"
+- All 16 eye-risk genes resolved (no more "no rows match gene symbol" errors)
+
+This is the live verification Phase 3 needed. The coverage data flows through the host service `/v1/gene/{symbol}` endpoint into the agent's evidence base; the agent surfaces both well-covered and low-coverage observations correctly.
+
+**Files changed**:
+- `packages/toolkit/src/genomeclaw_toolkit/prep/_mosdepth.py` — MODIFIED (per-gene aggregation in `parse_regions_bed`)
+- `packages/toolkit/src/genomeclaw_toolkit/prep/ingest.py` — MODIFIED (pass `low_coverage_threshold` from `_DEFAULT_LOW_COVERAGE_THRESHOLD`)
+- `packages/toolkit/tests/integration/test_mosdepth.py` — MODIFIED (added `test_parse_regions_bed_aggregates_per_exon_labels_into_gene_rows` regression test; existing 3 tests still pass)
+
+**Operator follow-up** (toolkit image rebuild): the fix lives in source only. The bind-mount workaround used in smoke #3 (`-v <host>/_mosdepth.py:/opt/genomeclaw/toolkit/...`) is a development hack; a toolkit-image rebuild after this commit bakes the fix in so `pipeline ingest --bam <CRAM>` works correctly without the override.
+
+### Phase status (final)
+
+| Phase | Status |
+|-------|--------|
+| 1 — Panel composition + BED authoring | COMPLETE |
+| 2 — Bundle + auto-engage | COMPLETE |
+| 3a — Real GENCODE v44 MANE Select coordinates | COMPLETE (2026-05-23) |
+| 3 — Live verification | COMPLETE (2026-05-24) — bug fixed + smoke + live agent both GREEN |
+
+Plan ready to archive to `completed/`.

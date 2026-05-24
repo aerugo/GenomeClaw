@@ -137,4 +137,4 @@ Phase 3.1 is a manual operator-run smoke (one `pipeline run` against the canonic
 | 1 — Panel composition + design pass | COMPLETE | 2026-05-23 | 2026-05-23 | 160 genes, 1280 placeholder exon rows. Placeholder coords — see work-notes for real GENCODE replacement procedure. |
 | 2 — Bundle + auto-engage | COMPLETE | 2026-05-23 | 2026-05-23 | 7 tests (1 passes on bare host; 6 need_bio). 868 passed full suite. ruff + mypy clean. |
 | 3a — Real GENCODE v44 MANE Select coordinates | COMPLETE | 2026-05-23 | 2026-05-23 | 160/160 via MANE_Select; 2,798 exons; GBA→GBA1 alias resolved; new regression-guard test added. |
-| 3 — Live verification | Pending | | | Requires real CRAM + live agent test. Phase 3a unblocks this — BED now ships production-ready coordinates. |
+| 3 — Live verification | COMPLETE | 2026-05-24 | 2026-05-24 | Canonical CRAM smoke GREEN; bug fix in `parse_regions_bed` (per-exon → per-gene aggregation + `low_coverage_exons` populated); live eyesight agent run surfaces real per-gene depths (CFH/ARMS2/HTRA1 well covered, C3/RPGR low). |
