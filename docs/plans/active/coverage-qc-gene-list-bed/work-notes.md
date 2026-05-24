@@ -168,3 +168,34 @@ After Phase 3a landed, ran the 6 `needs_bio` tests in the toolkit image and disc
 
 **Files changed**:
 - `packages/toolkit/tests/integration/test_coverage_qc_default_panel.py` — MODIFIED (`_make_layout` provides synthetic reference_fasta; 5 ingest() call sites updated)
+
+---
+
+## 2026-05-24 — Phase 3 partial: canonical CRAM smoke GREEN with real BED
+
+Ran the Phase 3 manual smoke against the canonical CRAM end-to-end. **Result: 2,798 coverage_qc rows across 160 distinct genes, all with sensible mean_depth, real GENCODE genomic positions.**
+
+**Run shape**:
+1. First attempt (`pipeline ingest --bam <CRAM>` without `--bed`): used the bundled BED that the **toolkit image was built with**. That image (`genomeclaw/toolkit:worker-self-sufficient`) predates Phase 3a's BED replacement, so the auto-engage path picked up the OLD placeholder BED. Output: 1,280 rows on chr1 placeholder positions. Useful negative confirmation that the path is wired correctly, but not the verification we wanted.
+2. Second attempt with `--bed /mnt/genomeclaw/scratch/coverage_panel_v1_real.bed.gz` (host-side new BED bind-mounted via `/Volumes/Genome_Work/genomeclaw/_scratch/`): **2,798 rows across 160 distinct genes** (matches Phase 3a's BED exactly). Wall: 18m34s on 2-CPU colima for full ingest + mosdepth.
+
+**Spot-check (real GENCODE positions, real mean depths)**:
+- APOE: 4 exons, mean 22.7×
+- BRCA1: 23 exons, mean 32.9×
+- CFH: 22 exons, mean 28.6×
+- GBA: 11 exons, mean 27.3× (HGNC GBA → GENCODE GBA1 alias resolves correctly; labels preserve panel symbol)
+
+**Top low-coverage genes** (mean_depth < 20× exons in panel): COL7A1 (28), RPGR (12), G6PD (12), C3 (8), OTC (7), GLA (6), POLD1 (5), RET (4), RYR2 (4), MYH7 (4). These are real findings the agent's disease-area discovery flow can now surface — none of them is at "no data" state anymore.
+
+**Operator follow-up (toolkit image rebuild)**: the bundled BED lives in the package data tree (`packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.gz`) and was replaced in commit `4bd0e9e`. A toolkit-image rebuild after that commit will bake the new BED in by default, removing the need for the `--bed` override in the smoke. Until the image is rebuilt, callers must pass `--bed` to use the new coordinates (or accept the placeholder via auto-engage). This is documented in [phase-3a follow-up §](work-notes.md#2026-05-23--phase-3a-real-gencode-v44-mane-select-replacement).
+
+**Phase 3 remaining work**: extend the eyesight-question live agent test to assert `coverage_qc` is populated. Requires `OPENAI_API_KEY` (not in current env). The test would call the agent with the question, point it at the new derived run dir `/Volumes/Genome_Work/genomeclaw/derived/2026-05-24T11-05-35Z-25dfaa`, and assert the agent's reply references real coverage data (specific mean_depth values, low-coverage callouts) instead of the previous "no low-coverage exon warnings" pattern.
+
+### Phase status
+
+| Phase | Status |
+|-------|--------|
+| 1 — Panel composition + BED authoring | COMPLETE |
+| 2 — Bundle + auto-engage | COMPLETE |
+| 3a — Real GENCODE v44 MANE Select coordinates | COMPLETE (2026-05-23) |
+| 3 — Live verification | Partial (offline smoke GREEN 2026-05-24; live agent test still requires OPENAI_API_KEY) |
