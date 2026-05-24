@@ -51,6 +51,51 @@ Surface this plan to the user for sign-off. Phase 1 starts after sign-off — th
 
 | Phase | Status |
 |-------|--------|
-| 1 — Long-running harness + 5-tuple probe | Awaiting sign-off |
-| 2 — Version pin + golden baseline | Awaiting Phase 1 |
+| 1 — Long-running harness + 5-tuple probe | PARTIAL — harness GREEN, probe approach pivoted (design flaw discovered) |
+| 2 — Version pin + golden baseline | Awaiting Phase 1 probe-approach pivot |
 | 3 — Docs | Awaiting Phases 1+2 |
+
+---
+
+## 2026-05-24 — Phase 1 GREEN: harness works, probe design flaw discovered
+
+Implemented Phase 1 per the plan: extracted `running_sandbox_container()` from the one-shot harness, shipped `probe_script.js` (Node), added `run_probe()`, registered `live_ssrf_probe` marker, wrote 5 parameterized probe tests + 4 harness unit tests.
+
+**Harness pieces work end-to-end**:
+- 4/4 harness unit tests PASS on bare host (no docker required): teardown-on-exception, readiness-timeout-raises, both-modes-coexist, module-exports.
+- Live container lifecycle works: spawns sandbox in ~1s, openclaw gateway up + listening on `0.0.0.0:18789` in ~10s after a 5-iteration fix to the readiness probe (initial implementation polled `openclaw gateway status` which blocks ~5s per call doing a WebSocket connectivity probe; switched to `ss -lntp | grep openclaw-gatew` — note ss truncates process names to 15 chars, so the grep target is `openclaw-gatew` not `openclaw-gateway`).
+- 5/5 probe tests fire correctly through the parameterized fixture, each `docker exec`s the Node script and gets a single-line JSON result back. The full 5-tuple sweep + container lifecycle is ~55s on a 2-CPU colima.
+
+**Design flaw discovered during the live run**: the spec's Background already documented that "bare `docker exec curl` bypasses the policy entirely" — but I read this as a problem only for `curl` (not in the policy's binary allowlist), thinking that `node` (which IS in the allowlist) would be enforced. Empirically that assumption is wrong: **the OpenShell L7 policy only activates when openclaw routes the request through its proxy infrastructure**, regardless of which binary issues the request. A `docker exec <cid> node ...` runs under the container's PID namespace but outside the OpenShell enforcement context — the policy never fires.
+
+Evidence:
+- All 5 probe tuples returned `<fetch error: fetch failed>` with status=None. The probe classifier maps that to `deny_other`. None of the destinations was reachable, but none of the rejections carried an OpenShell-shaped body either — they were just plain network failures (DNS or connect-refused).
+- Confirmed by probing `openclaw infer web fetch --url http://example.com/`: returns "Error: web.fetch is disabled or no provider is available." — no provider-mediated fetch path is wired in this image, ruling out an easy non-agent + non-docker-exec surface.
+- `openclaw gateway call <method>` exposes only `health/status/system-presence/cron.*` — no built-in egress probe.
+
+So the probe approach as designed cannot exercise the L7 enforcement. The harness extension itself is valuable infrastructure independent of the probe-design pivot — the long-running container fixture is reusable for other scenarios (e.g., the openclaw Phase 2 reproducer once an OpenAI key is back).
+
+**What shipped**:
+- `running_sandbox_container()` + `run_probe()` + `_build_openclaw_config_batch()` (shared with the one-shot path) in `tests/_live_smoke/run.py`.
+- `probe_script.js` (Node) — kept; future paths X or Y can repurpose it.
+- 4 harness unit tests in `tests/integration/test_live_smoke_harness.py` (all PASS on bare host).
+- 5 probe tests in `tests/invariants/test_invP002_ssrf_runtime_probe.py` — marked `@pytest.mark.skip` with the design-flaw reason; the test file's module docstring explains the pivot.
+- `live_ssrf_probe` marker registered; conftest auto-skip predicate added.
+
+**Open question — pick the path forward**:
+
+- **Path X (cheaper, paid)**: pivot to an agent-turn probe. Each tuple becomes one `openclaw agent --message "Try to fetch <url>; report the result verbatim."` invocation. The agent's tool-call layer routes egress through openclaw's proxy infrastructure, so the policy fires. Classify the rejection from the agent's tool-error trace. Cost: ~5 LLM calls per probe run ($1-5 depending on model). Risk: agent may not deterministically attempt the URL; reproducibility variance.
+
+- **Path Y (heavier, free at runtime)**: build a custom probe plugin that registers an `egress_probe(url, method)` tool. Invoke via... actually, looking at the openclaw CLI surface there's no non-agent path to a plugin tool call. Even Path Y likely needs an agent turn — but the agent can call the tool 5 times in one turn deterministically, dropping the cost to 1 LLM call per probe run.
+
+- **Path Z (give up the runtime probe)**: keep the static `INV-P002` shape tests + implicit-runtime coverage; document that the explicit-runtime layer requires harness work that exceeds its value. Lose the negative-case evidence but save the credit + time spend.
+
+Recommendation: **Path Y with a single multi-call agent turn**. One LLM call per probe run × CI cost. Custom plugin is ~30 LOC TypeScript. Plan revision before implementation — surface the trade-offs to the user.
+
+**Files changed**:
+- `packages/toolkit/tests/_live_smoke/run.py` — MODIFIED (extracted `_build_openclaw_config_batch`, added `running_sandbox_container` + `run_probe`, refactored `_build_in_container_script` to share the config-batch helper).
+- `packages/toolkit/tests/_live_smoke/probe_script.js` — CREATED (Node probe + classifier; kept for Phase 1 revision).
+- `packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py` — CREATED (5 parameterized probe tests, skipped pending pivot).
+- `packages/toolkit/tests/integration/test_live_smoke_harness.py` — CREATED (4 harness unit tests, all PASS).
+- `packages/toolkit/tests/conftest.py` — MODIFIED (auto-skip predicate for `live_ssrf_probe` marker).
+- `packages/toolkit/pyproject.toml` — MODIFIED (registered `live_ssrf_probe` marker).

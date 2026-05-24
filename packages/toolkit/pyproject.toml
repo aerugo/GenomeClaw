@@ -70,6 +70,7 @@ markers = [
     "needs_phase5_smoke_artifacts: requires GENOMECLAW_PHASE5_SMOKE_DIR pointing at a directory produced by `bin/genomeclaw-prs-smoke`. Tests in this marker verify the recorded smoke artifacts; they auto-skip without the env var so CI stays green without a real smoke run.",
     "needs_prod_python: runs a probe inside the toolkit image via `docker run` to catch dev/prod Python version skew. Gated by GENOMECLAW_TOOLKIT_PRS_IMAGE pointing at a built image + `docker` on PATH. Closes the Phase 3 misstep where a Python-3.13-only `Path` subclass form survived to smoke-time (toolkit image runs Python 3.11).",
     "live_llm: makes a real (paid) LLM call through the gateway in the sandbox image — skipped unless OPENAI_API_KEY AND GENOMECLAW_SANDBOX_IMAGE are both set. Each test costs one real OpenAI call; use sparingly.",
+    "live_ssrf_probe: spawns the sandbox image and issues outbound HTTP from the policy-allowlisted Node runtime to assert the OpenShell L7 policy denies un-allowlisted (host, port, method, path) tuples. Runs the explicit-runtime-negative-case layer for INV-P002. Skipped unless GENOMECLAW_HAS_DOCKER=1 AND GENOMECLAW_SANDBOX_IMAGE is set. No LLM calls — gateway + Node only.",
 ]
 
 [tool.ruff]

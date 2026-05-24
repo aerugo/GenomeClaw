@@ -199,38 +199,9 @@ def _build_in_container_script(
     script indented and bash then fails to recognise the heredoc closer.
     """
     escaped_message = json.dumps(message)
-    openclaw_batch = json.dumps(
-        [
-            {"path": "models.providers.openai.baseUrl", "value": "https://api.openai.com/v1"},
-            {
-                "path": "models.providers.openai.models",
-                "value": [
-                    {
-                        "id": "gpt-5.5",
-                        "name": "GPT 5.5",
-                        "api": "openai-responses",
-                        "contextWindow": 200000,
-                        "maxTokens": 16384,
-                    }
-                ],
-            },
-            {"path": "auth.profiles.openai_default.provider", "value": "openai"},
-            {"path": "auth.profiles.openai_default.mode", "value": "api_key"},
-            {"path": "plugins.allow", "value": ["genomeclaw"]},
-            {"path": "gateway.mode", "value": "local"},
-            {"path": "agents.defaults.model", "value": "openai/gpt-5.5"},
-            # gpt-5.5 supports `off | minimal | low | medium | high | xhigh`;
-            # `max` is silently rejected at per-call validation (gpt-5.5
-            # is not o-series). `xhigh` is the model's actual ceiling — the
-            # `INV-A002` synthesis floor (per agent-research-and-synthesis
-            # Phase 3 slice 5, 2026-05-15: probe confirmed the supported set).
-            {"path": "agents.defaults.thinkingDefault", "value": "xhigh"},
-            {
-                "path": "plugins.entries.genomeclaw.config.hostService.baseUrl",
-                "value": f"http://host.openshell.internal:{host_port}",
-            },
-        ]
-    )
+    # Shared with running_sandbox_container() so the two harness modes
+    # don't drift on provider config / model id / thinking depth.
+    openclaw_batch = _build_openclaw_config_batch(host_port)
     extra_workspace_block = _render_extra_workspace_block(extra_workspace_files or {})
     return (
         "set -uo pipefail\n"
@@ -447,8 +418,223 @@ def _parse_agent_output(raw: str) -> dict[str, Any] | None:
     return parsed
 
 
+def _build_openclaw_config_batch(host_port: int) -> str:
+    """Render the openclaw `config set --batch-file` payload as JSON.
+
+    Shared by the one-shot in-container script (agent turns) and the
+    long-running container fixture (ssrf-probe). The OpenAI provider
+    entry is included even when no agent call follows because the
+    plugin's hostService.baseUrl + plugin-allow + gateway.mode entries
+    must land together as one batch; omitting the provider produces a
+    half-configured gateway that refuses to bind cleanly.
+    """
+    return json.dumps(
+        [
+            {"path": "models.providers.openai.baseUrl", "value": "https://api.openai.com/v1"},
+            {
+                "path": "models.providers.openai.models",
+                "value": [
+                    {
+                        "id": "gpt-5.5",
+                        "name": "GPT 5.5",
+                        "api": "openai-responses",
+                        "contextWindow": 200000,
+                        "maxTokens": 16384,
+                    }
+                ],
+            },
+            {"path": "auth.profiles.openai_default.provider", "value": "openai"},
+            {"path": "auth.profiles.openai_default.mode", "value": "api_key"},
+            {"path": "plugins.allow", "value": ["genomeclaw"]},
+            {"path": "gateway.mode", "value": "local"},
+            {"path": "agents.defaults.model", "value": "openai/gpt-5.5"},
+            {"path": "agents.defaults.thinkingDefault", "value": "xhigh"},
+            {
+                "path": "plugins.entries.genomeclaw.config.hostService.baseUrl",
+                "value": f"http://host.openshell.internal:{host_port}",
+            },
+        ]
+    )
+
+
+# Path to the Node probe script shipped alongside this module. Copied into
+# the running sandbox container at /opt/probe_script.js by
+# running_sandbox_container().
+_PROBE_SCRIPT_HOST_PATH = Path(__file__).parent / "probe_script.js"
+_PROBE_SCRIPT_CONTAINER_PATH = "/opt/probe_script.js"
+
+
+@contextmanager
+def running_sandbox_container(
+    *,
+    sandbox_image: str,
+    host_port: int = DEFAULT_HOST_PORT,
+    gateway_boot_timeout_s: float = 60.0,
+) -> Iterator[str]:
+    """Spawn the sandbox container + start the gateway; yield container ID.
+
+    The container is created with `sleep infinity` as its entrypoint so it
+    stays alive across multiple ``docker exec``-issued probes. The openclaw
+    gateway is configured + started inside via docker exec; readiness is
+    polled via ``openclaw gateway status``. The Node probe script
+    (``probe_script.js`` in this directory) is copied into the container
+    at ``/opt/probe_script.js`` so subsequent ``run_probe`` calls can exec
+    it directly.
+
+    Cleanup runs unconditionally on context exit via ``docker rm -f`` —
+    no zombie containers even when the ``with`` block raises.
+
+    Raises ``RuntimeError`` if:
+
+    - ``docker run`` fails to spawn the container.
+    - The gateway fails to report ready within ``gateway_boot_timeout_s``.
+      The container's ``/tmp/gateway.log`` is included in the error message
+      for debugging.
+    """
+    import uuid
+
+    container_name = f"genomeclaw-ssrf-probe-{uuid.uuid4().hex[:8]}"
+    config_batch = _build_openclaw_config_batch(host_port)
+
+    # 1. Spawn the container. `--add-host` matches the one-shot path so
+    # `host.openshell.internal` resolves to the host-gateway bridge.
+    spawn_cmd = [
+        "docker", "run", "-d", "--rm",
+        "--name", container_name,
+        "--add-host=host.openshell.internal:host-gateway",
+        sandbox_image,
+        "sleep", "infinity",
+    ]
+    spawn = subprocess.run(spawn_cmd, capture_output=True, text=True, check=False)
+    if spawn.returncode != 0:
+        raise RuntimeError(
+            f"docker run failed (rc={spawn.returncode}): "
+            f"stdout={spawn.stdout[:500]!r} stderr={spawn.stderr[:500]!r}"
+        )
+    container_id = spawn.stdout.strip() or container_name
+
+    try:
+        # 2. Copy the Node probe script into the container.
+        if _PROBE_SCRIPT_HOST_PATH.exists():
+            cp_proc = subprocess.run(
+                ["docker", "cp", str(_PROBE_SCRIPT_HOST_PATH),
+                 f"{container_name}:{_PROBE_SCRIPT_CONTAINER_PATH}"],
+                capture_output=True, text=True, check=False,
+            )
+            if cp_proc.returncode != 0:
+                raise RuntimeError(
+                    f"docker cp probe_script.js failed: {cp_proc.stderr[:500]}"
+                )
+
+        # 3. Write the openclaw config batch + start the gateway.
+        config_exec = subprocess.run(
+            ["docker", "exec", "-i", container_name,
+             "bash", "-c",
+             "cat > /tmp/openclaw-batch.json && "
+             "openclaw config set --batch-file /tmp/openclaw-batch.json > /dev/null 2>&1"],
+            input=config_batch, capture_output=True, text=True, check=False,
+        )
+        if config_exec.returncode != 0:
+            raise RuntimeError(
+                f"openclaw config set failed: {config_exec.stderr[:500]}"
+            )
+
+        gateway_start = subprocess.run(
+            ["docker", "exec", "-d", container_name,
+             "bash", "-c", "openclaw gateway run > /tmp/gateway.log 2>&1"],
+            capture_output=True, text=True, check=False,
+        )
+        if gateway_start.returncode != 0:
+            raise RuntimeError(
+                f"docker exec gateway-start failed: {gateway_start.stderr[:500]}"
+            )
+
+        # 4. Poll readiness. `openclaw gateway status` blocks ~5 s per call
+        # doing a WebSocket probe; instead poll the gateway's listening
+        # socket inside the container (instant). The default gateway port
+        # is 18789 (from `openclaw config get gateway.port`). `ss` truncates
+        # process names to 15 chars, so the comm field is `openclaw-gatewa`
+        # (no trailing y). We grep for that prefix on any LISTEN row.
+        deadline = time.monotonic() + gateway_boot_timeout_s
+        ready = False
+        while time.monotonic() < deadline:
+            port_probe = subprocess.run(
+                ["docker", "exec", container_name,
+                 "bash", "-c",
+                 "ss -lntp 2>/dev/null | grep -q openclaw-gatew && echo UP"],
+                capture_output=True, text=True, check=False,
+            )
+            if "UP" in port_probe.stdout:
+                ready = True
+                break
+            time.sleep(1.0)
+        if not ready:
+            log = subprocess.run(
+                ["docker", "exec", container_name,
+                 "bash", "-c", "cat /tmp/gateway.log 2>/dev/null || true"],
+                capture_output=True, text=True, check=False,
+            )
+            raise RuntimeError(
+                f"openclaw gateway didn't report ready within "
+                f"{gateway_boot_timeout_s}s. Gateway log tail:\n{log.stdout[-2000:]}"
+            )
+
+        yield container_id
+    finally:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True, text=True, check=False,
+        )
+
+
+def run_probe(
+    container_id: str,
+    *,
+    host: str,
+    port: int,
+    method: str = "GET",
+    path: str = "/",
+    docker_exec_timeout_s: int = 15,
+) -> dict[str, Any]:
+    """Issue one SSRF probe via ``docker exec node /opt/probe_script.js``.
+
+    Returns the parsed JSON dict the Node script writes on stdout — one
+    line with keys ``status``, ``body_excerpt``, ``rejection_class``,
+    ``openclaw_version_line``, ``elapsed_ms``, ``tuple``.
+
+    Raises ``RuntimeError`` if ``docker exec`` fails outright OR the
+    script's stdout isn't parseable JSON. A "probe ran but got rejected"
+    outcome is signalled by the JSON's ``rejection_class``, not by the
+    exec rc — the Node script always exits 0 and reports classification
+    in-band.
+    """
+    proc = subprocess.run(
+        ["docker", "exec", container_id,
+         "node", _PROBE_SCRIPT_CONTAINER_PATH,
+         "--host", host, "--port", str(port),
+         "--method", method, "--path", path],
+        capture_output=True, text=True, check=False, timeout=docker_exec_timeout_s,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"docker exec probe failed (rc={proc.returncode}): "
+            f"stdout={proc.stdout[:500]!r} stderr={proc.stderr[:500]!r}"
+        )
+    stdout = proc.stdout.strip()
+    if not stdout:
+        raise RuntimeError("probe script produced empty stdout")
+    try:
+        return json.loads(stdout.splitlines()[-1])
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"probe script stdout was not parseable JSON: {e}; raw: {stdout[:500]!r}"
+        ) from e
+
+
 __all__ = [
     "DEFAULT_HOST_PORT",
     "host_service_running",
     "run_agent_in_sandbox",
+    "running_sandbox_container",
+    "run_probe",
 ]

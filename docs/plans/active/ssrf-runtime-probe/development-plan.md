@@ -215,9 +215,10 @@ After implementation is complete:
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| 1 — Long-running harness + 5-tuple probe | Pending | | | ~half-day. Hardest part is the Node probe-script classifier. |
-| 2 — Version pin + golden baseline | Pending | | | ~1 hour. Trivial after Phase 1 is green. |
-| 3 — Docs | Pending | | | ~30 min. |
+| 1 — Long-running harness + 5-tuple probe | PARTIAL — harness GREEN, probe design flaw discovered | 2026-05-24 | (pivot pending) | Harness extension (`running_sandbox_container`, `run_probe`, shared config-batch builder) shipped + 4 unit tests green. Probe path needs re-architecting: docker-exec'd Node bypasses OpenShell same as docker-exec'd curl. See `work-notes.md` § 2026-05-24 GREEN finding. |
+| 1b — Probe-path pivot (Path X agent / Path Y plugin / Path Z abandon) | Pending design call | | | Operator: pick path. Recommended: Path Y (custom probe plugin + single multi-call agent turn — 1 LLM call per probe sweep, ~30 LOC TS plugin). |
+| 2 — Version pin + golden baseline | Awaiting 1b | | | Trivial after probe path lands green. |
+| 3 — Docs | Awaiting 1+1b+2 | | | INVARIANTS.md v1.15 → v1.16. |
 
 ---
 

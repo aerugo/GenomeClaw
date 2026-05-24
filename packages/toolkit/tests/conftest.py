@@ -72,6 +72,28 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             if "live_llm" in item.keywords:
                 item.add_marker(skip_live)
 
+    # ssrf-runtime-probe Phase 1 — `live_ssrf_probe` tests spawn the sandbox
+    # image and issue outbound HTTP from the policy-allowlisted Node runtime
+    # to assert the OpenShell L7 policy denies un-allowlisted destinations.
+    # No LLM calls; gateway + Node only. Gated on docker availability + the
+    # sandbox image so bare hosts auto-skip cleanly.
+    if (
+        os.environ.get("GENOMECLAW_HAS_DOCKER") != "1"
+        or not os.environ.get("GENOMECLAW_SANDBOX_IMAGE")
+        or shutil.which("docker") is None
+    ):
+        skip_ssrf = pytest.mark.skip(
+            reason=(
+                "live_ssrf_probe test requires GENOMECLAW_HAS_DOCKER=1 + "
+                "GENOMECLAW_SANDBOX_IMAGE pointing at a built sandbox image + "
+                "docker on PATH. The probe spawns the sandbox + issues "
+                "policy-enforced outbound HTTP; no LLM calls."
+            )
+        )
+        for item in items:
+            if "live_ssrf_probe" in item.keywords:
+                item.add_marker(skip_ssrf)
+
     # PRS Runtime Bootstrap Phase 1 — `needs_prs_runtime` tests require a
     # toolkit image carrying the new Stage 1c PRS runtime stack (Nextflow +
     # JRE 17 + mamba + pre-warmed pgsc_calc source). The project owner
