@@ -26,15 +26,25 @@
       }
     ],
     "exon_coordinates": {
-      "source": "PLACEHOLDER — pending real GENCODE v44 MANE Select replacement",
-      "description": "Each gene has 8 deterministic placeholder exons: start = canonical_chromosome_start + (exon_index * 1200), length 150 bp. Chromosome starts are from training knowledge (GRCh38). Real GENCODE v44 MANE Select coordinates must be substituted before any live mosdepth coverage run (Phase 3 prerequisite). See work-notes.md for the replacement procedure.",
+      "source": "GENCODE v44 (primary assembly annotation)",
+      "url": "https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.primary_assembly.annotation.gtf.gz",
       "build": "GRCh38",
-      "transcript_filter_intended": "MANE Select where present; GENCODE canonical otherwise",
-      "placeholder_warning": "DO NOT use for clinical interpretation. Per-exon coverage numbers will not align with real genomic positions until real GENCODE coordinates are substituted."
+      "transcript_selection": "MANE Select where present; Ensembl_canonical otherwise; longest transcript as final fallback",
+      "transcript_selection_outcome": "160/160 genes covered by MANE Select transcripts (no fallback to Ensembl_canonical or longest required for the current panel).",
+      "alias_map": {
+        "GBA": "GBA1"
+      },
+      "alias_map_note": "Panel HGNC symbol → GENCODE v44 symbol where HGNC has since renamed the gene. BED labels preserve the panel symbol (so `GBA_exon_N` rows refer to GENCODE's GBA1 coordinates).",
+      "extraction": {
+        "tool": "/tmp/build_panel_bed.py (single-pass GTF scan; see docs/plans/active/coverage-qc-gene-list-bed/work-notes.md)",
+        "format": "BED4 (chrom, 0-based start, end, GENE_exon_N)",
+        "compression": "bgzip (htslib 1.21)",
+        "sort": "chrom (lexicographic chr1..chrX), then start (numeric)"
+      }
     }
   },
   "gene_count": 160,
-  "exon_count": 1280,
+  "exon_count": 2798,
   "low_coverage_threshold_default": "20x",
-  "curation_notes": "Union of ACMG SF v3.2, GenomeClaw five disease-area sysprompt panels, and PharmCAT-flagged pharmacogenomic genes. Deduplicated: APOE appears in both cardiovascular and neurodegeneration panels and is counted once. PTEN, MUTYH, PCSK9 appear in both ACMG and disease-area panels; counted once. Placeholder exon coordinates — see source.exon_coordinates.placeholder_warning. Operator action required before Phase 3 live smoke: replace this file with real GENCODE v44 MANE Select coordinates (see docs/plans/active/coverage-qc-gene-list-bed/work-notes.md)."
+  "curation_notes": "Union of ACMG SF v3.2, GenomeClaw five disease-area sysprompt panels, and PharmCAT-flagged pharmacogenomic genes. Deduplicated: APOE appears in both cardiovascular and neurodegeneration panels and is counted once. PTEN, MUTYH, PCSK9 appear in both ACMG and disease-area panels; counted once. Exon coordinates are real GENCODE v44 MANE Select; safe for live mosdepth coverage analysis."
 }

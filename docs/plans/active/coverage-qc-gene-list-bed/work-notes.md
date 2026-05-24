@@ -105,4 +105,49 @@ To replace placeholder BED with real GENCODE v44 MANE Select coordinates:
 |-------|--------|
 | 1 — Panel composition + BED authoring | COMPLETE |
 | 2 — Bundle + auto-engage | COMPLETE |
-| 3 — Live verification | Deferred (requires real CRAM + live agent test; operator must first replace placeholder BED coordinates) |
+| 3a — Real GENCODE v44 MANE Select coordinates | COMPLETE (2026-05-23) |
+| 3 — Live verification | Pending (real CRAM + live agent test; BED is now production-ready) |
+
+---
+
+## 2026-05-23 — Phase 3a: Real GENCODE v44 MANE Select replacement
+
+Replaced the placeholder BED with real GENCODE v44 MANE Select exon coordinates.
+
+**Procedure executed**:
+1. Fetched GENCODE v44 primary annotation GTF (49.7 MB) from `https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_44/gencode.v44.primary_assembly.annotation.gtf.gz` into `/Volumes/Genome_Work/genomeclaw/reference/gencode/v44/`.
+2. Extracted the 160-gene panel list from the existing BED via `gunzip -c $BED | awk '{print $4}' | sed 's/_exon_[0-9]*$//' | sort -u`.
+3. Single-pass Python parse of the GTF (3.4M lines, runs in ~30s on host) selecting one transcript per gene with priority: MANE_Select → Ensembl_canonical → longest transcript by total exon length.
+4. Outcome: 160/160 genes selected, all via MANE_Select tier (no Ensembl_canonical or longest-transcript fallbacks were needed).
+5. Discovered + handled HGNC rename: panel symbol `GBA` is `GBA1` in GENCODE v44. Added an `ALIASES = {"GBA": "GBA1"}` map in the build script; BED labels preserve the panel symbol so `GBA_exon_N` rows refer to GENCODE's GBA1 coordinates.
+6. Sorted (chrom, start), bgzip-compressed with htslib 1.21 inside the toolkit image (host has no bgzip; macOS virtiofs caches /Users/hugi as a stale snapshot — staged through `/Volumes/Genome_Work/genomeclaw/_scratch/` to work around the cache).
+7. Installed at `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.gz` (25,229 bytes, 2,798 rows, BED4, properly bgzip — verified by gzip magic + bgzip `BC` subfield).
+8. Updated sidecar JSON: removed `placeholder_warning`; set `source.exon_coordinates.source` = `"GENCODE v44 (primary assembly annotation)"`; added `transcript_selection`, `transcript_selection_outcome`, `alias_map`, and `extraction` metadata; bumped `exon_count` to 2,798.
+
+**Sanity excerpts** (manually verified against UCSC Genome Browser GRCh38):
+- CFH: 22 exons starting chr1:196,652,042
+- BRCA1: 23 exons starting chr17:43,044,294
+- APOE: 4 exons starting chr19:44,905,795
+- MYOC: 3 exons starting chr1:171,635,416
+- ABCA4: 50 exons starting chr1:93,992,833
+- GBA: 11 exons (real GBA1 / glucocerebrosidase) starting chr1:155,234,451
+
+**Verification**:
+- `test_default_panel_v1_contains_disease_area_genes` PASS (all 65 required disease-area genes present, including GBA).
+- NEW: `test_default_panel_v1_uses_real_gencode_coordinates` PASS (drift-back-to-placeholder regression guard: asserts >2,000 exons, >5 chromosomes, sorted within-chrom).
+- 5 `needs_bio` tests in the same file still fail in container — pre-existing test-setup gap (`_make_layout` doesn't pass `reference_fasta` to `ingest()`, and CRAM input requires one). Unrelated to the BED swap. Out of scope for Phase 3a.
+
+**Test bug fixed alongside**: `_fake_mosdepth_result(panel_genes, tmp_path / "mos_out")` was called BEFORE `(tmp_path / "mos_out").mkdir()` at three sites in the test file — clearly an aborted edit (each call appeared twice, once before mkdir and once after). Removed the pre-mkdir call at all three sites. Still doesn't make the needs_bio tests pass because of the reference_fasta gap above.
+
+**Files changed**:
+- `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.gz` — REPLACED (placeholder 11,358 bytes / 1,280 rows → real 25,229 bytes / 2,798 rows)
+- `packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.provenance.json` — MODIFIED (removed placeholder fields; added GENCODE provenance + alias_map + extraction metadata)
+- `packages/toolkit/tests/integration/test_coverage_qc_default_panel.py` — MODIFIED (added `test_default_panel_v1_uses_real_gencode_coordinates`; removed 3 duplicate `_fake_mosdepth_result` calls before mkdir)
+
+**Not changed**:
+- GTF stays under `/Volumes/Genome_Work/genomeclaw/reference/gencode/v44/` — not committed (49 MB; rebuildable from canonical URL).
+- Build script `/tmp/build_panel_bed.py` — kept under `/tmp/` only; recorded in sidecar `extraction.tool` field for reproducibility. If we want it permanently, move to `packages/toolkit/scripts/build_coverage_panel_bed.py` in a follow-up.
+
+**Open follow-ups (separate plans)**:
+- Phase 3 live verification (canonical CRAM + agent test) — now unblocked.
+- Pre-existing test-setup gap (`_make_layout` reference_fasta) — file a separate fix; the 6 `needs_bio` tests in this file have never actually run successfully end-to-end in their current form.

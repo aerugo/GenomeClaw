@@ -128,7 +128,6 @@ def test_ingest_with_cram_auto_engages_default_panel(tmp_path: pytest.fixture) -
 
     # Build a fake mosdepth result that uses a subset of the default panel genes
     panel_genes = _default_panel_genes()[:5]
-    fake_result = _fake_mosdepth_result(panel_genes, tmp_path / "mos_out")
     (tmp_path / "mos_out").mkdir(exist_ok=True)
     fake_result = _fake_mosdepth_result(panel_genes, tmp_path / "mos_out")
 
@@ -178,7 +177,6 @@ def test_ingest_with_cram_and_explicit_bed_overrides_default(tmp_path: pytest.fi
     custom_genes = ["CUSTOM_GENE_A", "CUSTOM_GENE_B"]
     custom_bed = _make_minimal_bed(tmp_path, genes=custom_genes)
 
-    fake_result = _fake_mosdepth_result(custom_genes, tmp_path / "mos_out")
     (tmp_path / "mos_out").mkdir(exist_ok=True)
     fake_result = _fake_mosdepth_result(custom_genes, tmp_path / "mos_out")
 
@@ -355,7 +353,6 @@ def test_invR001_params_json_records_panel_provenance(tmp_path: pytest.fixture) 
     fake_cram.write_bytes(b"fake")
 
     panel_genes = ["BRCA1"]
-    fake_result = _fake_mosdepth_result(panel_genes, tmp_path / "mos_out")
     (tmp_path / "mos_out").mkdir(exist_ok=True)
     fake_result = _fake_mosdepth_result(panel_genes, tmp_path / "mos_out")
 
@@ -429,3 +426,46 @@ def test_default_panel_v1_contains_disease_area_genes() -> None:
         f"Default panel BED is missing {len(missing)} required disease-area genes: "
         f"{sorted(missing)}"
     )
+
+
+def test_default_panel_v1_uses_real_gencode_coordinates() -> None:
+    """Detect drift back to placeholder coordinates.
+
+    The original v1 placeholder shipped exactly 8 deterministic exons per gene
+    (1280 total) on chr1 only, with start = chromosome_start + (exon_index * 1200).
+    Real GENCODE v44 MANE Select exons number in the thousands and span every
+    autosome plus chrX. This test fails if anyone reverts to the placeholder
+    pattern.
+    """
+    from genomeclaw_toolkit.prep.ingest import _DEFAULT_PANEL_BED_NAME
+    data_dir = Path(__file__).parent.parent.parent / "src" / "genomeclaw_toolkit" / "data"
+    bed_path = data_dir / _DEFAULT_PANEL_BED_NAME
+
+    rows: list[tuple[str, int, int, str]] = []
+    chroms: set[str] = set()
+    with gzip.open(bed_path, "rt") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            cols = line.split("\t")
+            assert len(cols) == 4, f"BED row not BED4: {line!r}"
+            rows.append((cols[0], int(cols[1]), int(cols[2]), cols[3]))
+            chroms.add(cols[0])
+
+    # Placeholder shipped 1280 rows; real GENCODE MANE Select for 160 genes is ~2000-5000.
+    assert len(rows) > 2000, (
+        f"Default panel has only {len(rows)} exons — looks like placeholder data "
+        "(real GENCODE v44 MANE Select for 160 genes yields ~2000+ exons)"
+    )
+    # Placeholder was chr1 only.
+    assert len(chroms) > 5, (
+        f"Default panel only spans {sorted(chroms)} — looks like placeholder "
+        "(real panel spans many chromosomes)"
+    )
+    # Rows must be sorted by (chrom, start) so mosdepth/htslib treat them efficiently.
+    for prev, curr in zip(rows, rows[1:]):
+        if prev[0] == curr[0]:
+            assert prev[1] <= curr[1], (
+                f"BED not sorted at {prev} → {curr} (within-chrom start must be ascending)"
+            )
