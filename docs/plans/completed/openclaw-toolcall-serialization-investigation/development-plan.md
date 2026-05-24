@@ -1,6 +1,6 @@
 # Development Plan — Openclaw tool-call serialization investigation
 
-**Status**: Active — drafted 2026-05-23
+**Status**: Complete — 2026-05-23. Phase 1 live + Phase 3 Path U+D landed. Phase 2 skipped (SDK-bypass already locked the model layer as innocent).
 **Spec**: [spec.md](spec.md)
 **Branch**: `main` (small phases; no separate feature branch)
 
@@ -63,7 +63,7 @@ If the OpenAI output has `arguments: {gene: "CFH"}` but openclaw passes `args.ge
 | Phase | Description | Tests | TDD focus |
 |-------|-------------|-------|-----------|
 | **1** | Reproduce + classify the failure modes | 1 new live-gated pytest (`test_openclaw_serialization_repro.py`); investigation outputs are reports + traces | Evidence gathering |
-| **2** | Cross-model bisect (one alternative model) | 0 new pytest; one paid LLM call against the reproducer | Evidence gathering |
+| **2** | ~~Cross-model bisect (one alternative model)~~ — **SKIPPED 2026-05-23** | — | SDK-bypass probe already locked model innocence; cross-model would not add information |
 | **3** | Decide + execute Path U / D / L | depends on path — Path L adds tests; Paths U/D add docs | Decision + delivery |
 
 ### Phase 1 — Reproduce + classify
@@ -106,6 +106,6 @@ Path-conditional. Pick exactly one:
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| 1 — Reproduce + classify | STATIC complete; live runs pending operator | 2026-05-23 | 2026-05-23 (static) | Half-day spike. Findings + reproducer + probe + agent-quirks skeleton landed. |
-| 2 — Cross-model bisect | Pending | | | ~1 hour + one paid LLM call |
-| 3 — Decide + execute | Pending | | | Path-conditional; 1-2 hours. Predicted Path D. |
+| 1 — Reproduce + classify | Complete (live) | 2026-05-23 | 2026-05-23 | SDK-bypass `MODEL_EMITS_CORRECT_JSON` (5/5 clean); in-sandbox reproducer captured 0% in a fresh-session run (bug is context-conditional). Findings filled in. |
+| 2 — Cross-model bisect | Skipped | — | — | SDK-bypass already locked model layer as innocent; cross-model bisect would not add information. Documented in findings.md § "Why Phase 2 was skipped". |
+| 3 — Decide + execute | Complete | 2026-05-23 | 2026-05-23 | Path U primary (upstream issue body drafted in findings.md § "Upstream issue draft"; operator files manually) + light Path D (agent-quirks.md Q-001 filled + sysprompt one-line reference). Path L not pursued. |

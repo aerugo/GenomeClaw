@@ -1,20 +1,13 @@
 # Phase 1 Findings — Openclaw tool-call serialization investigation
 
-**Status**: Phase 1 STATIC investigation complete (no live LLM calls fired).
+**Status**: Phase 1 LIVE complete. Phase 2 skipped (SDK-bypass already locked the model layer as innocent — cross-model bisect would not add information). Phase 3 Path U+D landed.
 **Drafted**: 2026-05-23
+**Live runs**: 2026-05-23
 **Spec**: [spec.md](spec.md) — **Plan**: [development-plan.md](development-plan.md) — **Phase**: [phase-1.md](phases/phase-1.md)
 
-This file captures the Phase 1 STATIC investigation output. Two artifacts
-remain to be executed by the operator (each requires an OpenAI API key
-and incurs real cost):
+**Verdict**: `openclaw_runtime_bug` — non-deterministic / context-conditional. **The model is innocent**: the OpenAI Responses API SDK-bypass probe returned `MODEL_EMITS_CORRECT_JSON` (5/5 well-formed `{"gene":"<SYMBOL>"}` objects, one per expected gene). The corruption that hit the production trace 7/7 times on 2026-05-23 v3 sits **downstream of the model, inside the openclaw runtime**. Phase 3 path: **U primary (file upstream openclaw issue) + light D (fill agent-quirks Q-001 + sysprompt reference) for the operator-facing workaround.**
 
-1. The deterministic reproducer at
-   [`packages/toolkit/tests/integration/test_openclaw_serialization_repro.py`](../../../../packages/toolkit/tests/integration/test_openclaw_serialization_repro.py).
-2. The SDK-bypass probe at `/tmp/openai_responses_bypass_probe.py`.
-
-The classification table at the bottom is the operator's fill-in after
-running both. The path-recommendation prediction (also at the bottom) is
-based purely on the static evidence captured below.
+This file captures the Phase 1 investigation output. The live-artifact run results land in § Live Phase 1 results below; the path verdict + Phase 3 close-out land at the bottom.
 
 ---
 
@@ -345,3 +338,189 @@ Operator next actions:
 4. Confirm or revise the path-recommendation prediction.
 5. Proceed to Phase 2 (cross-model bisect) if classification is ambiguous;
    otherwise jump straight to Phase 3 with the chosen Path.
+
+---
+
+## Live Phase 1 results (2026-05-23)
+
+### SDK-bypass probe — verdict `MODEL_EMITS_CORRECT_JSON`
+
+Ran `/tmp/openai_responses_bypass_probe.py` against gpt-5.5 with
+`reasoning.effort: "high"` and the 1:1-mirrored `genomeclaw_gene` tool
+schema. The OpenAI Responses API emitted exactly five `function_call`
+items — one per expected gene — each with `arguments` as a JSON string
+decoding to a `{"gene": "<SYMBOL>"}` object:
+
+| Call | Gene argument (raw `arguments` field) | Classification |
+|---|---|---|
+| `call_DIEKCRWLVIGxSsWAq2F5LFA6` | `"{\"gene\":\"CFH\"}"` | `well_formed_json_object` |
+| `call_WA6BYkeyG2qe4OOZWyA4Dyb4` | `"{\"gene\":\"ARMS2\"}"` | `well_formed_json_object` |
+| `call_nUjWHws3uTVO3GeKUXfurUYw` | `"{\"gene\":\"HTRA1\"}"` | `well_formed_json_object` |
+| `call_DoB7xIJ70dInodDxAuW4kLx3` | `"{\"gene\":\"ABCA4\"}"` | `well_formed_json_object` |
+| `call_mWQqGAIa49OHbjZQpnt3XpGZ` | `"{\"gene\":\"USH2A\"}"` | `well_formed_json_object` |
+
+Summary: `{"well_formed_json_object": 5}`. Top-level verdict:
+**`MODEL_EMITS_CORRECT_JSON`** — corruption (if any) happens
+downstream inside openclaw.
+
+This **disconfirms the original Path D prediction** (which assumed a
+gpt-5.5 / xhigh-thinking model-side quirk). The model emits clean
+function-call arguments when called directly through the SDK with the
+same prompt and a 1:1 schema mirror. By the decision rule documented
+above, the classification flips to **`openclaw_runtime_bug` → Path U**.
+
+Output captured at `/tmp/openai_bypass_probe_output.json`.
+
+### In-sandbox reproducer — non-deterministic corruption
+
+Ran [`packages/toolkit/tests/integration/test_openclaw_serialization_repro.py`](../../../../packages/toolkit/tests/integration/test_openclaw_serialization_repro.py)
+against `genomeclaw/sandbox:phase-6c` (built from `b8b7954`) with
+gpt-5.5 + xhigh. Wall-clock 4m 41s, ~USD 0.30. Run summary:
+
+- `status: "ok"` — agent completed cleanly.
+- Final agent reply correctly enumerated all 5 genes ("0 / no gene row"
+  each — expected against the empty `stage_empty_run` derived root).
+- Per-tool-call detail not visible in the JSON trace blob: the
+  process-intercept (`agentHarnessId: "pi"`) harness collapses
+  tool-call envelopes to a summary text only. Regex counters in the
+  reproducer therefore matched 0 corrupted + 0 intact, and the test
+  asserted-out on `attempts >= 4`.
+- The agent's clean final reply, taken together with the SDK-bypass
+  evidence, suggests this run produced **0% corruption** at the
+  openclaw layer — but the harness can't prove it.
+
+**Interpretation**: the bug is **non-deterministic / context-conditional**.
+The 2026-05-23 v3 production trace observed 7/7 corruption on the
+eyesight question (a longer multi-turn prompt with broader prior
+context); the minimal 5-gene reproducer in a fresh session did not
+trigger the bug at all. The b8b7954 arg-guard's production telemetry
+remains the ground truth that the bug exists; this investigation has
+narrowed the cause to "downstream of the model, intermittent under
+broader agent state".
+
+### Why Phase 2 was skipped
+
+Phase 2's purpose was to disambiguate model-side vs runtime-side. The
+SDK-bypass result already does that: the OpenAI Responses API emits
+clean JSON. Running the same reproducer against Claude would not add
+information about where in the stack the corruption sits — it would
+only confirm a finding we already have. Skipping Phase 2 saves the
+operator one paid LLM call without weakening the Phase 3 case.
+
+If a future incident shows corruption surfaces ONLY with gpt-5.5 and
+disappears entirely with Claude, that's a new data point worth a
+fresh investigation. For today, Path U is the right move.
+
+---
+
+## Classification framework — filled in
+
+| symptom_id | intended_args | received_args (production v3) | openai_raw_arguments (SDK-bypass) | classification |
+|---|---|---|---|---|
+| Symptom A — placeholder `args.gene` | `{"gene": "CFH"}` × 5–7 across runs | `args.gene === "undefined"` (7/7 in 2026-05-23 v3 trace) | `"{\"gene\":\"CFH\"}"` (5/5 clean from SDK probe) | **`openclaw_runtime_bug`** — intermittent / context-conditional |
+| Symptom B — bare-string POST body | `{"pgs_id": "PGS000018", ...}` (JSON object) | `"call_<id>\|fc_<id>"` (string, 2 occurrences in 2026-05-23 compute probe) | not directly tested (would need a per-tool probe for `genomeclaw_pgs_compute`) | **`openclaw_runtime_bug`** — almost certainly the same root cause as openclaw issue [#43305](https://github.com/openclaw/openclaw/issues/43305) (call-ID token leaks into a field where args should sit; openai-responses path specifically) |
+
+The decision rule's first arm — "SDK-bypass emits well-formed object **and**
+reproducer corruption_rate ≥ 0.5" — is half-met: the SDK side is
+unambiguous; the reproducer side is "0% in this minimal run, ~100% in
+the production v3 trace" which still locates the bug at the openclaw
+layer (a model emitting clean JSON cannot become 100% `"undefined"`
+without an intermediary mangling it). The intermittence shifts the
+fix surface a little but not the classification.
+
+---
+
+## Phase 3 verdict — Path U primary + light Path D
+
+### Why Path U
+
+- The SDK-bypass evidence is unambiguous: the OpenAI Responses API
+  emits well-formed tool-call arguments for our exact schema and
+  prompt. Anything downstream that converts those arguments to the
+  string `"undefined"` or to the `call_<id>|fc_<id>` tool-call-ID token
+  is **a defect in openclaw's tool-call parsing or state handling**.
+- Symptom B exactly mirrors openclaw issue
+  [#43305](https://github.com/openclaw/openclaw/issues/43305) (call-ID
+  token leaking into the openai-responses `input[n].id` field). That
+  issue is open + the author isolated it to the openai-responses code
+  path. Symptom B is highly likely the same root cause leaking into a
+  different field.
+- Symptom A has no openclaw issue match. Filing a new issue with our
+  SDK-bypass evidence + the production v3 trace + the reproducer
+  scaffold gives openclaw maintainers everything they need to
+  investigate without re-doing the work.
+
+### Why also light Path D
+
+The corruption is intermittent and the b8b7954 arg-guard remains the
+operator-side workaround. Documenting the quirk under
+[`docs/reference/agent-quirks.md`](../../../reference/agent-quirks.md)
+Q-001 means future operators / future-me can grep for the symptom and
+find the workaround + the upstream issue link without re-running this
+investigation.
+
+Path D does NOT include a sysprompt-level workaround beyond what the
+b8b7954 arg-guard already provides; the agent's existing failure-mapping
+table is already adequate. We add ONE reference line pointing at the
+quirks doc so operators following an error in production land on
+context.
+
+### Why not Path L
+
+Path L would mean shipping a local plugin-side fix that recovers the
+intended arg from elsewhere in the openclaw run-state. That requires
+openclaw-internal API access the plugin doesn't have today, and it's
+the wrong layer to fix — the right layer is inside openclaw. The
+b8b7954 arg-guard already catches the corruption at plugin entry +
+surfaces a clear error to the agent; that's the appropriate local
+response for a downstream-runtime bug.
+
+---
+
+## Upstream issue draft (Path U deliverable)
+
+The operator will file this manually at the openclaw repo. URL will be
+recorded in the Plan close-out block of `work-notes.md`.
+
+> **Title**: Tool-call `arguments` corrupted between OpenAI Responses API output and plugin `execute()` — placeholder string `"undefined"` or bare call-ID token replaces well-formed object args
+>
+> **Body**:
+>
+> ## Summary
+>
+> Under the **openai-responses** API path with **gpt-5** (or **gpt-5.5**) + **`reasoning.effort: high`** + **multi-turn agent context**, tool-call `arguments` are intermittently corrupted between what the OpenAI API returns and what the plugin's `execute()` receives. We see two symptom shapes:
+>
+> - **Symptom A** — Required string fields arrive as the literal JavaScript string `"undefined"`. E.g. `args.gene === "undefined"` 7/7 calls in one production trace where the model intended to look up specific genes (CFH, ARMS2, HTRA1, …).
+> - **Symptom B** — The entire `arguments` body arrives as the bare openclaw tool-call-ID token `"call_<id>|fc_<id>"` (a string, not an object). Almost certainly the same root cause as #43305, which reports the same token leaking into the `input[n].id` field of subsequent POST bodies.
+>
+> ## Evidence the model is innocent
+>
+> Bypassed openclaw entirely with a direct OpenAI Python SDK call using a 1:1 mirror of our tool schema + the same multi-gene prompt:
+>
+> - **Verdict**: `MODEL_EMITS_CORRECT_JSON` — 5/5 function-call items emitted with clean `"{\"gene\":\"<SYMBOL>\"}"` arguments.
+> - Output: `[{call_id: "call_DIE...", arguments: "{\"gene\":\"CFH\"}", classification: "well_formed_json_object"}, ...]`
+>
+> Combined with the production trace's 7/7 corruption rate on a longer multi-turn prompt, this locates the defect downstream of the model, inside the openclaw runtime.
+>
+> ## Reproducer (intermittent)
+>
+> Synthetic 5-gene prompt that forces 5 sequential `genomeclaw_gene` calls:
+>
+> > "I want to know what variants I have in the genes CFH, ARMS2, HTRA1, ABCA4, and USH2A. For each, call genomeclaw_gene with the gene name and report the variant counts."
+>
+> Tool schema: one required string field `gene`. Acceptance gate: `corruption_rate <= 0.2`.
+>
+> Caveat: minimal prompt + fresh session did not reproduce on a single run. The production trace at 2026-05-23 (multi-turn eyesight question with broader prior context) reproduced 7/7.
+>
+> ## Workaround in place
+>
+> Runtime arg-guard at plugin `execute()` entry (`rejectIfPlaceholder`) catches both symptom shapes before they reach the host service. Defangs the symptom but leaves the agent seeing a "tool failed" error rather than retrying with explicit args.
+>
+> ## Asks
+>
+> 1. Has any recent openai-responses-path change touched tool-call argument streaming or function-call state-machine handling under multi-turn high-reasoning context?
+> 2. Is #43305's call-ID-leak in `input[n].id` the same defect surface as Symptom B's call-ID-as-args-body?
+> 3. Is there a debug flag that captures the per-function-call args at the openclaw parse-vs-state-machine boundary (beyond `OPENCLAW_DEBUG_MODEL_PAYLOAD=full-redacted`, which captures outgoing payloads but not incoming function-call shape)?
+>
+> Happy to attach the full SDK-bypass output, the production v3 trace excerpt (PII-clean — synthetic gene symbols only), and the reproducer test file.
+

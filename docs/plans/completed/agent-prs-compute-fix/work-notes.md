@@ -632,7 +632,7 @@ After all 4 fixes landed + sandbox rebuilt as `genomeclaw/sandbox:phase-6b` + AM
 
 1. **`bcftools-on-host-or-dood`** — pick architectural option 1 vs 2 above. Path A live test (`test_live_agent_prs_compute_e2e.py`, synthetic-fixture scorefile_missing) keeps passing; Path B (real-compute green percentile) remains operator-action-required.
 2. **`agent-undefined-args-guard`** — move placeholder rejection from TypeBox `pattern` to each tool's `execute()` body for openclaw-runtime enforcement.
-3. **`openclaw-toolcall-serialization`** — investigate 2-3x POSTs the agent fired with a bare OpenAI tool-call ID string (`call_xxx|fc_yyy`) instead of a JSON object body. Pydantic correctly returned 422 with `model_attributes_type`; upstream cause is in the openclaw runtime's tool-call args serializer.
+3. **`openclaw-toolcall-serialization`** — investigate 2-3x POSTs the agent fired with a bare OpenAI tool-call ID string (`call_xxx|fc_yyy`) instead of a JSON object body. Pydantic correctly returned 422 with `model_attributes_type`; upstream cause is in the openclaw runtime's tool-call args serializer. **RESOLVED 2026-05-23** via [docs/plans/completed/openclaw-toolcall-serialization-investigation/](../openclaw-toolcall-serialization-investigation/). Verdict: `openclaw_runtime_bug` — intermittent / context-conditional. SDK-bypass probe proved the OpenAI Responses API emits clean JSON; corruption happens downstream inside openclaw. Workaround live (b8b7954 arg-guard); quirk documented at [docs/reference/agent-quirks.md § Q-001](../../../reference/agent-quirks.md#quirk-q-001--openclaw-tool-call-argument-serialization-corruption); upstream openclaw issue body drafted, operator-to-file.
 
 ### Final assessment
 

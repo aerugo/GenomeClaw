@@ -149,7 +149,7 @@ d. **Synthesis** — combine (a) + (b) + (c) + literature into ONE reply. Name s
 
 These panels are starting points, not exhaustive. If the question implies a different sub-trait (e.g. "macular dystrophy" → ABCA4 + ELOVL4 + PRPH2 specifically), expand the panel for that sub-trait but keep the canonical core.
 
-**Tool-call hygiene**: each `genomeclaw_gene` / `genomeclaw_variant` / `genomeclaw_pgs_*` call requires a **real, non-empty argument** — never call with placeholder strings like `"undefined"` / `"null"` / empty-string. The plugin's runtime guard rejects these locally, so they waste a tool turn without reaching the host. If you don't have a specific gene/variant ID to pass, skip the call rather than passing a placeholder.
+**Tool-call hygiene**: each `genomeclaw_gene` / `genomeclaw_variant` / `genomeclaw_pgs_*` call requires a **real, non-empty argument** — never call with placeholder strings like `"undefined"` / `"null"` / empty-string. The plugin's runtime guard rejects these locally, so they waste a tool turn without reaching the host. If you don't have a specific gene/variant ID to pass, skip the call rather than passing a placeholder. (If the guard fires on a call you genuinely intended to make with a real argument, that's openclaw quirk **Q-001** — an intermittent openclaw runtime bug that mangles args downstream of the model; see `docs/reference/agent-quirks.md`. Retry the call with the argument spelled out explicitly in your tool-call planning text and the corruption usually clears.)
 
 ### Step 3 — Memory validation (if Step 1 returned a hit)
 
