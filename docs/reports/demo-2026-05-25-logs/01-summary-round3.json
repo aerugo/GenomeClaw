@@ -1,0 +1,107 @@
+[
+{
+  "slug": "q1-serious-risk",
+  "status": "ok",
+  "wall_elapsed_s": 120,
+  "agent_duration_ms": 89247,
+  "reply_chars": 1096,
+  "tool_calls": 13,
+  "tools": [
+    "genomeclaw_status",
+    "genomeclaw_findings",
+    "memory_search",
+    "exec",
+    "write"
+  ],
+  "failures": 0,
+  "trace_file": "round3-q1-serious-risk.trace.json",
+  "reply_file": "round3-q1-serious-risk.reply.txt"
+}
+,
+{
+  "slug": "q2-drug-response",
+  "status": "ok",
+  "wall_elapsed_s": 122,
+  "agent_duration_ms": 95229,
+  "reply_chars": 1771,
+  "tool_calls": 19,
+  "tools": [
+    "genomeclaw_status",
+    "genomeclaw_findings",
+    "memory_search",
+    "genomeclaw_gene",
+    "write"
+  ],
+  "failures": 0,
+  "trace_file": "round3-q2-drug-response.trace.json",
+  "reply_file": "round3-q2-drug-response.reply.txt"
+}
+,
+{
+  "slug": "q3-diabetes",
+  "status": "ok",
+  "wall_elapsed_s": 265,
+  "agent_duration_ms": 240307,
+  "reply_chars": 1457,
+  "tool_calls": 27,
+  "tools": [
+    "update_plan",
+    "genomeclaw_status",
+    "genomeclaw_pgs_list",
+    "genomeclaw_findings",
+    "memory_search",
+    "genomeclaw_gene",
+    "genomeclaw_pgs_compute",
+    "exec",
+    "sessions_spawn",
+    "sessions_list",
+    "read",
+    "process",
+    "write"
+  ],
+  "failures": 0,
+  "trace_file": "round3-q3-diabetes.trace.json",
+  "reply_file": "round3-q3-diabetes.reply.txt"
+}
+,
+{
+  "slug": "q4-caffeine",
+  "status": "ok",
+  "wall_elapsed_s": 96,
+  "agent_duration_ms": 71931,
+  "reply_chars": 1531,
+  "tool_calls": 6,
+  "tools": [
+    "genomeclaw_status",
+    "genomeclaw_findings",
+    "memory_search",
+    "exec",
+    "write"
+  ],
+  "failures": 0,
+  "trace_file": "round3-q4-caffeine.trace.json",
+  "reply_file": "round3-q4-caffeine.reply.txt"
+}
+,
+{
+  "slug": "q5-alzheimers",
+  "status": "ok",
+  "wall_elapsed_s": 185,
+  "agent_duration_ms": 157865,
+  "reply_chars": 1417,
+  "tool_calls": 12,
+  "tools": [
+    "update_plan",
+    "genomeclaw_status",
+    "genomeclaw_pgs_list",
+    "genomeclaw_findings",
+    "memory_search",
+    "exec",
+    "write"
+  ],
+  "failures": 0,
+  "trace_file": "round3-q5-alzheimers.trace.json",
+  "reply_file": "round3-q5-alzheimers.reply.txt"
+}
+
+]

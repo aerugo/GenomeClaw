@@ -1,0 +1,18 @@
+**Short answer:** I do **not** see any curated pharmacogenomic alert in your current GenomeClaw run.
+
+I checked your active run `2026-05-24T12-52-11Z-f2dae2` and searched both the general findings table and a drug-focused list covering common PGx examples: **clopidogrel, warfarin, simvastatin/atorvastatin, codeine/tramadol, PPIs, SSRIs/TCAs, thiopurines, and fluoropyrimidines.** It returned **zero rows**.
+
+So the calibrated answer is:
+
+> **No gene-based medication warning is currently surfaced for you.**  
+> But this means “no curated alert found,” **not** “you are genetically normal for every medication.”
+
+The medication classes I’d still treat as worth checking before starting—because they have strong CPIC/FDA pharmacogenomic guidance—include:
+
+- **Clopidogrel / Plavix** — CYP2C19 affects response. ([cpicpgx.org](https://cpicpgx.org/guidelines/guideline-for-clopidogrel-and-cyp2c19/?utm_source=openai))
+- **Codeine or tramadol** — CYP2D6 can affect pain relief/toxicity patterns. ([cpicpgx.org](https://cpicpgx.org/gene/CYP2D6/?utm_source=openai))
+- **SSRIs/SNRIs/TCAs** — CYP2D6/CYP2C19 can affect exposure/tolerability for some antidepressants. ([cpicpgx.org](https://cpicpgx.org/guidelines/cpic-guideline-for-ssri-and-snri-antidepressants/?utm_source=openai))
+- **Warfarin** — CYP2C9/VKORC1 affect dosing requirements.
+- **Simvastatin** — SLCO1B1 variants can increase myopathy risk. ([fda.gov](https://www.fda.gov/medical-devices/precision-medicine/table-pharmacogenetic-associations?utm_source=openai))
+
+**Practical takeaway:** don’t change anything based on this. But if a clinician is about to prescribe one of those meds—or if you’ve had weird side effects or non-response—it’s reasonable to ask: “Do I have any actionable PGx result for this drug?”

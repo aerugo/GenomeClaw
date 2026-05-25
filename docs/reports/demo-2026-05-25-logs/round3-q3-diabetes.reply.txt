@@ -1,0 +1,14 @@
+**I can’t honestly call you “more likely” or “less likely” yet.** Your genome scan showed **no obvious diabetes-related DNA red flag**, but the polygenic score needed for the average-vs-above/below-average answer did not produce a retrievable percentile.
+
+What I found in your run:
+
+- **No curated type-2 diabetes/metabolic findings**.
+- Diabetes panel genes queried: **TCF7L2, HNF1A, HNF4A, GCK, MC4R, FTO, PPARG, KCNJ11, GLP1R, IRS1**.
+- All returned **0 surfaced variants**.
+- Coverage looked generally usable: e.g. **FTO ~33.9×, PPARG ~34.2×, KCNJ11 ~31.9×, MC4R ~30.0×, IRS1 ~28.5×**.
+- Caveat: **TCF7L2, HNF1A, and GCK had some low-coverage exons**, so this is not a perfect negative call.
+
+I also attempted the canonical type-2 diabetes PRS, **PGS000014 / GPS_T2D**. PGS Catalog lists it as a type-2 diabetes score with ~6.9M variants, developed from Khera et al. 2018. ([pgscatalog.org](https://www.pgscatalog.org/score/PGS000014/?utm_source=openai)) Khera’s paper reported that ~3.5% of people could be identified at >3× T2D risk by genome-wide score, but that requires an actual percentile/result for you. ([pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov/30104762/?utm_source=openai))
+
+**Bottom line:**  
+Your DNA currently shows **no clear high-impact diabetes warning**, but I **cannot determine above- vs below-average T2D risk** until the PRS result is retrievable. Treat this as: **“no red flag found,” not “genetically low risk.”**

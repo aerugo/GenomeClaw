@@ -1,0 +1,14 @@
+**I can’t honestly classify your Alzheimer’s risk as higher or lower than average yet.** What I can say is: **I found no obvious Alzheimer’s/neurodegeneration DNA red flag** in the current GenomeClaw data.
+
+Your results:
+- **No curated Alzheimer’s/neurodegeneration findings**.
+- Gene panel checked: **APP, PSEN1, PSEN2, APOE, MAPT, GRN, C9orf72, LRRK2, SNCA, GBA, HTT**.
+- All had **0 surfaced variants**.
+- Coverage was generally usable, though a few exons were low coverage, including **APOE exons 1–2**, **PSEN2 exon 5**, **GRN exon 5**, and **SNCA exon 4**.
+
+The big caveat: Alzheimer’s risk is heavily influenced by **APOE**, especially **APOE ε4**. APOE ε4 increases risk but is not deterministic; GeneReviews summarizes ε3/ε4 at roughly ~3× risk and ε4/ε4 at much higher risk, while also emphasizing APOE is neither fully predictive nor required for Alzheimer’s. 
+
+I tried to compute the Alzheimer’s PRS **PGS000334**, but although the compute task reached `done`, the result endpoint did not return a percentile. PGS000334 is a late-onset Alzheimer’s disease score, but without your percentile I can’t call you above or below average. 
+
+**Bottom line:**  
+No clear inherited Alzheimer’s red flag was found, but I **cannot say “lower than average” or “higher than average”** from the current data surface. The missing pieces are: **explicit APOE genotype** and/or a retrievable **Alzheimer’s PRS percentile**.

@@ -1,0 +1,17 @@
+**Your DNA data does not currently show a clear caffeine warning.** In your active run, there were **no curated lifestyle/caffeine findings**. The main caffeine-metabolism gene I could check, **CYP1A2**, had **0 surfaced variants**, mean coverage **~25.9×**, and **no low-coverage exons**.
+
+But: that does **not** prove you’re a “fast caffeine metabolizer.” The current GenomeClaw surface did **not** give me a direct CYP1A2 caffeine SNP result, and **ADORA2A/AHR**—more relevant to caffeine anxiety/sleep sensitivity—weren’t retrievable from the gene-summary endpoint.
+
+**Practical answer:** yes, I’d test an earlier cutoff, but as a sleep experiment rather than a DNA-driven rule.
+
+A good protocol:
+
+- For **2 weeks**, keep your morning coffee the same.
+- Stop caffeine after **noon** — or at least **8 hours before bedtime**.
+- Track: sleep-onset time, night awakenings, next-day alertness, anxiety/jitters/palpitations.
+- If there’s **no measurable improvement**, try relaxing to a **2pm cutoff**.
+- If sleep improves, keep the earlier cutoff.
+
+Why this is reasonable: a controlled study found that **400 mg caffeine even 6 hours before bedtime significantly disrupted sleep**, so timing can matter even when genetics doesn’t flag anything obvious.  ADORA2A variants have also been linked to caffeine-induced anxiety/sensitivity, but I don’t have a clear ADORA2A result for you here. 
+
+**Bottom line:** no DNA-based reason to quit coffee; do a **noon cutoff trial** if sleep quality, anxiety, or late-day alertness is an issue.

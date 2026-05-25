@@ -1,0 +1,7 @@
+I checked your active GenomeClaw run `2026-05-24T12-52-11Z-f2dae2`: **I found no curated clinical-actionable findings and no high-impact finding flagged for doctor escalation**.
+
+What that means: there is **nothing obvious in the curated GenomeClaw findings table** that I’d say “bring this variant to a doctor now.” This is **not** the same as a clinical-grade “all clear” — variant interpretation changes, and some hard variant types/regions may not be fully represented — but the serious/actionable screen came back empty.
+
+For context, the ACMG secondary-finding framework is the standard benchmark for medically actionable findings in clinical exome/genome sequencing: labs are generally expected to report known/expected pathogenic variants in defined actionable genes when found. ([nature.com](https://www.nature.com/articles/s41436-021-01171-4?utm_source=openai))
+
+If you have a strong family history, symptoms, or a specific concern — cancer, heart disease, neurodegeneration, vision loss, etc. — I’d do a focused gene/PRS scan rather than relying on this broad “anything serious?” pass.
