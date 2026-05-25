@@ -49,7 +49,14 @@ These are the infrastructure problems from the [original 2026-05-24 session](gen
 
 These are the agent-tool bugs that surfaced in the original session — both flagged as deferred follow-ups (not in `onboard-persistent-agent-fix` scope):
 
-### `genomeclaw_pgs_compute` ack-without-row — STILL REPRODUCES
+### `genomeclaw_pgs_compute` ack-without-row — FIXED 2026-05-25
+
+> **Update 2026-05-25 (post-verification)**: Root-caused + fixed via the [investigate-pgs-compute-ack-without-row plan](../plans/completed/investigate-pgs-compute-ack-without-row/). The orchestrator's missing-`prs_compute_config.json` path no longer no-ops to `done` — it now raises `PrsComputeConfigMissingError`, which the worker maps to `failed:prs_compute_config_missing`. Full RCA: [docs/reports/pgs-compute-ack-without-row-rca.md](pgs-compute-ack-without-row-rca.md). The pre-fix evidence (5 reproductions across Rounds 1-3 and 13 legacy `done`-without-row task rows on disk) is preserved below as the diagnostic record that motivated the plan.
+>
+> What was below this banner was the original "STILL REPRODUCES" finding from the Round 3 verification.
+
+#### Pre-fix evidence (preserved)
+
 
 Two independent confirmations in Round 3:
 

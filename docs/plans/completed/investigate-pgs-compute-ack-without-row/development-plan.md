@@ -1,8 +1,9 @@
 # Investigate PGS Compute Ack-Without-Row — Development Plan
 
-**Status**: Draft
+**Status**: Complete
 **Created**: 2026-05-25
-**Branch**: `feature/investigate-pgs-compute-ack-without-row` (TBD)
+**Completed**: 2026-05-25
+**Branch**: implemented directly on `main`
 **Spec**: [spec.md](spec.md)
 
 ---
@@ -187,9 +188,9 @@ After implementation is complete:
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| Phase 1 | Pending | | | Reproduce + diagnose |
-| Phase 2 | Pending | | | Fix + RCA |
-| Phase 3 | Pending | | | Regression coverage + live verification |
+| Phase 1 | Complete | 2026-05-25 | 2026-05-25 | RED reproduction landed; hypothesis #4 pinned (missing prs_compute_config.json → noop → done); reproduction lives in `tests/integration/test_pgs_compute_ack_without_row_repro.py` |
+| Phase 2 | Complete | 2026-05-25 | 2026-05-25 | Family A fix landed (lifespan raises PrsComputeConfigMissingError → `failed:prs_compute_config_missing`); RCA brief at `docs/reports/pgs-compute-ack-without-row-rca.md`; 40/40 PGS tests green; 0 new regressions |
+| Phase 3 | Complete | 2026-05-25 | 2026-05-25 | INV-R002 invariant test (cross-table walk; legacy allowlist for 2 pre-fix runs) + 2 structured-failure positive tests; 4/4 plan tests green; full sweep clean except 2 pre-existing port-drift failures |
 
 ---
 

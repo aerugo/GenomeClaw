@@ -61,41 +61,136 @@
 ## Phase Progress
 
 ### Phase 1: Reproduce + Diagnose
-**Status**: Pending
+**Status**: Complete
+**Started**: 2026-05-25
+**Completed**: 2026-05-25
 
 #### Test Results
 ```text
-(pending)
+tests/integration/test_pgs_compute_ack_without_row_repro.py
+  test_invR002_pgs_compute_without_config_does_not_silently_mark_done   FAILED
+
+E   AssertionError: INV-R002 violation: pgs_compute_tasks marked status=done for PGS000014, but pgs_scores has 0 matching rows.
+E   assert 0 >= 1
+
+WARNING genomeclaw_toolkit.service.app:app.py:211
+  prs_compute_config.json missing; PGS compute worker will queue + ack tasks
+  but cannot run real compute. prs_compute_config.json not found at
+  /private/var/folders/.../derived/2026-05-25T00-00-00Z-ackwithoutrow/prs_compute_config.json;
+  stage it before starting the host service.
+
+1 failed in 0.50s
 ```
+RED confirmed for the right reason. The test reproduces the bug deterministically in <1s, no LLM, no real pgsc_calc invocation needed.
+
+#### Results
+- Diagnostic evidence from operator's real run (`2026-05-24T12-52-11Z-f2dae2`):
+  - **11 tasks in `pgs_compute_tasks.sqlite`, all marked `done`, all completed in <2 seconds**. A real LDpred compute for PGS000014 (6.9M variants) cannot complete in 2 seconds — proves the worker is not actually running `pgsc_calc`.
+  - **0 rows in `pgs_scores`** despite 11 tasks marked `done`.
+  - Real schema (vs my plan's assumed schema): `pgs_compute_tasks` uses single `error TEXT NULL` column + `requested_at` (NOT `enqueued_at` + `error_class` + `error_message` as the plan assumed).
+- Code-path trace:
+  - `app.py:_lifespan` (lines 207-243) reads `prs_compute_config.json` from the active run-dir. If missing → catches `PrsComputeConfigMissingError` → logs WARNING → leaves `compute_fn = None`.
+  - `pgs_compute_worker_lifespan` (orchestrator:670) defaults `compute_fn = _dispatch_compute` when caller passes None.
+  - `_dispatch_compute` (orchestrator:339-348) is `await _noop_compute_fn(task)`.
+  - `_noop_compute_fn` (orchestrator:334-336) is `await asyncio.sleep(0); return`.
+  - Worker loop (orchestrator:616-617): `await compute_fn(claimed); _mark_done(db_path, claimed.task_id)`. `_mark_done` runs unconditionally after `compute_fn` returns without raising.
+  - Comparison: the kill-switch path (line 589-603) CORRECTLY handles `compute_enabled_fn() == False` by claiming-then-marking-failed with `error="compute_path_disabled"`. The missing-config path lacks the equivalent gate.
+- Reproduction test created at `packages/toolkit/tests/integration/test_pgs_compute_ack_without_row_repro.py`. Uses the existing `_stage_run_with_config` pattern from `test_pgs_compute_worker_integration.py` but OMITS the `prs_compute_config.json` write — mirrors the operator's actual state.
 
 #### Notes
-- (pending)
+- **Confirmed hypothesis**: hypothesis #4 ("compute genuinely failed silently"), with a structural refinement: the compute never *attempted* — the missing-config path short-circuits to noop AND treats noop's return as success. The bug isn't in `_real_compute_fn`; it's in the no-op fallback being treated as a valid compute path.
+- **Ruled out**:
+  - Hypothesis #1 (write happened but to wrong place): no write happened at all — `pgs_scores` is empty for ALL 11 tasks, not just some.
+  - Hypothesis #2 (run-id mismatch): the active-run resolution is consistent at the app layer; the read endpoint and the worker both target the same `derived_root`.
+  - Hypothesis #3 (active-run-CURRENT shift): the CURRENT symlink has been stable for 11 task lifecycles; not a transient race.
+  - Hypothesis #5 (read-side filter excludes valid row): no row exists to be filtered.
+  - Hypothesis #6 (cache invalidation on re-enqueue): every task has a distinct `task_id` and `requested_at`; not a dedup short-circuit.
+- **Implication for Phase 2 fix**: the cleanest fix is to make the missing-config path emit a `failed:prs_compute_config_missing` (same shape as the existing `failed:compute_path_disabled`) instead of falling through to noop+done. Two implementation choices:
+  - (a) Add a "fail-with-error" compute_fn variant: when config is missing, `app.py:_lifespan` binds `compute_fn = functools.partial(_fail_with, "prs_compute_config_missing")` so the worker's normal try/except path marks the task failed.
+  - (b) Refuse to spawn the worker at all when config is missing, and have `POST /v1/pgs/compute` return 503 — heavier change, breaks the "queue + ack" contract.
+  - **Lean (a)**: minimal diff, preserves the existing service shape, the agent's polling sees a clear error class.
+- The schema mismatch in my plan (assumed `error_class` + `error_message`; actual is a single `error` column) means Phase 2's fix can fit the existing schema — no migration needed. The structured-error string can be the `error_class` value alone (e.g., `"prs_compute_config_missing"`), matching the existing `"compute_path_disabled"` precedent. The longer human-readable message can stay in logs.
 
 ---
 
 ### Phase 2: Fix + RCA Brief
-**Status**: Pending
+**Status**: Complete
+**Started**: 2026-05-25
+**Completed**: 2026-05-25
 
 #### Test Results
 ```text
-(pending)
+tests/integration/test_pgs_compute_ack_without_row_repro.py
+  test_invR002_pgs_compute_without_config_does_not_silently_mark_done   PASSED
+
+tests/integration/test_pgs_compute_worker_integration.py    10 passed
+tests/integration/test_pgs_compute_worker_skeleton.py       10 passed
+tests/integration/test_pgs_compute_worker_recovery.py       10 passed
+tests/integration/test_service_pgs.py                        9 passed
+
+40 passed (full PGS-adjacent suite)
+
+Full integration suite: 611 passed, 99 skipped, 1 failed
+  (1 failure = pre-existing port 8643/8645 drift in
+   test_host_service_toolkit_image::test_shim_host_service_publishes_port_*,
+   unrelated to this plan)
 ```
 
+#### Results
+- **Family A fix** (per spec.md): the missing-config path now binds `compute_fn` to a closure that raises `PrsComputeConfigMissingError`; the worker's existing exception handler maps it through `_structured_error()` to `failed:prs_compute_config_missing`. Diff:
+  - `service/app.py` lifespan (~17 lines added) — replace the `compute_fn = None` fallthrough with explicit raising-stub binding.
+  - `service/pgs_compute_orchestrator.py::_structured_error` (~9 lines) — add `PrsComputeConfigMissingError` + `PrsComputeConfigMalformedError` mappings. Local import to avoid circular dependency.
+- **Test infrastructure update** for the noop-fallback regression:
+  - `tests/integration/test_pgs_compute_worker_skeleton.py` (~45 lines) — `_stage_run` now stages a minimal `prs_compute_config.json`; new helper `_stub_compute_fn_on_app_module(monkeypatch, fn)` patches `app._real_compute_fn` (NOT orchestrator's bound name — `app.py` has its own import). 4 tests updated.
+  - `tests/integration/test_pgs_compute_worker_recovery.py` (~30 lines) — same staging + `_real_compute_fn` patching for the 2 affected tests.
+- **RCA brief** landed at `docs/reports/pgs-compute-ack-without-row-rca.md` (200 lines).
+- Total fix-side diff: ~26 lines of production code. ~75 lines of test infrastructure updates. Well under the 100-line Phase 2 budget for production code.
+
 #### Notes
-- (pending)
+- **Phase 2 surfaced a latent test-fixture problem**: the skeleton + recovery tests were relying on the no-op fallback as a designed feature, not as the missing-config bug. The fix exposed this — 6 tests regressed in the first run. Fix shape preserves their intent (test worker scaffolding without exercising real compute) but routes them through the production binding path (`_real_compute_fn` monkeypatched to a no-op).
+- **Monkeypatch path subtlety**: `app.py` imports `_real_compute_fn` at module-load time and the lifespan wraps it in `functools.partial(_real_compute_fn, ...)` at TestClient-enter time. The partial captures the function object resolved from `app.py`'s bound name — NOT the orchestrator module's attribute. So `monkeypatch.setattr(pgs_compute_orchestrator, "_real_compute_fn", X)` would have NO effect; tests must patch `"genomeclaw_toolkit.service.app._real_compute_fn"` directly. Documented in the new `_stub_compute_fn_on_app_module` helper.
+- **No new error class added**: `PrsComputeConfigMissingError` + `PrsComputeConfigMalformedError` already existed in `service/pgs_compute_config.py`. Reused.
+- **Operator action still required**: this fix changes the failure shape from "silent no-op done" to "structured failure". For the operator's actual PRS compute to work, they still need to stage `prs_compute_config.json` for their active run. The fix makes that requirement legible to the agent + the user instead of hidden behind a misleading `done` state.
 
 ---
 
 ### Phase 3: Regression Coverage + Live Verification
-**Status**: Pending
+**Status**: Complete
+**Started**: 2026-05-25
+**Completed**: 2026-05-25
 
 #### Test Results
 ```text
-(pending)
+tests/invariants/test_invR002_pgs_compute_task_row_consistency.py
+  test_invR002_pgs_compute_done_implies_pgs_scores_row                                              PASSED
+
+tests/integration/test_pgs_compute_structured_failure_path.py
+  test_compute_fn_raise_transitions_task_to_failed_not_done                                         PASSED
+  test_compute_fn_raises_prs_compute_config_missing_transitions_to_structured_failed                PASSED
+
+tests/integration/test_pgs_compute_ack_without_row_repro.py
+  test_invR002_pgs_compute_without_config_does_not_silently_mark_done                               PASSED
+
+4 passed (all 4 plan tests across all 3 phases)
+
+Full integration + invariants sweep: 654 passed, 128 skipped, 2 failed
+  (2 failures = pre-existing port 8643/8645 drift in
+   test_host_service_toolkit_image::test_shim_host_service_publishes_port_*
+   AND test_invP002_policy_preset_targets_host_openshell_internal, both
+   unrelated to this plan and present on the parent commit)
 ```
 
+#### Results
+- `tests/invariants/test_invR002_pgs_compute_task_row_consistency.py` (NEW, ~140 lines): walks every discoverable run dir under `$GENOMECLAW_DERIVED_DIR` (default `/Volumes/Genome_Work/genomeclaw/derived/`); for each, asserts every `pgs_compute_tasks.status='done'` row has a corresponding `pgs_scores` row with non-null `percentile_in_user_ancestry`. Skips cleanly if the mount isn't there (CI safe). Allowlist (`GENOMECLAW_PGS_LEGACY_OK_RUN_IDS`) excludes two pre-fix legacy runs (`2026-05-24T11-05-35Z-25dfaa`, `2026-05-24T12-52-11Z-f2dae2`) where the diagnostic record sits.
+- `tests/integration/test_pgs_compute_structured_failure_path.py` (NEW, ~160 lines): two positive tests covering the worker-loop-layer rule:
+  - Any raise from compute_fn → `status=failed` with `error` carrying `worker_unexpected_error:<ClassName>` (NEVER `done`).
+  - A `PrsComputeConfigMissingError` raise → `status=failed`, `error='prs_compute_config_missing'` (the specific mapping the Phase 2 fix added).
+- Live verification: not re-run via the Round 3 driver this session — the operator hasn't staged `prs_compute_config.json` for the active run, so the fix's user-visible effect is "now the agent gets `failed:prs_compute_config_missing` instead of `done` with no row". Round 4 will hit that path on the next demo session. The invariant test confirms the cross-table consistency at the data layer.
+
 #### Notes
-- (pending)
+- **Legacy allowlist approach**: 13 `done`-without-row task rows exist across two prior runs (2 + 11). Rather than backfill the SQLite state (intrusive, loses diagnostic value) OR scope the test to "post-fix runs only" (vague), the test takes an explicit env-driven allowlist of run-ids that pre-date the fix. Anyone re-running PRS compute on those runs after the fix lands new clean rows; the legacy ones can be wiped manually + the run-id removed from the allowlist.
+- **Two test layers**: data-layer invariant (walks any run; catches any future regression that bypasses the orchestrator and writes inconsistent rows directly) + worker-layer integration (catches any future fix-revert that re-introduces the noop-success path). Both required for full coverage.
+- **Decision: do NOT promote a new INV**: INV-R002 already covers "Never Cache a Degenerate Result"; this plan extends the rule's enforcement to the `pgs_compute_tasks` ↔ `pgs_scores` table pair without adding a new ID. The orchestrator's structured-error mapping (`_structured_error`) is the existing pattern; the fix slots into it cleanly.
 
 ---
 

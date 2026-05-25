@@ -1,8 +1,11 @@
 # Feature: Investigate `genomeclaw_pgs_compute` ack-without-row
 
-**Status**: Draft
+**Status**: Complete
 **Created**: 2026-05-25
-**Owner**: TBD
+**Completed**: 2026-05-25
+**Owner**: aerugo / claude
+
+> **Close-out note (2026-05-25)**: Root cause was hypothesis #4 with a structural twist — missing `prs_compute_config.json` left `compute_fn = None` in the lifespan, which fell through to `_dispatch_compute → _noop_compute_fn`, which was treated as a success and the task was marked `done` without writing a row. Fix is small (~26 lines of production code): the missing-config path now binds `compute_fn` to a closure that raises `PrsComputeConfigMissingError`, and the orchestrator's `_structured_error()` gains a mapping to `prs_compute_config_missing`. The worker's existing exception handler does the rest. AC1-AC5 verified; AC6 (live re-verification) deferred until the operator stages `prs_compute_config.json` for an active run. AC7 covered by the new invariant test. Full RCA at [docs/reports/pgs-compute-ack-without-row-rca.md](../../../reports/pgs-compute-ack-without-row-rca.md).
 **Related Plans**: completed [agent-prs-compute-fix](../../completed/agent-prs-compute-fix/) (earlier PRS-compute work; check it didn't already fix this)
 **Source reports**:
 - [genomeclaw-demo-questions-2026-05-24.md § Round-1 observations](../../../reports/genomeclaw-demo-questions-2026-05-24.md#round-1-observations)
