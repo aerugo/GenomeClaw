@@ -1,8 +1,9 @@
 # Onboard Persistent Agent Fix — Development Plan
 
-**Status**: Draft
+**Status**: Complete
 **Created**: 2026-05-24
-**Branch**: `feature/onboard-persistent-agent-fix`
+**Completed**: 2026-05-25
+**Branch**: implemented directly on `main` (commits `b63e27d..83b0a37` + the smoke-test fix)
 **Spec**: [spec.md](spec.md)
 
 ---

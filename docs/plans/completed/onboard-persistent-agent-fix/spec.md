@@ -1,10 +1,13 @@
 # Feature: Onboard Persistent Agent Fix
 
-**Status**: Draft
+**Status**: Complete
 **Created**: 2026-05-24
+**Completed**: 2026-05-25
 **Owner**: aerugo / claude
 **Related Plans**: completed [agent-research-and-synthesis](../../completed/agent-research-and-synthesis/) (bakes the sandbox image; this plan extends what it bakes)
 **Source report**: [docs/reports/genomeclaw-demo-questions-2026-05-24.md](../../../reports/genomeclaw-demo-questions-2026-05-24.md)
+
+> **Close-out note (2026-05-25)**: AC1-AC7 verified end-to-end. AC2's literal CLI path (`nemoclaw genomeclaw exec --no-tty -- bash -c 'openclaw agent ...'`) turned out to be broken in current nemoclaw — see [work-notes.md § 2026-05-25 verification session](work-notes.md) for the two upstream failure modes. The plan delivers the equivalent functional outcome via `docker exec --user sandbox -e HOME=/sandbox -e OPENAI_API_KEY=...` (which is also the path the rest of the script uses for config writes). README + script smoke-test updated accordingly.
 
 ---
 

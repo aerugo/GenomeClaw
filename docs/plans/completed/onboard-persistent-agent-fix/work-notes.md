@@ -103,6 +103,69 @@
 
 ---
 
+### 2026-05-25 — End-to-end verification session (closes the plan)
+
+**Context Review Completed**:
+- Re-read [spec.md AC1/AC2/AC7](spec.md) for verification targets.
+- Confirmed current state: `genomeclaw` sandbox from yesterday's debug session was registered but had been set up via manual `docker exec` workarounds, NOT via the now-fixed canonical script — so re-onboarding via `./scripts/onboard-sandbox.sh` was the actual verification step.
+
+**Applicable Invariants** (reaffirmed):
+- INV-P001 (no API key on argv), INV-P003 (the new invariant), INV-D006 (Phase 3 detection layer).
+
+**Verification run** (`./scripts/onboard-sandbox.sh` from a clean-ish start):
+- Pre-build plugin TypeScript ✓
+- Toolkit image present (cache hit) ✓
+- `nemoclaw onboard --fresh --recreate-sandbox --from <shim>` succeeded; new container `openshell-genomeclaw-e574cde0-...` spawned ✓
+- Policy preset applied ✓
+- Auth-profile written via `docker exec -i ... cat > .../auth-profiles.json` (stdin path; never argv) ✓
+- `models.json` patched via `docker exec -i ... python3 -c '...'` (no secret in argv) ✓
+- Gateway killed + restarted with `docker exec -d -e OPENAI_API_KEY=... openclaw gateway run` ✓
+- Gateway bound 0.0.0.0:18789 within 30s ✓; plugin loaded with 9 tools ✓
+- Smoke test (initial) FAILED with `Error: command argument 2 contains newline or carriage return characters` — see "Discoveries" below.
+
+**Manual verification (bypassing the broken smoke test)**:
+- `nemoclaw list` shows `genomeclaw` next to `devrelclaw` (AC1 ✅)
+- `docker exec -i -e HOME=/sandbox -e OPENAI_API_KEY=$KEY --user sandbox $CID bash -c 'openclaw agent --local --json --agent genomeclaw --message "Smoke test..."'` returns `status=ok`, `toolSummary.calls=1`, `tools=["genomeclaw_status"]`, `failures=0`. Reply text: *"The active run id is `2026-05-24T12-52-11Z-f2dae2`."* (AC2 functionally ✅)
+- `docker exec --user sandbox $CID cat /sandbox/.openclaw/agents/genomeclaw/agent/auth-profiles.json | python3 -m json.tool` parses cleanly; `profiles.openai/gpt-5.5.key` non-empty (AC7 ✅)
+- Phase 1 invariant tests pass against the freshly rebuilt image: 6/6 (AC3 + AC4 ✅)
+- Phase 2 invariant tests pass against the rewritten script: 3/3 (AC5 ✅)
+- Phase 3 doctor tests pass: 6/6; manual run against the operator's actual `~/.colima/default/colima.yaml` (which has `mounts: []`) would have warned about derived dir uncovered (AC6 ✅)
+
+**Discoveries during verification — `nemoclaw genomeclaw exec` is broken upstream**:
+
+Two distinct failure modes in current nemoclaw make the originally-spec'd smoke test path (`nemoclaw genomeclaw exec --no-tty -- bash -c '...'`) unusable:
+
+1. **Multi-line `bash -c` arg rejected at the gRPC layer**: `Error: status: InvalidArgument, message: "command argument 2 contains newline or carriage return characters"`. The script's smoke test was multi-line (line-continued with `\`).
+2. **Even single-line `bash -c 'openclaw agent ...'` fails**: the agent client inside the openshell-exec wrapper can't reach the in-container gateway over WebSocket (`Gateway target: ws://127.0.0.1:18789 ... Gateway crashed or was terminated unexpectedly`), even though the gateway IS bound on `0.0.0.0:18789` inside the same container and `docker exec` can reach it. Likely the openshell-exec wrapper's kernel-level filesystem/socket restriction (analogous to the `/opt/genomeclaw` EACCES diagnosed yesterday) also blocks loopback WS to the gateway.
+
+This is the **same EACCES-class openshell-wrapper issue** that motivated Phase 2's pivot from `nemoclaw exec` to `docker exec` for the config writes — but the smoke-test step (and the README's "Talk to the agent" example) still used the broken path.
+
+**Fix applied in this session** (small, in-scope):
+
+- `scripts/onboard-sandbox.sh` step 8 rewritten: smoke test now uses `docker exec -i -e HOME=/sandbox -e OPENAI_API_KEY=... --user sandbox $CID bash -c 'openclaw agent ...'`. Same env-passes-via-env-not-argv pattern as the rest of the script. Includes a long explanatory comment.
+- `scripts/onboard-sandbox.sh` "Next steps" hint updated: the operator-facing example now shows the `docker exec` recipe instead of the broken `nemoclaw exec` one.
+- `README.md` "Talk to the agent" example (`#### 4`) rewritten to use `docker exec` + a 4-line explanation of why nemoclaw exec is broken in current versions + a pointer back to this work-notes for the diagnosis.
+
+**Re-ran the script after the fix**:
+- Smoke test landed `status=ok`, 1 tool call (`genomeclaw_status`), 0 failures, reply text names the active run id. Script exit 0 throughout.
+- 15/15 plan tests still pass (6 Phase 1 + 3 Phase 2 + 6 Phase 3).
+
+**Decisions Made**:
+- **Accept the upstream `nemoclaw exec` brokenness rather than block on an upstream fix.** Spec AC2's literal CLI path is now obsolete in current nemoclaw; we deliver the equivalent functional outcome via `docker exec`. Updated AC2 in spirit (verified the smoke-test operational behavior) without rewriting the spec — the spec is now a historical record of intent.
+- **Documented the upstream issue in both the script and README** so any future contributor doesn't waste time re-discovering it.
+
+**Plan close-out actions**:
+1. Move `docs/plans/active/onboard-persistent-agent-fix/` to `docs/plans/completed/onboard-persistent-agent-fix/`.
+2. Commit the fix + plan-move + push.
+3. **Open follow-up plans** (deferred — not blocking this close-out):
+   - `genomeclaw_pgs_compute` ack-without-row bug
+   - `genomeclaw_gene` argument-serialization bug
+   - File an upstream nemoclaw issue for the two `nemoclaw genomeclaw exec` failure modes (multi-line gRPC rejection + WS-connection failure inside the openshell-exec wrapper).
+
+**Status**: Plan complete.
+
+---
+
 ## Phase Progress
 
 ### Phase 1: Bake the Persistent-Path Config Into the Sandbox Dockerfile
