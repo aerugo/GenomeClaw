@@ -92,6 +92,19 @@ RUN npm run build
 RUN chown -R sandbox:sandbox /opt/genomeclaw
 USER sandbox
 WORKDIR /sandbox
+
+# `openclaw config` resolves its config root from $HOME (defaulting to
+# /root/.openclaw if HOME is unset). The base image leaves HOME unset for
+# user `sandbox`, so without this ENV, every `openclaw config set` issued
+# at build time (and worse, at runtime via docker exec / nemoclaw exec)
+# tries to write /root/.openclaw and EACCESes because uid 998 can't write
+# /root. Surfaced 2026-05-24 during the onboard-persistent-agent-fix demo:
+# every post-install `openclaw config set` failed with
+# `EACCES: permission denied, mkdir '/root/.openclaw'`. Setting HOME here
+# fixes the build-time and the runtime path in one line. See
+# docs/plans/active/onboard-persistent-agent-fix/.
+ENV HOME=/sandbox
+
 RUN openclaw plugins install /opt/genomeclaw --link
 
 # `INV-P001` v1.7 (per agent-research-and-synthesis Phase 2b, 2026-05-15):
@@ -119,6 +132,50 @@ RUN openclaw plugins install /opt/genomeclaw --link
 # by tests/invariants/test_invP001_sandbox_web_egress_contract.py.
 RUN openclaw config set tools.web.search.enabled true \
  && openclaw config set tools.web.fetch.enabled false
+
+# Persistent-path runtime config (onboard-persistent-agent-fix, 2026-05-24):
+# the `nemoclaw genomeclaw exec` wrapper runs commands inside openshell's
+# filesystem-restriction layer that EACCESes on `/opt/genomeclaw`, so any
+# post-install `openclaw config set ...` issued by the operator's onboard
+# script fails. We bake the four keys that script used to set into the
+# image at build time (where the USER-sandbox-with-HOME-set context can
+# actually write to /sandbox/.openclaw). Without these bakes:
+#   - missing gateway.mode → "Gateway start blocked: existing config is
+#     missing gateway.mode" + gateway refuses to start
+#   - missing plugins.allow → plugin loaded but disabled, 0 tools surfaced
+#   - missing hostService.baseUrl → plugin defaults wrong, ECONNREFUSED
+#     on every tool call
+# Verified by tests/invariants/test_invP001_sandbox_baked_config_persistent_path.py.
+RUN openclaw config set gateway.mode local \
+ && openclaw config set plugins.allow '["genomeclaw"]' \
+ && openclaw config set plugins.entries.genomeclaw.config.hostService.baseUrl \
+      "http://host.openshell.internal:${GENOMECLAW_HOST_PORT}" \
+ && openclaw config set plugins.entries.genomeclaw.config.hostService.timeoutMs 30000
+
+# OpenAI provider entry — bake baseUrl + models + auth profile together
+# via `openclaw config set --batch-file`. Single-key sets fail the
+# validator's cross-field check (baseUrl requires models, models requires
+# baseUrl — circular for individual sets but resolvable in a batch). The
+# values mirror what the live-smoke harness sets via
+# _build_openclaw_config_batch in packages/toolkit/tests/_live_smoke/run.py
+# so both execution paths configure the provider the same way.
+# Single RUN that writes the batch file via printf (portable across docker
+# builders; heredoc-RUN requires BuildKit which we don't assume here),
+# applies it, and cleans up. The JSON is a single line so printf's %s works.
+RUN printf '%s' '[{"path":"models.providers.openai.baseUrl","value":"https://api.openai.com/v1"},{"path":"models.providers.openai.models","value":[{"id":"gpt-5.5","name":"GPT 5.5","api":"openai-responses","contextWindow":200000,"maxTokens":16384}]},{"path":"auth.profiles.openai_default.provider","value":"openai"},{"path":"auth.profiles.openai_default.mode","value":"api_key"}]' \
+      > /tmp/openai-provider.json \
+ && openclaw config set --batch-file /tmp/openai-provider.json \
+ && rm /tmp/openai-provider.json
+
+# Bind the OpenAI provider's apiKey to the OPENAI_API_KEY env var at
+# runtime. The gateway process reads the key from its env at startup
+# (operator passes it via `docker exec -e OPENAI_API_KEY=...` per the
+# onboard script). The literal key NEVER lands in this image layer —
+# only the ref-to-env-var-name lands. This makes the built image safe
+# to push to a private registry without leaking the operator's credential.
+# Ref shape (verified empirically): {"source":"env","provider":"default","id":"OPENAI_API_KEY"}.
+RUN openclaw config set models.providers.openai.apiKey \
+      --ref-provider default --ref-source env --ref-id OPENAI_API_KEY
 
 # `INV-A002` synthesis-reasoning floor (agent-research-and-synthesis Phase 3
 # slice 5, 2026-05-15): health-interpretation turns compose at the maximum
