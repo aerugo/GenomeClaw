@@ -394,6 +394,19 @@ def _structured_error(exc: Exception) -> str:
     branch on. Unknown exceptions fall through to
     ``worker_unexpected_error:<ExceptionClass>``.
     """
+    # Local import to avoid a circular dependency: service.pgs_compute_config
+    # depends on this module's types, so we can't import the config-error
+    # classes at module-load time. The lifespan-bound compute_fn raises one
+    # of these when the sidecar config is missing/malformed; this mapping
+    # makes the agent-facing error class stable + parseable.
+    from genomeclaw_toolkit.service.pgs_compute_config import (
+        PrsComputeConfigMalformedError,
+        PrsComputeConfigMissingError,
+    )
+    if isinstance(exc, PrsComputeConfigMissingError):
+        return "prs_compute_config_missing"
+    if isinstance(exc, PrsComputeConfigMalformedError):
+        return f"prs_compute_config_malformed:{exc}"
     if isinstance(exc, PgsScorefileMissingError):
         return f"scorefile_missing:{exc.pgs_id}"
     if isinstance(exc, PgsScorefileUnfetchableError):

@@ -45,7 +45,18 @@ _SAMPLE = "phase5-fixture"
 
 
 def _stage_run(tmp_path: Path) -> tuple[Path, Path]:
-    """Stage a derived/<run-id>/ with manifest + tasks DB. Returns (derived_root, run_dir)."""
+    """Stage a derived/<run-id>/ with manifest + tasks DB + prs_compute_config sidecar.
+
+    The sidecar is staged with synthetic paths so the worker's lifespan
+    binds the real compute path (``_real_compute_fn``) instead of falling
+    through to the ``prs_compute_config_missing`` failure path that the
+    investigate-pgs-compute-ack-without-row fix introduced
+    (orchestrator-side, 2026-05-25). Tests that want to control compute
+    behaviour monkeypatch ``_real_compute_fn``; the noop fallback is no
+    longer a test-fixture surface.
+
+    Returns ``(derived_root, run_dir)``.
+    """
     derived_root = tmp_path / "derived"
     derived_root.mkdir()
     run_dir = derived_root / _RUN_ID
@@ -55,6 +66,21 @@ def _stage_run(tmp_path: Path) -> tuple[Path, Path]:
     )
     create_store(run_dir / "variants.duckdb")
     create_pgs_compute_tasks_db_if_missing(run_dir / "pgs_compute_tasks.sqlite")
+    (run_dir / "prs_compute_config.json").write_text(
+        json.dumps(
+            {
+                "sample_id": _SAMPLE,
+                "cram_path": str(tmp_path / "sample.cram"),
+                "reference_root": str(tmp_path / "reference"),
+                "scorefile_root": str(tmp_path / "scorefiles"),
+                "work_dir_root": str(tmp_path / "work"),
+                "panel_version": "v1",
+                "sites_tsv": str(tmp_path / "reference" / "sites.tsv"),
+                "alleles_tsv": str(tmp_path / "reference" / "alleles.tsv"),
+                "fasta": str(tmp_path / "reference" / "genome.fa"),
+            }
+        )
+    )
     update_current_symlink(derived_root, _RUN_ID)
     return derived_root, run_dir
 
@@ -224,6 +250,10 @@ def test_log_line_on_task_done(tmp_path: Path, monkeypatch, caplog) -> None:
     monkeypatch.setenv("GENOMECLAW_PGS_WORKER_POLL_INTERVAL_S", "0.02")
     derived_root, _ = _stage_run(tmp_path)
 
+    async def noop_compute(*_args, **_kwargs):
+        pass
+    monkeypatch.setattr("genomeclaw_toolkit.service.app._real_compute_fn", noop_compute)
+
     app = build_app(derived_root=derived_root)
     with caplog.at_level(logging.INFO, logger=_ORCHESTRATOR_LOGGER):
         with TestClient(app) as client:
@@ -242,12 +272,19 @@ def test_log_line_on_task_failed(tmp_path: Path, monkeypatch, caplog) -> None:
 
     monkeypatch.setenv("GENOMECLAW_PGS_WORKER_POLL_INTERVAL_S", "0.02")
 
-    # Stub the no-op so the kill-switch-off path doesn't fire; instead the
-    # worker invokes a compute_fn that raises a known structured error.
-    async def failing_compute(_task):
+    # Stub _real_compute_fn via app.py's module attribute (not the
+    # orchestrator's): app.py imports _real_compute_fn at module-load + the
+    # lifespan wraps it in functools.partial at TestClient-enter — monkey-
+    # patching the orchestrator module would NOT update the partial.
+    # (Pre-2026-05-25 the test stubbed _noop_compute_fn because the app
+    # fell through to noop when no config was staged. After the
+    # investigate-pgs-compute-ack-without-row fix the missing-config path
+    # raises PrsComputeConfigMissingError, so the test stages a config
+    # and stubs the real path.)
+    async def failing_compute(*_args, **_kwargs):
         raise RuntimeError("induced phase-5 test failure")
 
-    monkeypatch.setattr(pgs_compute_orchestrator, "_noop_compute_fn", failing_compute)
+    monkeypatch.setattr("genomeclaw_toolkit.service.app._real_compute_fn", failing_compute)
 
     derived_root, _ = _stage_run(tmp_path)
     app = build_app(derived_root=derived_root)

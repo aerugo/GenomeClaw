@@ -44,6 +44,19 @@ _RUN_ID = "2026-05-23T00-00-00Z-phase3"
 
 
 def _stage_run(derived_root: Path) -> Path:
+    """Stage a derived/<run-id>/ + a minimal prs_compute_config.json sidecar.
+
+    The sidecar is staged with synthetic paths so the worker's lifespan
+    binds the real compute path (``_real_compute_fn``). Tests that want
+    to control the compute behaviour monkeypatch
+    ``genomeclaw_toolkit.service.app._real_compute_fn`` via
+    :func:`_stub_compute_fn_on_app_module` BEFORE entering TestClient
+    (the lifespan's :class:`functools.partial` captures the attribute at
+    startup time). Pre-2026-05-25 the suite relied on the worker's
+    fallback noop path, which the investigate-pgs-compute-ack-without-row
+    fix changed to a structured-failure path; this helper updates the
+    fixture to the new world.
+    """
     run_dir = derived_root / _RUN_ID
     run_dir.mkdir(parents=True)
     (run_dir / "manifest.json").write_text(
@@ -53,8 +66,37 @@ def _stage_run(derived_root: Path) -> Path:
     )
     create_store(run_dir / "variants.duckdb")
     create_pgs_compute_tasks_db_if_missing(run_dir / "pgs_compute_tasks.sqlite")
+    (run_dir / "prs_compute_config.json").write_text(
+        json.dumps(
+            {
+                "sample_id": "phase3-fixture",
+                "cram_path": str(derived_root.parent / "sample.cram"),
+                "reference_root": str(derived_root.parent / "reference"),
+                "scorefile_root": str(derived_root.parent / "scorefiles"),
+                "work_dir_root": str(derived_root.parent / "work"),
+                "panel_version": "v1",
+                "sites_tsv": str(derived_root.parent / "reference" / "sites.tsv"),
+                "alleles_tsv": str(derived_root.parent / "reference" / "alleles.tsv"),
+                "fasta": str(derived_root.parent / "reference" / "genome.fa"),
+            }
+        )
+    )
     update_current_symlink(derived_root, _RUN_ID)
     return run_dir
+
+
+def _stub_compute_fn_on_app_module(monkeypatch, compute_fn) -> None:
+    """Replace the ``_real_compute_fn`` bound on the ``app`` module.
+
+    ``app.py`` imports ``_real_compute_fn`` at module-load time and the
+    lifespan wraps it in ``functools.partial(_real_compute_fn, ...)`` at
+    TestClient-enter time. To swap the function for a test, we patch the
+    ``app`` module's bound attribute BEFORE TestClient enters; the
+    partial then captures our stub. Monkeypatching the orchestrator
+    module's attribute does NOT work because ``app.py`` has its own
+    bound name.
+    """
+    monkeypatch.setattr("genomeclaw_toolkit.service.app._real_compute_fn", compute_fn)
 
 
 def _enqueue(client, *, pgs_id="PGS_TEST", rationale="phase-3 test rationale"):
@@ -190,6 +232,10 @@ def test_worker_drains_queued_task_to_done(tmp_path, monkeypatch):
     derived_root.mkdir()
     _stage_run(derived_root)
 
+    async def noop_compute(*_args, **_kwargs):
+        pass
+    _stub_compute_fn_on_app_module(monkeypatch, noop_compute)
+
     app = build_app(derived_root=derived_root)
     with TestClient(app) as client:
         resp = _enqueue(client)
@@ -216,7 +262,7 @@ def test_worker_concurrency_cap_one_in_flight(tmp_path, monkeypatch):
     counter = {"in_flight": 0, "max": 0}
     lock = Lock()
 
-    async def slow_compute(_task):
+    async def slow_compute(_task, **_kwargs):
         with lock:
             counter["in_flight"] += 1
             counter["max"] = max(counter["max"], counter["in_flight"])
@@ -226,7 +272,7 @@ def test_worker_concurrency_cap_one_in_flight(tmp_path, monkeypatch):
             with lock:
                 counter["in_flight"] -= 1
 
-    monkeypatch.setattr(pgs_compute_orchestrator, "_noop_compute_fn", slow_compute)
+    _stub_compute_fn_on_app_module(monkeypatch, slow_compute)
 
     derived_root = tmp_path / "derived"
     derived_root.mkdir()
@@ -278,6 +324,10 @@ def test_worker_respects_kill_switch_flipped_to_off_mid_run(tmp_path, monkeypatc
     derived_root.mkdir()
     _stage_run(derived_root)
 
+    async def noop_compute(*_args, **_kwargs):
+        pass
+    _stub_compute_fn_on_app_module(monkeypatch, noop_compute)
+
     app = build_app(derived_root=derived_root)
     with TestClient(app) as client:
         first = _enqueue(client, pgs_id="PGS_A").json()["task_id"]
@@ -307,7 +357,7 @@ def test_invA003_worker_reads_rationale_and_requested_for_question(tmp_path, mon
 
     captured: list[dict] = []
 
-    async def capturing_compute(task):
+    async def capturing_compute(task, **_kwargs):
         captured.append(
             {
                 "task_id": task.task_id,
@@ -317,7 +367,7 @@ def test_invA003_worker_reads_rationale_and_requested_for_question(tmp_path, mon
             }
         )
 
-    monkeypatch.setattr(pgs_compute_orchestrator, "_noop_compute_fn", capturing_compute)
+    _stub_compute_fn_on_app_module(monkeypatch, capturing_compute)
 
     derived_root = tmp_path / "derived"
     derived_root.mkdir()

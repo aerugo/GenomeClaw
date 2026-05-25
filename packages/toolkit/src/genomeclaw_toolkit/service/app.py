@@ -204,21 +204,47 @@ def build_app(*, derived_root: Path) -> FastAPI:
                     "Cleaned %d stale-running PGS compute task(s) on startup",
                     len(cleaned),
                 )
-            compute_fn = None  # None → pgs_compute_worker_lifespan picks the no-op default.
+            # `compute_fn` resolution:
+            #   - sidecar present + valid     → bind _real_compute_fn with the config.
+            #   - sidecar missing / malformed → bind a raising stub so the worker's
+            #                                   normal except path marks tasks
+            #                                   `failed:prs_compute_config_{missing,malformed}`.
+            #
+            # Before this change (investigate-pgs-compute-ack-without-row plan,
+            # 2026-05-25): missing-sidecar left compute_fn=None, which the
+            # orchestrator silently fell through to a no-op compute that
+            # marked every task `done` without writing a pgs_scores row. The
+            # agent then saw `done` and a no-result, called it "the compute
+            # task reached done, but the result endpoint did not return a
+            # percentile" — surfaced 5 times across two demo sessions on
+            # PGS000014 + PGS000334.
+            compute_fn = None
             try:
                 prs_config = load_prs_compute_config(run_dir)
             except PrsComputeConfigMissingError as exc:
                 _LOG.warning(
-                    "prs_compute_config.json missing; PGS compute worker will queue + "
-                    "ack tasks but cannot run real compute. %s",
+                    "prs_compute_config.json missing; PGS compute worker will "
+                    "transition every enqueued task to failed:prs_compute_config_missing "
+                    "so the agent gets a clear actionable signal. %s",
                     exc,
                 )
+                # Capture in a closure so the worker raises the right
+                # error class on each compute attempt.
+                _missing_exc = exc
+                async def _raise_missing(_task):
+                    raise _missing_exc
+                compute_fn = _raise_missing
             except PrsComputeConfigMalformedError as exc:
                 _LOG.warning(
-                    "prs_compute_config.json malformed; PGS compute worker will queue + "
-                    "ack tasks but cannot run real compute. %s",
+                    "prs_compute_config.json malformed; PGS compute worker will "
+                    "transition every enqueued task to failed:prs_compute_config_malformed "
+                    "so the agent gets a clear actionable signal. %s",
                     exc,
                 )
+                _malformed_exc = exc
+                async def _raise_malformed(_task):
+                    raise _malformed_exc
+                compute_fn = _raise_malformed
             else:
                 # Phase 4 + 2026-05-23 fix: propagate the sidecar's host-form
                 # paths to ``GENOMECLAW_HOST_ROOTS`` so
