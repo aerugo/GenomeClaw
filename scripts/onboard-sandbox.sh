@@ -277,24 +277,39 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-# ---- step 8 (UNCHANGED-ish): smoke test ---------------------------------------
+# ---- step 8: smoke test (via docker exec — see comment) ------------------------
 #
 # Hits `genomeclaw_status` which calls /v1/health on the host service. If
 # the host service isn't running this will return `no_active_run` or
 # `unreachable` — that's informative, not a failure of onboarding itself.
-# Start the host service via `bin/genomeclaw host service` in another
-# shell before issuing real questions.
+# Start the host service via `bin/genomeclaw host service` (or natively
+# via `GENOMECLAW_NATIVE=1 bin/genomeclaw host service` when colima
+# mounts don't cover the derived dir — `host doctor` warns about this).
 #
-# The smoke test uses `nemoclaw genomeclaw exec` because the openshell
-# wrapper's EACCES on /opt/genomeclaw doesn't bite for `openclaw agent`
-# (the agent client talks to the already-running gateway over WebSocket
-# and doesn't scandir /opt).
+# Historical note (2026-05-25): this used to be `nemoclaw genomeclaw exec
+# --no-tty -- bash -c 'openclaw agent ...'`. Two upstream-nemoclaw bugs
+# now make that path unusable: (a) the gRPC layer rejects multi-line
+# `bash -c` args ("command argument 2 contains newline or carriage
+# return characters"), and (b) even single-line bash -c invocations
+# can't reach the in-container gateway over WebSocket — the agent
+# client's WS connection inside the openshell-exec wrapper is rejected
+# even though the gateway is bound on 0.0.0.0:18789 inside the same
+# container. We don't fully understand why (b) — likely a kernel-level
+# filesystem-or-socket restriction analogous to the /opt/genomeclaw
+# EACCES — but `docker exec --user sandbox -e HOME=/sandbox` consistently
+# works as the bypass. The path used by the smoke test below is the
+# same one the rest of the script uses for config writes, so we know
+# it's exercised.
 
-echo "[onboard] smoke test (agent → genomeclaw_status → host service health)"
-nemoclaw genomeclaw exec --no-tty --timeout 240 -- bash -c \
-  'openclaw agent --local --json --agent genomeclaw \
-     --message "Smoke test. Call genomeclaw_status and report back in one sentence."' \
-  | tail -20 || echo "[onboard] smoke test exited non-zero — see above; not necessarily a setup failure (host service may not be running yet)"
+echo "[onboard] smoke test (agent → genomeclaw_status via docker exec)"
+SMOKE_REPLY="$(docker exec -i \
+  -e HOME=/sandbox \
+  -e OPENAI_API_KEY="${OPENAI_API_KEY}" \
+  --user sandbox \
+  "${CID}" \
+  bash -c 'openclaw agent --local --json --agent genomeclaw --message "Smoke test. Call genomeclaw_status and report the active run id in one sentence."' 2>&1)" \
+  || echo "[onboard] smoke test exited non-zero — see below; not necessarily a setup failure (host service may not be running yet)"
+echo "${SMOKE_REPLY}" | tail -30
 
 echo
 echo "[onboard] done. Next steps:"
@@ -302,8 +317,10 @@ echo
 echo "  1. Start the host service (in another shell, against your active derived run):"
 echo "       bin/genomeclaw host service"
 echo
-echo "  2. Talk to the agent:"
-echo "       nemoclaw genomeclaw exec --no-tty --timeout 240 -- bash -c 'openclaw agent --local --json --agent genomeclaw --message \"...\"'"
+echo "  2. Talk to the agent (docker exec is the working path; see step 8 comment for why nemoclaw exec is broken upstream):"
+echo "       CID=\$(docker ps --filter 'name=openshell-genomeclaw-' --format '{{.Names}}' | head -1)"
+echo "       docker exec -i -e HOME=/sandbox -e OPENAI_API_KEY=\"\$OPENAI_API_KEY\" --user sandbox \"\$CID\" \\"
+echo "         bash -c 'openclaw agent --local --json --agent genomeclaw --message \"...\"'"
 echo
 echo "  3. Or open the dashboard:"
 echo "       nemoclaw genomeclaw dashboard-url"

@@ -413,10 +413,16 @@ Three surfaces:
 
 **One-shot CLI message** (programmatic, scripts, CI):
 ```bash
-nemoclaw genomeclaw exec --no-tty --timeout 240 -- bash -c \
-  'openclaw agent --local --json --agent genomeclaw \
-     --message "Do I have any risk factors for loss of eyesight?"'
+CID=$(docker ps --filter 'name=openshell-genomeclaw-' --format '{{.Names}}' | head -1)
+docker exec -i \
+  -e HOME=/sandbox \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
+  --user sandbox "$CID" \
+  bash -c 'openclaw agent --local --json --agent genomeclaw \
+             --message "Do I have any risk factors for loss of eyesight?"'
 ```
+
+We use `docker exec` here instead of the documented `nemoclaw genomeclaw exec --no-tty -- bash -c '...'` because the latter is broken in current nemoclaw: (a) the gRPC layer rejects multi-line `bash -c` args with `"command argument 2 contains newline or carriage return characters"`, and (b) even single-line invocations fail because the agent client inside the openshell-exec wrapper can't reach the in-container gateway over WebSocket. The `docker exec --user sandbox -e HOME=/sandbox` path bypasses the wrapper entirely and is the same path `scripts/onboard-sandbox.sh` uses for all its post-onboard work. See [onboard-persistent-agent-fix work-notes](docs/plans/active/onboard-persistent-agent-fix/work-notes.md) for the diagnosis.
 
 **Interactive TUI** (inside the sandbox):
 ```bash
