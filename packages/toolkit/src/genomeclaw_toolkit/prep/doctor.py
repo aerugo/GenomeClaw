@@ -737,6 +737,112 @@ def _collect_stale_colima_mounts(config_path: Path) -> list[dict[str, str]]:
     return stale
 
 
+def _collect_colima_mounts_cover_derived(
+    config_path: Path,
+    derived_dir: Path,
+) -> dict[str, Any]:
+    """Verify colima's ``mounts:`` list covers the derived dir.
+
+    Onboard-persistent-agent-fix Phase 3 — closes the failure mode where
+    the operator's ``$GENOMECLAW_DERIVED_DIR`` is on an external drive
+    that isn't in colima's ``mounts:`` list. The docker-wrapped
+    ``bin/genomeclaw host service`` then silently can't see the derived
+    dir and returns ``no_active_run``; the agent reports "no derived
+    data" without it being obvious why.
+
+    Companion to :func:`_collect_stale_colima_mounts` (same yaml read,
+    complementary concern: stale = configured-then-gone; uncovered =
+    here-but-not-shared).
+
+    Returns one of three statuses:
+
+    - ``"no_config"`` — ``~/.colima/default/colima.yaml`` doesn't exist.
+      Fresh host that hasn't run ``host setup`` yet. The stale-mount
+      check covers that case structurally; we don't duplicate the warning.
+    - ``"covers"`` — at least one ``mounts:`` entry's ``location`` is an
+      ancestor of (or equal to) ``derived_dir``. No warning.
+    - ``"uncovered"`` — yaml exists, ``derived_dir`` is not under any
+      configured mount. Doctor surfaces a warning with both fixes:
+      re-run ``bin/genomeclaw host setup`` to add the mount, OR run the
+      host service natively via ``GENOMECLAW_NATIVE=1 bin/genomeclaw
+      host service``.
+
+    Non-blocking — doctor's exit code is unaffected (matches the
+    stale-mount precedent).
+    """
+    if not config_path.exists():
+        return {
+            "status": "no_config",
+            "probed_path": str(derived_dir),
+        }
+    try:
+        import yaml
+
+        loaded = yaml.safe_load(config_path.read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        # Same defensive shape as _collect_stale_colima_mounts: a
+        # malformed yaml shouldn't crash doctor.
+        return {
+            "status": "no_config",
+            "probed_path": str(derived_dir),
+        }
+    if not isinstance(loaded, dict):
+        return {
+            "status": "no_config",
+            "probed_path": str(derived_dir),
+        }
+
+    mounts = loaded.get("mounts") or []
+    try:
+        derived_resolved = derived_dir.resolve()
+    except OSError:
+        return {
+            "status": "no_config",
+            "probed_path": str(derived_dir),
+        }
+
+    for entry in mounts:
+        if not isinstance(entry, dict):
+            continue
+        location = entry.get("location")
+        if not isinstance(location, str):
+            continue
+        # Trim trailing slashes so Path equality is stable; resolve to
+        # follow symlinks (mount entries with ~ are handled too).
+        candidate = Path(location.rstrip("/") or "/").expanduser()
+        try:
+            candidate_resolved = candidate.resolve()
+        except OSError:
+            continue
+        try:
+            derived_resolved.relative_to(candidate_resolved)
+            return {
+                "status": "covers",
+                "probed_path": str(derived_dir),
+                "covered_by": str(candidate_resolved),
+            }
+        except ValueError:
+            continue
+
+    return {
+        "status": "uncovered",
+        "probed_path": str(derived_dir),
+        "configured_mounts": [
+            entry.get("location") for entry in mounts
+            if isinstance(entry, dict) and isinstance(entry.get("location"), str)
+        ],
+        "fix": (
+            f"colima's mounts: list doesn't cover the derived dir ({derived_dir}). "
+            f"The docker-wrapped `bin/genomeclaw host service` will silently "
+            f"return no_active_run because the engine VM can't see your derived "
+            f"directory. Two fixes: re-run `bin/genomeclaw host setup` to add "
+            f"the mount, OR run the host service natively via "
+            f"`GENOMECLAW_NATIVE=1 bin/genomeclaw host service` (bypasses "
+            f"the docker mount entirely)."
+        ),
+    }
+
+
 def _collect_colima_mount_visible(raw_dir: Path, runner: _Runner) -> dict[str, Any]:
     """Probe whether Colima's VM can bind-mount the canonical raw dir.
 
@@ -886,6 +992,9 @@ def doctor(
     setup_log = _collect_setup_log(paths["scratch"])
     colima = _collect_colima(runner)
     stale_mounts = _collect_stale_colima_mounts(colima_config_path)
+    colima_mounts_cover_derived = _collect_colima_mounts_cover_derived(
+        colima_config_path, paths["derived"]
+    )
 
     # Pipeline-readiness sections. These never affect the exit code; if
     # release_sets can't load (toolkit packaging bug, etc.) we still
@@ -920,6 +1029,7 @@ def doctor(
         "setup_log": setup_log,
         "colima": colima,
         "stale_mounts": stale_mounts,
+        "colima_mounts_cover_derived": colima_mounts_cover_derived,
         "paths": {k: str(v) for k, v in paths.items()},
         "references": references_section,
         "ancestry_ready": ancestry_ready,
