@@ -1,10 +1,12 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.16
-**Last Updated**: 2026-05-24
+**Version**: 1.17
+**Last Updated**: 2026-05-25
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.17 (2026-05-25)** — **adds `INV-P003`** (Secrets Pass via stdin or env, Never via argv). Promoted from the onboard-persistent-agent-fix plan after the 2026-05-24 onboard-sandbox.sh leak — where a `nemoclaw genomeclaw exec -- python3 -c "...base64.b64decode('$PROFILE_B64')..."` crashed on a `FileNotFoundError` and dumped the operator's base64-encoded OpenAI API key into a committed report log via Python's default traceback. The leak path was structural (Python prints `-c` source verbatim on any exception); the fix is structural too — secrets transit via stdin (`docker exec -i ... cat > ...`) or env (`docker exec -e KEY=...`), never via argv. Discovery test at [packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py](../../packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py) walks `scripts/` and catches any future re-introduction of the pattern. See [docs/plans/active/onboard-persistent-agent-fix/](../plans/active/onboard-persistent-agent-fix/).
 
 **v1.16 (2026-05-24)** — **explicit-runtime-negative-case coverage layer added for `INV-P002`**. The runtime SSRF probe (ssrf-runtime-probe plan Phase 1 + 1b) ships a `@pytest.mark.live_ssrf_probe`-gated test (`packages/toolkit/tests/invariants/test_invP002_ssrf_runtime_probe.py`) that invokes a TEST-ONLY plugin tool (`genomeclaw_ssrf_probe_batch`, env-gated by `GENOMECLAW_ENABLE_SSRF_PROBE=1`) which issues a hardcoded 5-tuple probe sweep from inside the plugin's enforcement context. The ALLOW probe asserts HTTP 200 from `host.openshell.internal:8643 /v1/health` with a real body; the four DENY probes (off-port, RFC 1918 non-gateway, public hostname, public IP+non-standard port) each assert their `rejection_class` matches the per-tuple allow-set. This is the third coverage layer for INV-P002 (static YAML shape + implicit-via-live-LLM-tests were already in place). Catches policy-enforcement regression at CI time. Empirically OpenShell doesn't return a structured rejection body for L7 denies — it kills the connection — so deny probes classify as `deny_other` (generic fetch failure); sharpening the classifier would need a follow-up probe shape that's network-reachable but policy-blocked. No new invariant IDs; `INV-P002` rule text unchanged. See `docs/plans/active/ssrf-runtime-probe/` for the plan + the two openclaw runtime bugs surfaced during Path Y implementation (TypeBox array-of-object strip + Q-001 string-arg corruption).
 
@@ -349,6 +351,31 @@ Other remote integrations (alternative annotators, telemetry, crash reporting) a
 
 ---
 
+## INV-P003: Secrets Pass via stdin or env, Never via argv
+
+**Rule** *(v1.17, 2026-05-24)*: Any code that handles operator-supplied secrets (API keys, OAuth tokens, signed URLs containing credentials, signing keys) MUST transport them into a subprocess via stdin (`docker exec -i ... bash -c 'cat > ...'`, heredoc, file descriptor pipe) or via the subprocess's environment (`docker exec -e KEY=...`, `subprocess.run(..., env=...)`). Secret-bearing values MUST NEVER appear as a positional argv argument, a `--flag value` argv argument, or via shell interpolation into a `bash -c "...$SECRET..."` / `python3 -c "...$SECRET..."` string.
+
+**Rationale**: argv entries land in `ps` output, in error tracebacks (Python's default traceback prints the entire `-c` source string verbatim — including any interpolated values — for every uncaught exception), in container audit logs, and in any `tee` capture of stdout/stderr. The 2026-05-24 onboard-sandbox.sh leak — where a `nemoclaw genomeclaw exec -- python3 -c "import base64; ...base64.b64decode('$PROFILE_B64')..."` invocation crashed on an unrelated `FileNotFoundError` and dumped the entire `-c` source (containing the base64-encoded OpenAI API key) into a committed report log via traceback — is the canonical example. stdin and env-passed secrets are not visible in `ps` and do not appear in Python tracebacks of unrelated failures.
+
+**Requirements**:
+- Shell scripts under `scripts/` must not contain `python3 -c "...$<NAME>_(B64|KEY|TOKEN|SECRET|PASSWORD)..."` argv-interpolation patterns. Use `python3 -c '...' | docker exec -i ... bash -c 'cat > ...'` (stdin) instead.
+- Shell scripts must not contain `bash -c "...$<NAME>_(KEY|SECRET|TOKEN|PASSWORD)..."` argv-interpolation patterns.
+- Shell scripts must not pass secrets via `--key $X` / `--secret $X` / `--token $X` / `--password $X` argv flags.
+- For long-running gateway / daemon processes that need a key in env, start them with `docker exec -d -e OPENAI_API_KEY="$OPENAI_API_KEY"` (env, not argv).
+- Defense in depth: when a script handles a secret, `set +x` the surrounding block in case an upstream invocation enabled `bash -x` (which would otherwise echo every interpolated value to stderr).
+
+**Where it applies**:
+- All `.sh` files under `scripts/` (especially onboarding, credential-rotation, deploy paths).
+- Any `subprocess.run` / `subprocess.Popen` invocation in `packages/toolkit/src/` that passes secrets to a child.
+- Any spawned process or HTTP call in `packages/nemoclaw-plugin/src/` that carries a credential.
+
+**How to verify**:
+- **Discovery test (structural floor)**: [packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py](../../packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py) walks every `.sh` under `scripts/` and asserts the three forbidden argv-interpolation patterns (python3-c-b64decode, bash-c-with-credential-env-var, --key/secret/token/password flag) do not appear. New scripts added in the future are automatically covered.
+- **Positive complement**: the same file asserts that `scripts/onboard-sandbox.sh` contains the correct stdin-write shape (`docker exec -i ... auth-profiles.json` + `cat > ... auth-profiles.json`) so a future "simplification" doesn't accidentally regress back to the leak pattern.
+- For Python code: when adding a `subprocess.*` call that passes secrets, prefer `env={..., "OPENAI_API_KEY": key}` over `args=[..., key]`. Code review enforces.
+
+---
+
 ## INV-R001: Derived Assistant Stores Must Stay Rebuildable
 
 **Rule**: Any derived store (DuckDB tables, SQLite/GenomicSQLite indexes, annotation caches, vector indexes, chunked literature corpora, materialized report inputs) must be reproducible from the recorded source inputs and pipeline configuration, modulo declared non-determinism.
@@ -624,6 +651,7 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 | INV-E001 | Assistant Claims Must Be Traceable to Evidence | Evidence |
 | INV-P001 | Privacy Is the Default Operating Mode | Privacy |
 | INV-P002 | Agent Egress Is a Named, Minimal-Sufficient Boundary | Privacy |
+| INV-P003 | Secrets Pass via stdin or env, Never via argv | Privacy |
 | INV-R001 | Derived Assistant Stores Must Stay Rebuildable | Rebuildability |
 | INV-R002 | Never Cache a Degenerate Result | Rebuildability |
 | INV-C001 | Separate Clinical Advice from Lifestyle and Research Assistance | Clinical Boundary |

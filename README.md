@@ -81,7 +81,7 @@ If `colima` or `docker` is missing from PATH, `host setup` fails fast with a one
 
 **Day-to-day commands** that complement `setup`:
 
-- `bin/genomeclaw host doctor` — read-only diagnostic; checks the four canonical subdirs, surfaces the most recent `setup_completed` event, reports colima status, and **flags stale colima mounts** (configured drives that aren't currently plugged in — these block the next `colima start` until removed). Add `--json` for machine-readable output. Exit 0 iff every check passes.
+- `bin/genomeclaw host doctor` — read-only diagnostic; checks the four canonical subdirs, surfaces the most recent `setup_completed` event, reports colima status, **flags stale colima mounts** (configured drives that aren't currently plugged in — these block the next `colima start` until removed), and **warns when colima's `mounts:` list doesn't cover `$GENOMECLAW_DERIVED_DIR`** (the failure mode where the docker-wrapped `bin/genomeclaw host service` silently can't see the derived dir and the agent reports `no_active_run`; the warning names both fixes — re-run `host setup` OR `GENOMECLAW_NATIVE=1`). Add `--json` for machine-readable output. Exit 0 iff every check passes (the two warning-class findings — stale mounts + mounts-cover-derived — do not affect the exit code).
 - `bin/genomeclaw host eject` — stops colima, **removes the drive's entry from colima's mount config** (with a timestamped backup), then `diskutil eject`s the drive cleanly. Refuses if a toolkit container is still running (use `--force` to override; mid-run yank corrupts the in-flight pipeline). Always run this before unplugging — skipping eject leaves a stale mount entry that prevents colima from booting next time.
 
 If you skipped eject and unplugged the drive (or replaced it), `bin/genomeclaw host doctor` will spot the stale entry and tell you exactly what to fix. The cycle of plug-in / unplug / replace is safe as long as you bracket it with `host eject` and `host setup`.
@@ -348,6 +348,139 @@ We work around this in two places:
 - **SSRF runtime-probe enable gate** uses a **filesystem marker** (`/etc/genomeclaw/ssrf-probe-enabled`) instead of an env var. The plugin's `fs.existsSync(...)` call doesn't match the credential-harvesting heuristic. Production sandbox images ship without the marker (probe tool doesn't register; tool count stays at 9). The pytest harness `docker exec`s a `touch` after spawning the container but before starting the gateway, so 10 tools register for that test run only.
 
 Both workarounds are mechanical — they don't change what the plugin can do, just where the gating decision is keyed. Trade-off: marker-file gating is an extra step in the test harness that's easy to forget, but the probe test fails loudly (the tool wouldn't register, the agent's reply parser wouldn't find the expected JSON array) so silent regressions are unlikely.
+
+### Sandbox setup — the GenomeClaw NemoClaw agent
+
+The `bin/genomeclaw` shim + the toolkit image cover the **host-side data pipeline** (ingest, normalize, annotate, materialize). To talk to the **agent** that drives those tools in natural language, GenomeClaw also ships a NemoClaw blueprint that gets onboarded as a NemoClaw sandbox alongside any other sandboxes on this host (e.g., sibling project DevRelClaw).
+
+#### 0. Install NemoClaw on the host (one-time)
+
+```bash
+curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash
+```
+
+The installer downloads the `nemoclaw` CLI, enables the OpenShell gateway, and authorises Docker access. Node 22 and Docker are prerequisites; Colima on macOS works.
+
+#### 1. Configure secrets in `.env`
+
+The canonical onboarding script reads from `.env` at the repo root:
+
+```bash
+# .env
+OPEN_AI_API_KEY=sk-proj-…
+```
+
+`OPEN_AI_API_KEY` is mandatory; it's forwarded into the sandbox at onboard time and aliased as `OPENAI_API_KEY` for the openclaw provider config.
+
+#### 2. Onboard the sandbox (canonical script)
+
+```bash
+./scripts/onboard-sandbox.sh
+```
+
+This is the **canonical, idempotent onboarding path**. It:
+
+1. **Pre-builds the plugin TypeScript** so type errors surface fast (the sandbox image rebuild is the slow path).
+2. **Builds the `genomeclaw/toolkit:dev` image** if not already present (the host-side bioinformatics container is independent of the sandbox image, but the agent's first follow-up after onboarding will want it).
+3. **Runs `nemoclaw onboard --fresh --recreate-sandbox --from packages/nemoclaw-plugin/sandbox/Dockerfile --name genomeclaw`** with `--build-arg GENOMECLAW_HOST_PORT=${HOST_PORT}` so the policy preset baked into the sandbox image agrees with the operator's host-port choice (default 8645).
+4. **Registers the GenomeClaw policy preset** (`nemoclaw genomeclaw policy-add --from-file packages/nemoclaw-plugin/policy-preset.yaml`) — opens `host.openshell.internal:8645` for the plugin's host-service calls + lists RFC 1918 ranges in `allowed_ips:` (otherwise OpenShell's SSRF guard rejects with `internal address` even though the host:port is allowlisted).
+5. **Writes the agent's `auth-profiles.json`** with the OpenAI credential — workaround for `nemoclaw inference set` failing to docker-exec into a non-existent container on local Docker installs. The JSON payload (including the key) is rendered on Python's stdout and piped via `docker exec -i ... bash -c 'cat > .../auth-profiles.json'` — it **never lands in argv, never appears in `ps`, never echoes in tracebacks**. (Pre-2026-05-24 the script used a base64-blob-in-`python3 -c` pattern that DID leak via traceback when an unrelated `FileNotFoundError` printed the `-c` source string into a log. The current stdin-based pattern is enforced by `INV-P003` — see [docs/reference/INVARIANTS.md](docs/reference/INVARIANTS.md).)
+6. **Points the agent's `openai` provider at `https://inference.local/v1`** — the L7 proxy in the sandbox blocks `api.openai.com:443`; only `inference.local` is on the base policy allowlist, and the host-side openshell-gateway forwards it to OpenAI with the user's key.
+7. **(Re)starts the openclaw gateway** with `OPENAI_API_KEY` supplied via `docker exec -e` (env, not argv). The sandbox Dockerfile bakes `models.providers.openai.apiKey` as a `--ref-source env --ref-id OPENAI_API_KEY` reference; the gateway resolves the key from its process env at startup. The literal key never lands in any image layer or any committed config file.
+8. **Smoke-tests** the agent with a one-shot natural-language probe (calls `genomeclaw_status` → `/v1/health` on the host service; informative even if the host service isn't running yet — the agent's reply will explain).
+
+(Steps 1–3 — pre-build plugin TypeScript, build the toolkit image, `nemoclaw onboard --from <shim>` — are unchanged. `hostService.baseUrl` and `hostService.timeoutMs` and `gateway.mode=local` and `plugins.allow=['genomeclaw']` are now baked into the sandbox image at build time; the previous separate `openclaw config set ...` post-install steps for those are gone because they didn't work — the openshell sandbox wrapper EACCESes on `/opt/genomeclaw` under `nemoclaw genomeclaw exec`. See [docs/plans/active/onboard-persistent-agent-fix/](docs/plans/active/onboard-persistent-agent-fix/) for the diagnosis.)
+
+After this completes, `nemoclaw list` shows `genomeclaw` next to any other sandboxes you've onboarded (e.g., `devrelclaw`).
+
+The script is a direct counterpart of [DevRelClaw's `scripts/onboard-sandbox.sh`](https://github.com/OpenRavenClaw/DevRelClaw/blob/main/scripts/onboard-sandbox.sh) — both projects use the same onboarding pattern + the same workarounds (auth-profiles injection, inference.local routing) because they hit the same upstream NemoClaw quirks.
+
+#### 3. Run the host service (in another shell)
+
+The agent's tools all route through the host-side `genomeclaw host service` over `host.openshell.internal:8645`. Before asking questions, start it:
+
+```bash
+bin/genomeclaw host service
+# binds 127.0.0.1:8645 on the host + 0.0.0.0:8645 inside the toolkit container
+# reads /Volumes/Genome_Work/genomeclaw/derived/CURRENT for the active run
+```
+
+The service is read-only. Send `SIGHUP` to re-resolve CURRENT after a fresh `pipeline ingest`. It exits cleanly on `Ctrl-C`.
+
+#### 4. Talk to the agent
+
+Three surfaces:
+
+**One-shot CLI message** (programmatic, scripts, CI):
+```bash
+nemoclaw genomeclaw exec --no-tty --timeout 240 -- bash -c \
+  'openclaw agent --local --json --agent genomeclaw \
+     --message "Do I have any risk factors for loss of eyesight?"'
+```
+
+**Interactive TUI** (inside the sandbox):
+```bash
+nemoclaw genomeclaw connect
+# then inside the sandbox:
+openclaw tui
+```
+
+**Dashboard** (browser UI):
+```bash
+nemoclaw genomeclaw dashboard-url
+```
+
+#### Where state lives
+
+Three persistence layers, each with a different lifecycle.
+
+**Host — derived runs** (under `$GENOMECLAW_DERIVED_DIR`, default `/Volumes/Genome_Work/genomeclaw/derived/`):
+- Each `pipeline ingest` produces a new `<timestamp>-<hash>/` directory with `variants.duckdb` (variants + coverage_qc + pgs_scores), `pgs_compute_tasks.sqlite` (PRS task queue), `manifest.json`, `provenance.json`.
+- The `CURRENT` symlink points at the active run. The agent automatically queries whatever it resolves to.
+- Operator decides when to create new runs; agent never creates them. See `docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md` (or the "Do I have any risk factors for loss of eyesight?" session notes) for the run-lifecycle model.
+
+**Sandbox — agent workspace** (`/sandbox/.openclaw/workspace/` inside the `openshell-genomeclaw-…` container, persisted across `nemoclaw rebuild`):
+- `IDENTITY.md`, `USER.md`, `SOUL.md` — baked at image build, then persisted.
+- `MEMORY.md` + dated memory notes the agent writes during sessions (per the agent-system-prompt's research-and-synthesis protocol).
+- Survives `nemoclaw genomeclaw rebuild`; wiped on `nemoclaw genomeclaw destroy` (with `--cleanup-gateway` to also remove gateway state).
+
+**Sandbox — openclaw config** (`/sandbox/.openclaw/agents/genomeclaw/agent/`):
+- `auth-profiles.json` (OpenAI credential — written by `scripts/onboard-sandbox.sh` step 5 via `docker exec -i` stdin, never via argv per `INV-P003`).
+- `models.json` (provider catalog + `inference.local` baseUrl override — step 6).
+- These get rewritten on `nemoclaw rebuild`; re-run the onboard script after rebuild to re-apply.
+
+#### Troubleshooting
+
+**`nemoclaw list` shows DevRelClaw but not GenomeClaw**
+You haven't run `./scripts/onboard-sandbox.sh` yet. The live-smoke harness path (`packages/toolkit/tests/_live_smoke/`) spawns ephemeral `docker run --rm` sandboxes — those don't register with NemoClaw.
+
+**`openclaw plugins install` fails with "dangerous code patterns detected: Environment variable access combined with network send"**
+You added `process.env[...]` to a plugin source file that also calls `fetch()`. OpenClaw's plugin loader's static-analysis heuristic flags this as possible credential harvesting. Fix: use openclaw's config channel (`plugins.entries.genomeclaw.config.*`) for runtime config, or a filesystem marker for enable gates. See the "Why the plugin reads config via the openclaw channel, not env vars" subsection above.
+
+**`bin/genomeclaw host service` fails with `port 8645 already in use`**
+Something else is on 8645 (maybe a stale uvicorn from a prior session, or you've changed `GENOMECLAW_HOST_SERVICE_PORT` to 8643 and DevRelClaw is on it). `lsof -nP -iTCP:8645 -sTCP:LISTEN` shows the holder; either kill it or pick a different port (see "Coexisting with other Claw projects on one host" section above).
+
+**Agent reply says `no_active_run`**
+Two distinct failure modes share this symptom:
+1. The host service is up but `derived/CURRENT` is missing or points at a non-existent run. Run `bin/genomeclaw pipeline ingest …` first, or check `readlink /Volumes/Genome_Work/genomeclaw/derived/CURRENT` and fix the symlink.
+2. The docker-wrapped `bin/genomeclaw host service` cannot see your derived directory because colima's `mounts:` list doesn't cover it (`mounts: []` is a common cause — Sequoia + a fresh colima won't share `/Volumes/...` until you add it). Run `bin/genomeclaw host doctor` — the `colima_mounts_cover_derived` finding will tell you whether this is your case. Two fixes: re-run `bin/genomeclaw host setup` to add the mount, OR run the host service natively via `GENOMECLAW_NATIVE=1 bin/genomeclaw host service` (the native uvicorn process can read the host filesystem directly, no colima mount needed).
+
+**Colima virtio-fs stale cache during sandbox image build** (macOS)
+Symptom: `docker run -v <path>/<file>:<container-path>:ro` fails with "Are you trying to mount a directory onto a file (or vice-versa)?" even though the file exists on the host. Fix: mount the parent directory instead of the individual file (colima resolves dir-level inodes cleanly but stale-caches single files), OR `colima restart` to refresh the virtio-fs view.
+
+**`nemoclaw genomeclaw rebuild` resets the openclaw config**
+By design — rebuild = fresh container. Re-run `./scripts/onboard-sandbox.sh` to re-apply auth-profiles + provider routing + policy preset. The script is idempotent.
+
+**Gateway start blocked: existing config is missing `gateway.mode`**
+This means you're running an old sandbox image built before the onboard-persistent-agent-fix Phase 1 bakes landed. Rebuild the image: `docker build --build-arg GENOMECLAW_HOST_PORT=8645 -t genomeclaw/sandbox:port-8645 -f packages/nemoclaw-plugin/sandbox/Dockerfile packages/nemoclaw-plugin/`. The current Dockerfile bakes `gateway.mode=local` so a freshly-built image starts the gateway cleanly on first run.
+
+**`openclaw config set ...` fails with `EACCES: permission denied, mkdir '/root/.openclaw'`**
+The sandbox user (uid 998) cannot write `/root`. Means `HOME=/sandbox` is not set in the process env. The current sandbox Dockerfile bakes `ENV HOME=/sandbox`; if you're running an older image, rebuild. If you're invoking `openclaw config` via `docker exec`, always pass `-e HOME=/sandbox` explicitly.
+
+**`nemoclaw genomeclaw exec ...` fails with `EACCES: permission denied, scandir '/opt/genomeclaw'`**
+`nemoclaw genomeclaw exec` runs every command inside openshell's filesystem-restriction wrapper that blocks reads of `/opt/genomeclaw` (kernel-level — landlock-ish — even though the directory is owned by the sandbox user and world-readable inside the container). The onboarding script avoids this by using plain `docker exec --user sandbox -e HOME=/sandbox <CID>` for any step that needs to read the plugin dir. Agent calls (`openclaw agent --local`) still go through `nemoclaw genomeclaw exec` because they only talk to the already-running gateway over WebSocket — they don't read `/opt`. See [docs/reports/genomeclaw-demo-questions-2026-05-24.md § Onboarding diagnosis](docs/reports/genomeclaw-demo-questions-2026-05-24.md) for the full forensics.
+
+---
 
 ### Intended onboarding once the MVP lands (sketched from [Story 1](docs/reference/user-stories.md))
 

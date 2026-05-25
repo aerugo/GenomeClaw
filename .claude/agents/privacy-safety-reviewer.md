@@ -104,6 +104,7 @@ A review summary attached to the plan or diff:
 
 - **INV-P001** Privacy default — the loudest one. Block any change that lets a genomic source file leave the device, or that opens a remote destination other than the configured agent without explicit opt-in.
 - **INV-P002** Agent egress is named and minimal-sufficient — block bulk-mode tool outputs (full VCF, full annotation table, unfiltered cohort dumps) that lack an explicit opt-in flag and a capability-manifest classification.
+- **INV-P003** Secrets via stdin or env, never via argv — block any shell script that interpolates a credential into `python3 -c "...$KEY..."`, `bash -c "...$KEY..."`, or `--key/--secret/--token/--password $X` argv flags. Promoted 2026-05-25 after the onboard-sandbox.sh leak (a `python3 -c "...base64.b64decode('$PROFILE_B64')..."` crashed and the Python traceback dumped the operator's OpenAI API key into a committed report log). Fix is structural: secrets transit via `docker exec -i ... cat > ...` (stdin) or `docker exec -e KEY=...` (env), never via argv. Enforced by [packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py](../../packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py).
 - **INV-E001** Evidence traceability — block user-facing claims without evidence references.
 - **INV-C001** Research vs. clinical — block diagnostic phrasing and unmarked actionable findings.
 
@@ -118,6 +119,7 @@ You also enforce the secret-handling subset of `INV-P001` even when not strictly
 - Logging at INFO level any structure that contains a sample ID or variant coordinate.
 - Single-string redaction (regex against a known pattern) standing in for a typed redaction boundary.
 - Embedding a secret in a config file under `data/`.
+- Interpolating a secret into a `python3 -c "...$KEY..."`, `bash -c "...$KEY..."`, or `--key $X` argv (`INV-P003`). Python tracebacks print `-c` source verbatim — any failure of an unrelated downstream operation leaks the credential. Always use stdin (`docker exec -i ... cat > ...`) or env (`docker exec -e KEY=...`) instead.
 - Diagnostic-sounding language like "you have", "this means you are at risk", "you should treat".
 - Confidence wedged into prose ("might possibly be") instead of a structural confidence field.
 - Adding a clinically actionable finding category without an escalation marker.
