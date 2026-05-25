@@ -1,0 +1,14 @@
+**Short answer:** from the DNA layers I could actually read, I **do not see evidence that you are more likely than average** to develop type-2 diabetes. But I also **can’t honestly say “less likely than average”** yet, because the genome-wide T2D polygenic score did not return a retrievable percentile.
+
+What I checked:
+
+- **Curated GenomeClaw findings:** no T2D/metabolic findings were returned.
+- **Diabetes/metabolic gene panel:** I queried **TCF7L2, HNF1A, HNF4A, GCK, MC4R, FTO, PPARG, KCNJ11, GLP1R, IRS1**. Each came back with **0 annotated variants in-gene** in the active run.
+- Coverage was generally usable, but not perfect: **TCF7L2, HNF1A, and GCK had some low-coverage exons**, so this is not a perfect “nothing is there” result.
+- **PRS:** there was no precomputed T2D PRS, so I attempted the canonical **PGS000014 / GPS_T2D** score. The compute task reported `done`, but the score row was not retrievable afterward, so I do **not** have your percentile. PGS000014 is a large LDpred T2D polygenic score with ~6.9M variants and European-heavy development data. ([pgscatalog.org](https://www.pgscatalog.org/score/PGS000014/?utm_source=openai))
+
+**My calibrated interpretation:** your available DNA readout looks **neutral-to-reassuring**, not elevated. The missing piece is the PRS percentile; without it, I’d frame you as **“no current genomic evidence of above-average T2D risk,” not “genetically protected.”**
+
+Why the PRS matters: genome-wide scores can capture common-variant burden missed by single-gene checks; in the Khera et al. T2D score work, people in high PRS tails had substantially higher T2D odds. ([nature.com](https://www.nature.com/articles/s41588-018-0183-z?utm_source=openai)) TCF7L2 is one of the strongest replicated single common-variant T2D loci, but I did **not** see an annotated TCF7L2 variant in your run. ([dmsjournal.biomedcentral.com](https://dmsjournal.biomedcentral.com/articles/10.1186/s13098-019-0451-9?utm_source=openai))
+
+Non-DNA risk still matters a lot: age, family history, weight, physical activity, and prediabetes status can dominate absolute risk. ([niddk.nih.gov](https://www.niddk.nih.gov/-/media/Files/Strategic-Plans/Diabetes-in-America-3rd-Edition/DIA_Ch38.pdf?hash=D912C2A50D2FF663188C55ACAC62256C&la=en&utm_source=openai)) And in high-risk adults, intensive lifestyle intervention reduced T2D incidence by **58%** in the Diabetes Prevention Program. ([nejm.org](https://www.nejm.org/doi/full/10.1056/NEJMoa012512?utm_source=openai))

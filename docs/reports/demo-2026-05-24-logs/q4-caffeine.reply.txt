@@ -1,0 +1,15 @@
+Your **GenomeClaw run has no curated caffeine/CYP1A2/ADORA2A finding** for me to report, so I **can’t honestly say “you’re genetically a fast/slow caffeine metabolizer” from the host data in this turn**. I also tried gene-level summaries for **CYP1A2, ADORA2A, and AHR**, but the runtime hit an argument-serialization bug, so I’m not inferring genotype from those.
+
+**Practical answer:** yes — I’d test an earlier cutoff. The best sleep-timing evidence says **400 mg caffeine** can disrupt sleep even **6 hours before bed**, and a newer randomized crossover trial found **400 mg** disrupted sleep when taken **12, 8, or 4 hours before bed**, while **100 mg** did not show a significant sleep effect in that small study. ([pmc.ncbi.nlm.nih.gov](https://pmc.ncbi.nlm.nih.gov/articles/PMC3805807/?utm_source=openai))
+
+**My suggested experiment:**
+- For **2 weeks**, make your last coffee **8–10 hours before bedtime**.
+- Keep afternoon caffeine to **≤100 mg**, or skip it.
+- Track: sleep-onset time, night awakenings, and next-day alertness.
+- If sleep improves, keep the earlier cutoff; if nothing changes, your issue is less likely to be caffeine timing.
+
+Genetically, the two big axes are:
+- **CYP1A2 / AHR**: affects caffeine metabolism rate.
+- **ADORA2A**: affects how “wired/anxious/sleep-disrupted” caffeine feels. ADORA2A rs5751876 has been associated with caffeine-induced anxiety/alerting effects, especially in low habitual caffeine users. ([pmc.ncbi.nlm.nih.gov](https://pmc.ncbi.nlm.nih.gov/articles/PMC3055635/?utm_source=openai))
+
+So until I can get your exact caffeine-relevant genotypes, I’d treat you as **possibly caffeine-sensitive for sleep** and use the 2-week cutoff test as the real-world readout.

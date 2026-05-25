@@ -1,0 +1,19 @@
+**Short answer: I don’t see any flagged pharmacogenomic medication reactions in your current GenomeClaw results.**
+
+I checked your active genome run and the curated findings layer returned **0 pharmacogenomic findings**, including a drug-scoped scan for common PGx medications like **clopidogrel, warfarin, simvastatin, codeine/tramadol, omeprazole, citalopram/escitalopram, amitriptyline, and fluorouracil**.
+
+What that means:
+
+- **No GenomeClaw-curated red flags showed up** for common medication-response genes in this run.
+- I would **not change, avoid, or choose a medication based on this negative scan alone**.
+- This is **not the same as a full clinical pharmacogenomics panel**, especially for harder regions like **CYP2D6 copy-number/structural variants**, some **HLA** alleles, and star-allele diplotypes.
+
+The medication categories where genetics most often matters include:
+
+- **Clopidogrel / Plavix** — CYP2C19 affects activation. CPIC has genotype-based guidance. ([cpicpgx.org](https://cpicpgx.org/gene/cyp2c19/?utm_source=openai))
+- **SSRIs / some antidepressants** — CYP2D6 and CYP2C19 can affect exposure/tolerability. ([pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov/37032427/?utm_source=openai))
+- **Warfarin** — CYP2C9 and VKORC1 explain a substantial part of dose variability. ([pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov/21900891/?utm_source=openai))
+- **Statins** — SLCO1B1 variants can raise exposure and muscle-side-effect risk for some statins. ([fda.gov](https://www.fda.gov/medical-devices/precision-medicine/table-pharmacogenetic-associations?utm_source=openai))
+- **Thiopurines / fluoropyrimidines / some oncology drugs** — genetics can be high-impact, but no such curated finding surfaced here. The FDA maintains a broad table of drug labels with pharmacogenomic biomarkers. ([fda.gov](https://www.fda.gov/drugs/science-and-research-drugs/table-pharmacogenomic-biomarkers-drug-labeling/?utm_source=openai))
+
+**Bottom line:** based on the data I can see, you do **not** currently have a flagged “you’re likely to react differently” result for common medications. If you’re about to start a specific medication, tell me the drug name and I can do a targeted gene/drug check.

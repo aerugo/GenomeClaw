@@ -1,0 +1,12 @@
+**Short answer:** I **can’t honestly call your Alzheimer’s risk higher or lower than average** from the available data. What I *can* say is that I do **not** see an obvious high-impact Alzheimer’s/neurodegeneration red flag in the current GenomeClaw scan.
+
+What I checked in your run:
+- **Curated findings:** none in `APP`, `PSEN1`, `PSEN2`, `APOE`, `MAPT`, `GRN`, `C9orf72`, `LRRK2`, `SNCA`, `GBA`, or `HTT`.
+- **Gene summaries:** 0 reported variants across that panel.
+- Clean coverage in key early-onset AD genes `APP` and `PSEN1`; `PSEN2` had one low-coverage exon.
+- `APOE` had 0 reported variants, but the run did **not** give me a reliable APOE ε2/ε3/ε4 haplotype call, so I’m not going to infer one.
+- I attempted the Alzheimer’s PRS `PGS000334`; the task reached `done`, but no percentile row was retrievable, so I don’t have your polygenic percentile.
+
+So the calibrated interpretation is: **reassuring against a major surfaced monogenic Alzheimer’s finding, but unresolved for average-relative risk** because APOE haplotype and PRS percentile are missing.
+
+Context: rare early-onset familial Alzheimer’s can involve `APP`, `PSEN1`, and `PSEN2`; late-onset risk is more commonly influenced by `APOE` and many small-effect variants. `APOE ε4` increases risk but is not deterministic, and absence of ε4 does not rule Alzheimer’s out. PGS000334 is an Alzheimer’s PRS, but PRSs are ancestry-sensitive and not stand-alone diagnostic tools.

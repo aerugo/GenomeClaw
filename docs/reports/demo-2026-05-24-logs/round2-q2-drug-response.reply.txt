@@ -1,0 +1,7 @@
+I don’t see any **curated pharmacogenomic finding** in your current GenomeClaw run for the common meds I checked: clopidogrel, warfarin, simvastatin/atorvastatin, codeine/tramadol, omeprazole, and several SSRIs.
+
+So: **no medication-specific doctor/pharmacist alert is currently surfaced from your genome data.**
+
+Caveat: this is not a full clinical PGx panel. Some important medication genes are technically tricky — especially `CYP2D6` copy-number/star alleles, `HLA` risk alleles, `DPYD`, `TPMT/NUDT15`, etc. CPIC/PharmGKB do have strong guidance for gene–drug pairs like `CYP2C19`–clopidogrel, `CYP2D6`–codeine/tramadol, `VKORC1/CYP2C9`–warfarin, and `SLCO1B1`–statins. 
+
+**Practical takeaway:** don’t change any medication based on this. But if you’re ever prescribed clopidogrel, warfarin, codeine/tramadol, high-dose simvastatin, thiopurines, fluoropyrimidines, abacavir, allopurinol, or carbamazepine/oxcarbazepine, it would be reasonable to ask the prescriber/pharmacist whether a clinical PGx test is appropriate.

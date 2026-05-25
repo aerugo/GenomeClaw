@@ -1,0 +1,16 @@
+**Short answer:** your DNA data does **not** show a clear caffeine-sensitivity flag, but it also doesn’t fully rule one out. I’d use an **8-hour caffeine cutoff** as your default experiment.
+
+What I found in your genome run:
+- No curated caffeine-related finding for `CYP1A2`, `ADORA2A`, `AHR`, or `POR`.
+- `CYP1A2` showed **0 variants**, mean depth ~25.9×, and no low-coverage exons.
+- `ADORA2A`, `AHR`, and `POR` were not available as gene-summary rows in this run, so I can’t confidently assess caffeine anxiety/sleep sensitivity from those genes.
+
+**Practical recommendation:**  
+If your target bedtime is ~11 PM, stop coffee/caffeine by **3 PM**. If you’re prone to insomnia, anxiety, or waking overnight, make it **noon** for two weeks and track sleep latency + awakenings.
+
+Why: controlled trials show that **400 mg caffeine** can disrupt sleep even **6 hours before bedtime**, and newer dose/timing work suggests lower doses are less disruptive while larger doses need a longer runway. ([pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov/24235903/?utm_source=openai))
+
+So I’d frame this as: **you don’t have an obvious genetic “bad caffeine handler” signal, but your best cutoff should be phenotype-tested.** Try:
+1. **2 weeks:** caffeine only before noon, max 100–200 mg/day.  
+2. If sleep doesn’t improve, you can probably tolerate later coffee.  
+3. If sleep improves, keep the earlier cutoff.

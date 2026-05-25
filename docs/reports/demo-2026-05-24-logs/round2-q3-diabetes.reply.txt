@@ -1,0 +1,9 @@
+Based on the DNA data I could query: **I do not see a clear genetic signal that you’re more likely than average to develop type-2 diabetes — but I also can’t honestly say you’re less likely than average.**
+
+What I found:
+- **No curated diabetes-related findings** in your current GenomeClaw run.
+- In the diabetes gene panel, the host reported **0 variants** in `TCF7L2`, `HNF1A`, `HNF4A`, `GCK`, `MC4R`, `FTO`, `PPARG`, `KCNJ11`, `GLP1R`, and `IRS1`.
+- Coverage was mostly okay, but `TCF7L2`, `HNF1A`, and `GCK` had some low-coverage exons, so this is **not a clinical-grade “all clear.”**
+- I attempted the canonical type-2 diabetes PRS, `PGS000014`. The compute task reached `done`, but the host did **not return a retrievable percentile**, so I can’t place you above/below average polygenic risk.
+
+So the calibrated answer is: **no obvious DNA red flag for T2D in the available gene/curated layer; PRS percentile unavailable, so average-relative risk remains unresolved.** T2D PRS can be meaningful at extremes, but lifestyle/clinical factors like BMI, activity, sleep, family history, and glucose/A1c usually dominate prevention decisions. PGS Catalog describes `PGS000014` as a type-2 diabetes genetic prediction score, while broader reviews note PRS adds only incremental prediction beyond standard risk factors.

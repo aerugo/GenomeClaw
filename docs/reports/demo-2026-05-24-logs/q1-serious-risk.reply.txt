@@ -1,0 +1,15 @@
+I checked your active GenomeClaw run and the curated findings table.
+
+**Bottom line:** I don’t see any current GenomeClaw-curated “bring this to a doctor” finding in your DNA. The broad findings scan returned **0 findings**, and the `clinical-actionable` scan also returned **0 findings**. I recorded this as `memory:memory/2026-05-24-serious-clinical-actionable-dna-screen.md`.
+
+What that means: there is **no obvious reported pathogenic/likely-pathogenic, ACMG-style secondary finding, or structured clinical-escalation item** in this run. ACMG secondary findings are the kind of medically actionable incidental results clinical genome labs use as a reporting framework. ([pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov/40568962/?utm_source=openai))
+
+**Important limitation:** this is reassuring, but it is **not the same as a negative clinical genetic test**. It depends on this pipeline’s scope, variant interpretation date, coverage, and whether harder variant classes — CNVs, repeat expansions, mosaicism, paralogous genes — were assessed.
+
+**When I *would* bring genetics up with a doctor anyway:**
+- strong family history of early cancer, sudden death, cardiomyopathy, aneurysm, or severe hypercholesterolemia;
+- multiple relatives with the same rare condition;
+- your own unexplained early-onset disease;
+- or if you want a clinical-grade ACMG secondary-findings report.
+
+But from the GenomeClaw-curated findings I checked: **nothing serious is flagged right now.**
