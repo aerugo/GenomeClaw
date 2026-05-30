@@ -369,9 +369,22 @@ Recovery restores a **working** agent (not just a listening port). `nemoclaw rec
 ---
 
 ### Phase 5: Verification Gate
-**Status**: Surface gate PASSED; data-grounded gate BLOCKED on infra (v0.4 derived-store rebuild not feasible on this host)
+**Status**: PASSED — surface gate (2026-05-30) AND data-grounded gate (2026-05-31, after the v0.4 rebuild)
 **Started**: 2026-05-30
-**Completed**: surface portions 2026-05-30; full data gate deferred (see blocker)
+**Completed**: 2026-05-31
+
+#### Data-grounded gate PASSED (2026-05-31) — the v0.4-rebuild blocker was resolved
+
+The colima mount blocker was fixed (added `/Volumes/Genome_Work` to `~/.colima/default/colima.yaml` + 8 CPUs + colima restart), so `bin/genomeclaw pipeline run` (docker, v0.4 toolkit image) built run `2026-05-30T15-42-01Z-2b54b5` end-to-end (ingest → normalize → vcfanno 26/26 → VEP cache-114 LoF+AlphaMissense → materialize; `PIPELINE_EXIT=0`; VEP was the ~hours single-core long pole). The autonomous finisher then: pointed `CURRENT` (auto by ingest) → restarted the native host service (now `/v1/health` = `{status:ok, schema_version:v0.4, current_run_id:2026-05-30T15-42-01Z-2b54b5, sample_id:MPNRGLQ2K}` — **the 503 is gone**) → re-onboarded the sandbox (exit 0) → ran the muscle smoke. The finisher's first smoke hit a transient `EmbeddedAttemptSessionTakeoverError` (session race with the onboard's own Step-8 smoke); a clean re-run passed.
+
+**Data-grounded muscle-question smoke — PASS** (`docs/reports/demo-2026-05-31-logs/…trace.json` + `.trajectory.jsonl`, left UNCOMMITTED — they carry real genotypes):
+- `toolSummary`: 10 top-level calls (`genomeclaw_variant`, `genomeclaw_pgs_compute`, …), `failures: 0`; trajectory shows extensive use of the full suite (`genomeclaw_gene`, `_status`, `_pgs_list/get/compute/compute_status`, `_findings`, `_variant`, `_evidence`).
+- 7,691-char reply, `stop`, **genome-grounded on the real v0.4 store**: cites the active run id, the user's actual genotypes across the muscle/diet panel (ACTN3 / CYP1A2 / LCT-MCM6 / etc. at specific chr-pos with zygosity), and PMID citations. Faithful synthesis (real structured data → plain-language recs), no fabrication — INV-A005 v1.23 upheld with real data.
+- Caveat: LoF annotation is degraded (Deferred Follow-up #4); the reply's "no high-impact clinical/PGx findings" is plausibly real (most genomes lack pathogenic SF findings) and does not affect the gate.
+
+**Privacy note**: the smoke trace + trajectory contain real genotype values. Left uncommitted (the repo's demo-log convention commits such files, but this is conservative for a privacy-first project; the gate-pass is evidenced here without writing genotype values). User decides whether to commit or gitignore `docs/reports/demo-2026-05-31-logs/`.
+
+(original surface-gate + blocker notes below)
 
 **v0.4 rebuild BLOCKER (hard infra, outside this plan's plumbing scope)**: the host service needs a derived store at the toolkit's schema version, but none exists and a rebuild can't run here:
 - No `v0.4` derived run exists anywhere; existing data is `v0.3`. Committed `SCHEMA_VERSION` is `v0.2`; the working tree bumps it to `v0.4` (uncommitted in-flight work). So NO toolkit version matches the existing data — a rebuild is mandatory to serve anything → `/v1/health` returns 503 `schema_version_mismatch`.
