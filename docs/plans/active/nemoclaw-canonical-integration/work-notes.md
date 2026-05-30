@@ -320,6 +320,8 @@ The full native path proved NOT operational on local Docker (empirically: `infer
 - Gateway loads `1 plugin: genomeclaw`. ✓
 - Onboard step-8 smoke: `toolSummary={"calls":1,"tools":["genomeclaw_status"]}` — agent calls the genomeclaw tool with no auth-profiles.json and no inference.local. ✓
 
+**VEP LoF plugin degraded (observed during the 2026-05-30 v0.4 rebuild — toolkit follow-up)**: the VEP annotate step logs repeated non-fatal `Plugin 'LoF' went wrong: Undefined subroutine &LoF::reverse_complement called at /opt/vep/.vep/Plugins/LoF.pm line 491` warnings. VEP continues → the run completes + the v0.4 store is valid, but LoF annotation is incomplete (AlphaMissense + core annotations unaffected). It's a Perl-dep/version mismatch in the `genomeclaw/toolkit` image's VEP LoF install. Tracked in development-plan "Deferred Follow-ups" #4 (fix LoF.pm dep + add a typed LoF-annotation probe; NOT this plan's plumbing scope).
+
 **Local-Docker recovery limitation (documented for Phase 4 / upstream follow-up)**: `nemoclaw recover` cannot self-restore the gateway credential on local Docker (the recovery relaunch doesn't inject `OPENAI_API_KEY`, and the native proxy path is absent). Recovery-after-gateway-death is handled by re-running the keyed launch via `scripts/sandbox-up.sh` (Phase 4). The full "nemoclaw owns the credential via the L7 proxy" end state requires the OpenShell inference-routing infra (inference.local DNS + model-router) — track as an upstream/infra follow-up.
 
 **A2 = RESOLVED to the extent feasible on local Docker.** The HIGH-severity plaintext-key finding is fixed; the credential travels env-only (INV-P003-clean); the gateway/agent work end-to-end.
