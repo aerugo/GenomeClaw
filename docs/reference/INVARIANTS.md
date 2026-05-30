@@ -1,10 +1,12 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.24
-**Last Updated**: 2026-05-28
+**Version**: 1.25
+**Last Updated**: 2026-05-30
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.25 (2026-05-30)** — **adds `INV-D011`** (Plugin Install Path Follows NemoClaw's Canonical Landlock-RW Pattern). Promoted from the [nemoclaw-canonical-integration](../plans/active/nemoclaw-canonical-integration/) plan, which moved the GenomeClaw OpenClaw plugin off the Landlock-blocked `/opt/genomeclaw` (EACCES on every NemoClaw-managed surface) to `/sandbox/build/genomeclaw` inside the OpenShell Landlock RW baseline, pinned the sandbox base image by version tag, and fixed the gateway tool-catalog discovery. The provisional discovery test held green across Phases 2–5 (path-pin + cold-metadata tool contract), so the invariant is promoted. Note: the proposed id was `INV-D011` from the spec onward; `INV-D010` is intentionally an unused gap (the test + all plan docs use `D011`).
 
 **v1.24 (2026-05-28)** — **rewrites `INV-A005` to v1.23** (analyze-and-present synthesis, verified by LLM-judge). Promoted from the [agent-synthesis-over-rich-tool-data](../plans/active/agent-synthesis-over-rich-tool-data/) plan. The v1.22 mechanism (verbatim-quoting of `error_type` and structured fields, asserted by a literal-token trace-walker) was an overcorrection: it forced the agent into robotic JSON-field transcription. User correction (2026-05-28 evening): *"The Host tool should return the whole trace to the agent as well as all results of analysis and queries etc. But the agent should definately analyze and present those to the user in an understandable manner, not just repeat verbatim."* v1.23 is the corrected architecture: (a) host service surfaces rich `ToolDiagnosticTrace` data (stage, upstream_cause, suggested_fix, related_paths) on failure paths via `PgsComputeTaskResponse.diagnostic`; (b) plugin's `wrapHostResponse` forwards the diagnostic verbatim into the `host_failure` envelope; (c) agent system prompt §INV-A005 teaches analyze-and-present — translate structured data into plain language, do NOT mechanically quote field names; (d) verification is semantic LLM-judge at [tests/agent_replay/test_invA005_v123_reply_is_faithful_to_trajectory.py](../../packages/toolkit/tests/agent_replay/test_invA005_v123_reply_is_faithful_to_trajectory.py) (default-skip when `GENOMECLAW_REPLAY_LLM` env unset; preserves `INV-P001`). The v1.22 `test_invA005_v122_reply_quotes_error_type_for_every_failure` walker is deleted. Per `INV-V001`, LLM-judge is the sanctioned semantic alternative to phrase enumeration.
 
@@ -285,6 +287,29 @@ Numbers are assigned in order of introduction within a category and never reused
 - [packages/toolkit/tests/unit/test_gene_response_caveat.py](../../packages/toolkit/tests/unit/test_gene_response_caveat.py) — `test_invC001_caveat_non_null_for_all_difficult_classes`: every non-standard class yields a non-null caveat; INV-P002 sub-test asserts no user data leaks into the caveat string.
 - [packages/toolkit/tests/integration/test_gene_endpoint_region_class.py](../../packages/toolkit/tests/integration/test_gene_endpoint_region_class.py) — `/v1/gene/PMS2` end-to-end: response carries `region_class="difficult_pseudogene"` + a non-null caveat.
 - (Future) `tests/invariants/test_invD009_panel_giab_intersection.py` (gated `@pytest.mark.requires_giab_mrg_bed`): intersects the panel BED against the GIAB challenging-MRG BED (Wagner et al. 2022) and asserts every overlapping panel row has a non-`standard` class — the canonical truth check. Lands once the GIAB BED is fetched (`genomeclaw refs fetch giab_mrg`).
+
+---
+
+## INV-D011: Plugin Install Path Follows NemoClaw's Canonical Landlock-RW Pattern
+
+**Rule** *(v1.25; per [nemoclaw-canonical-integration](../plans/active/nemoclaw-canonical-integration/))*: any OpenClaw plugin baked into a GenomeClaw sandbox image MUST live inside the OpenShell Landlock RW baseline (a path under `/sandbox/…` or `/tmp/…`), be registered with the OpenClaw runtime via `openclaw plugins install … --link`, and declare its agent tools as **cold manifest metadata** in `openclaw.plugin.json` (`contracts.tools` + `activation.onStartup`). Plugins MUST NOT be installed under `/opt/<plugin-id>/` (or any path outside the Landlock baseline). The sandbox base image MUST be pinned by version tag (`:vX.Y.Z`) or `@sha256:` digest, never `:latest`.
+
+**Why this exists** — Until 2026-05-29 the plugin lived at `/opt/genomeclaw`, OUTSIDE the OpenShell Landlock RW baseline, so every process started via the NemoClaw runtime (dashboard, `nemoclaw connect`, TUI, `nemoclaw recover`) failed with `EACCES` reading the plugin dir — only the raw `docker exec` bypass worked. Separately, `:latest` base-image drift produced a host-CLI/sandbox version skew (the `--port 18790` split). And on OpenClaw 2026.5.18 the gateway builds its agent tool catalog from cold manifest metadata WITHOUT importing the plugin runtime, so a plugin that registered tools only at runtime via `api.registerTool()` surfaced **zero** tools to the agent (`http server listening (0 plugins)`, agent `command not found`). INV-D011 closes all three structurally: in-baseline path → loads under every surface; version-tag pin → host/sandbox lockstep; `contracts.tools` cold metadata → gateway surfaces the tools.
+
+**Requirements**:
+- **Path**: the plugin source the Dockerfile `COPY`s / builds / `openclaw plugins install --link`s MUST be under `/sandbox/…` or `/tmp/…` (current: `/sandbox/build/genomeclaw`). `/sandbox/.openclaw/extensions/` is rejected by `install --link` (auto-scan-tree collision), hence `/sandbox/build/`.
+- **No `/opt/<plugin-id>`**: no non-comment Dockerfile directive installs/copies a plugin under `/opt/<plugin-id>/`. (The host-side `genomeclaw/toolkit` image's `/opt/genomeclaw/toolkit/` is OUT of scope — it is not a NemoClaw plugin sandbox.)
+- **Cold-metadata tool contract**: `openclaw.plugin.json` carries `activation.onStartup: true` and `contracts.tools: [...]` listing every non-env-gated tool name passed to `api.registerTool({name})`.
+- **Base-image pin**: `FROM` / `ARG SANDBOX_BASE=` resolves to `:v<nemoclaw-version>` (matching the host `nemoclaw --version`) or `@sha256:<digest>`, never `:latest`. Bump in lockstep when the host CLI is upgraded.
+
+**Where it applies**:
+- Any `packages/*/sandbox/Dockerfile` (currently [packages/nemoclaw-plugin/sandbox/Dockerfile](../../packages/nemoclaw-plugin/sandbox/Dockerfile)).
+- The plugin manifest [packages/nemoclaw-plugin/openclaw.plugin.json](../../packages/nemoclaw-plugin/openclaw.plugin.json).
+
+**How to verify**:
+- [packages/toolkit/tests/invariants/test_invD011_plugin_install_path.py](../../packages/toolkit/tests/invariants/test_invD011_plugin_install_path.py) — Dockerfile-grep: `install --link` source path under the Landlock RW baseline; no non-comment `/opt/genomeclaw`; base image pinned by version tag (not `:latest`); cross-`packages/*/sandbox` sweep.
+- [packages/toolkit/tests/invariants/test_plugin_manifest_tool_contract.py](../../packages/toolkit/tests/invariants/test_plugin_manifest_tool_contract.py) — manifest declares `contracts.tools` + `activation.onStartup`, and `contracts.tools` ⊇ every non-gated `registerTool` name in `src/index.ts`.
+- [packages/toolkit/tests/integration/test_sandbox_image_canonical_plugin_path.py](../../packages/toolkit/tests/integration/test_sandbox_image_canonical_plugin_path.py) (needs_sandbox) — built-image probe: plugin at the canonical path, `/opt/genomeclaw` absent, `openclaw plugins list` shows `genomeclaw` enabled.
 
 ---
 
@@ -863,6 +888,7 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 | INV-D007 | Shim Seam Singularity | Data |
 | INV-D008 | Copy-Stage for DooD-Spawning Pipelines | Data |
 | INV-D009 | Coverage Panel Difficult-Region Annotations | Data |
+| INV-D011 | Plugin Install Path Follows NemoClaw's Canonical Landlock-RW Pattern | Data |
 | INV-E001 | Assistant Claims Must Be Traceable to Evidence | Evidence |
 | INV-P001 | Privacy Is the Default Operating Mode | Privacy |
 | INV-P002 | Agent Egress Is a Named, Minimal-Sufficient Boundary | Privacy |
