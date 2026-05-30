@@ -1,8 +1,8 @@
 # Phase 5: Verification Gate
 
-**Status**: Pending
-**Started**:
-**Completed**:
+**Status**: Surface gate PASSED; data-grounded gate BLOCKED on the v0.4 derived-store rebuild (infra) — see work-notes Phase 5
+**Started**: 2026-05-30
+**Completed**: surface portions 2026-05-30; full data gate deferred to a pipeline host
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---

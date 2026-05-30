@@ -223,8 +223,19 @@ RUN openclaw config set tools.web.search.enabled true \
 # path IF the dashboard forward ever needs 0.0.0.0 — that token must be
 # env-injected at launch, NEVER baked (INV-P003). Guarded by the
 # bound-address + no-baked-token tests (test_invP001_sandbox_baked_config_*).
+# `gateway.auth.mode=none` completes the loopback posture (Phase 5, 2026-05-30):
+# `bind=loopback` alone still lets the gateway auto-generate a per-startup token,
+# which the loopback agent/dashboard/TUI clients don't have → "unauthorized:
+# gateway token missing". With `bind=loopback` AND `auth.mode=none`, gateway-
+# routed clients connect token-free (verified: gateway-routed agent calls
+# genomeclaw_status, thinking=xhigh). This is safe per the 2026-05-30 privacy
+# review: the gateway binds 127.0.0.1 only and is reached via NemoClaw's
+# authenticated port-forward; auth=none on loopback grants nothing an in-
+# container process can't already do. A bind=auto dashboard token (if ever
+# needed) must be runtime-generated + env-injected, NEVER baked (INV-P003).
 RUN openclaw config set gateway.mode local \
  && openclaw config set gateway.bind loopback \
+ && openclaw config set gateway.auth.mode none \
  && openclaw config set plugins.allow '["genomeclaw"]' \
  && openclaw config set plugins.entries.genomeclaw.config.hostService.baseUrl \
       "http://host.openshell.internal:${GENOMECLAW_HOST_PORT}" \

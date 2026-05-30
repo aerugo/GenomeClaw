@@ -367,9 +367,23 @@ Recovery restores a **working** agent (not just a listening port). `nemoclaw rec
 ---
 
 ### Phase 5: Verification Gate
-**Status**: Pending
-**Started**:
-**Completed**:
+**Status**: Surface gate PASSED; data-grounded gate BLOCKED on infra (v0.4 derived-store rebuild not feasible on this host)
+**Started**: 2026-05-30
+**Completed**: surface portions 2026-05-30; full data gate deferred (see blocker)
+
+**v0.4 rebuild BLOCKER (hard infra, outside this plan's plumbing scope)**: the host service needs a derived store at the toolkit's schema version, but none exists and a rebuild can't run here:
+- No `v0.4` derived run exists anywhere; existing data is `v0.3`. Committed `SCHEMA_VERSION` is `v0.2`; the working tree bumps it to `v0.4` (uncommitted in-flight work). So NO toolkit version matches the existing data — a rebuild is mandatory to serve anything → `/v1/health` returns 503 `schema_version_mismatch`.
+- **Docker pipeline blocked**: colima does not mount `/Volumes/Genome_Work` into its VM (`docker run -v /Volumes/Genome_Work:/probe alpine ls /probe/genomeclaw` → not found), so the toolkit container can't reach the 212MB VCF / reference.
+- **Native pipeline blocked**: `bcftools`, `tabix`, `bgzip`, `vep`, `vcfanno`, `samtools`, `nextflow` are all MISSING on PATH (`host doctor` crashes on missing nextflow).
+- Rebuilding requires reconfiguring colima (disruptive — stops colima/kills the sandbox; external-volume mounts are finicky) or installing the full bio toolchain + VEP cache + datasets (hours, GBs). Both are large infra tasks beyond this plan. **Follow-up: run the v0.4 pipeline on the canonical pipeline host (or after wiring colima mounts), then re-run the data-grounded smoke.**
+
+**Surface gate — PASSED (the plan's actual goal: the agent invokes `genomeclaw_*` tools end-to-end)**:
+- **Full regression suite**: `1175 passed, 163 skipped, 8 failed`. All 8 failures are **pre-existing, from the broader uncommitted in-flight work — NOT regressions from this plan's commits** (verified by file-targeting): `test_invP001_plugin_default_egress` ×2 read `src/index.ts` (in-flight modified); `test_prs_compute_config_write` ×4 target `service/pgs_compute_config.py`/`prep/pgs.py` (in-flight); `test_invP002_policy_preset` is the known 8643/8645; `test_host_service_toolkit_image` is the colima-mount/in-flight area. My commits touch only the manifest, Dockerfile, the two scripts, and the (passing) test files I added.
+- **spec Q4**: no test references `/opt/genomeclaw` as a *live* path (the hits are comments + absence-assertions like `test_invD011` asserting `/opt` is gone).
+- **ask.sh muscle-question smoke** (`docs/reports/demo-2026-05-30-logs/give-personalized-recommendations-…trace.json`): **22 tool calls, 4 distinct `genomeclaw_*` tools** (`genomeclaw_status, _findings, _gene, _pgs_list`), `failures: 0` — vs the Phase 2 baseline of **zero** genomeclaw tools. The reply (2615 chars) is a **faithful synthesis**: it honestly attributes the gap to the 503 ("the live GenomeClaw service is not healthy… I don't have your actual ACTN3/ACE/FTO… data"), does NOT fabricate genome data, lists what it would query, and gives a non-personalized baseline. INV-A005 (synthesis over tool data) + no confabulation upheld.
+- **A1 completed (`gateway.auth.mode=none`)**: the trace showed the Phase-4-recovered gateway still emitted `unauthorized: gateway token missing` (bind=loopback alone auto-generates a per-startup token). Baked `gateway.auth.mode=none` alongside `gateway.bind=loopback`; verified the gateway-ROUTED agent (no `--local`) now connects token-free, calls `genomeclaw_status` (`failures:0`, `thinking=xhigh`). Rebuilt `genomeclaw/sandbox:phase5` → baked `gateway: {mode:local, bind:loopback, auth:{mode:none}}`; new guard `test_invP001_baked_gateway_auth_mode_is_none` + 9/9 baked-config tests pass. This makes the dashboard/TUI/connect (gateway-routed) surfaces viable token-free on loopback — though their full end-to-end verification still needs the v0.4 data + manual browser/interactive testing.
+
+**Dashboard / TUI manual gates**: deferred — they require the v0.4 data store (blocked) AND manual browser/interactive interaction. The gateway-routed connectivity they depend on is now token-free (A1 complete), so they are unblocked on the *auth/plumbing* axis; only the data axis remains.
 
 ---
 

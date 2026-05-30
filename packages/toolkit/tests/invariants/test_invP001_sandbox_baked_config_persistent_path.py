@@ -262,6 +262,23 @@ def test_invP001_no_static_gateway_token_baked(baked_openclaw_json: dict) -> Non
 
 
 @pytest.mark.needs_sandbox
+def test_invP001_baked_gateway_auth_mode_is_none(baked_openclaw_json: dict) -> None:
+    """`gateway.auth.mode == "none"` completes the loopback-tokenless posture.
+
+    With `bind=loopback` alone the gateway auto-generates a per-startup token
+    that loopback clients (agent / dashboard / TUI) don't have → "unauthorized:
+    gateway token missing". Baking `auth.mode=none` lets gateway-routed clients
+    connect token-free on loopback. Safe per the 2026-05-30 privacy review
+    (loopback bind + NemoClaw's authenticated port-forward).
+    """
+    mode = baked_openclaw_json.get("gateway", {}).get("auth", {}).get("mode")
+    assert mode == "none", (
+        f"Facet A1: baked gateway.auth.mode={mode!r}; expected 'none' so the "
+        "loopback gateway accepts token-free connections from the agent/dashboard/TUI."
+    )
+
+
+@pytest.mark.needs_sandbox
 def test_invP001_baked_env_home_is_sandbox(baked_image_env: list[str]) -> None:
     """`ENV HOME=/sandbox` is set in the image.
 
