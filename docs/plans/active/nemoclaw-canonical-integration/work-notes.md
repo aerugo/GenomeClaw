@@ -304,6 +304,26 @@ Traced the nemoclaw/OpenShell credential architecture in `~/.nemoclaw/source/dis
 
 Remaining unknown to settle during implementation: the exact OpenShell-injected placeholder value/shape the gateway provider must carry (OpenShell decides it; hand-setting a random literal won't be rewritten). This is why the native onboard provider flow — not a manual config edit — is the correct mechanism. Guardrail tests from the privacy review still apply (auth-profiles.json absent/0600; no real key in any layer; bound-address loopback; INV-P003 env-position).
 
+#### A2 IMPLEMENTED (pragmatic, local-Docker-appropriate) + VERIFIED END-TO-END (2026-05-30)
+
+The full native path proved NOT operational on local Docker (empirically: `inference.local` does not resolve in the sandbox — `curl` error 6, no DNS — and no model-router process runs; `nemoclaw inference set` configures the route but its sandbox-sync uses a Kubernetes `kubectl exec` path that fails locally → `No such container: openshell-cluster-nemoclaw`). So nemoclaw cannot self-own the gateway credential via the L7 proxy here. That is the upstream/local-Docker limitation behind the original manual workarounds.
+
+**What WAS implemented (the achievable, high-value fix — addresses the reviewer's HIGH finding):**
+- **Deleted onboard Step 6** (the literal-key `auth-profiles.json` write). Empirically verified the agent completes an LLM turn with NO auth-profiles.json — it resolves the credential from the gateway's `models.providers.openai.apiKey` env-ref (key supplied via Step 7b `docker exec -e`, INV-P003-clean). So the durable plaintext-secret file is gone with zero functional loss.
+- **Deleted onboard Step 7** (the dead `inference.local` rewrite of the agent's models.json — non-functional locally; the agent uses the gateway provider).
+- **Kept Step 7b** (gateway launch with `docker exec -e OPENAI_API_KEY`) — still required because the native proxy path is unavailable locally. Now works because A1's baked `gateway.bind=loopback` lets the launch bind 127.0.0.1.
+- **Tests** (`test_invP003_onboard_script_no_secrets_in_argv.py`): replaced the obsolete "writes auth-profile via stdin" test with `test_invP003_onboard_writes_no_literal_key_to_authprofiles` (no `cat >`/`tee` into auth-profiles.json) + `test_invP003_openai_key_only_in_env_positions` (the key VALUE expands only inside a `docker exec -e OPENAI_API_KEY=...` flag; escaped `\$` help-echoes excluded). 4/4 pass.
+
+**End-to-end verification on a CLEAN re-onboard** (rebuilt image + edited script, `./scripts/onboard-sandbox.sh`, exit 0):
+- `auth-profiles.json` ABSENT in the agent dir (only `models.json`). ✓
+- Gateway bound `127.0.0.1`/`[::1]` only (loopback). ✓
+- Gateway loads `1 plugin: genomeclaw`. ✓
+- Onboard step-8 smoke: `toolSummary={"calls":1,"tools":["genomeclaw_status"]}` — agent calls the genomeclaw tool with no auth-profiles.json and no inference.local. ✓
+
+**Local-Docker recovery limitation (documented for Phase 4 / upstream follow-up)**: `nemoclaw recover` cannot self-restore the gateway credential on local Docker (the recovery relaunch doesn't inject `OPENAI_API_KEY`, and the native proxy path is absent). Recovery-after-gateway-death is handled by re-running the keyed launch via `scripts/sandbox-up.sh` (Phase 4). The full "nemoclaw owns the credential via the L7 proxy" end state requires the OpenShell inference-routing infra (inference.local DNS + model-router) — track as an upstream/infra follow-up.
+
+**A2 = RESOLVED to the extent feasible on local Docker.** The HIGH-severity plaintext-key finding is fixed; the credential travels env-only (INV-P003-clean); the gateway/agent work end-to-end.
+
 **Sandbox state**: a working loopback gateway (key in env) is running with `1 plugin: genomeclaw`; ask.sh works for tool calls (host service returns 503 until a v0.4 derived rebuild). The running sandbox is still the earlier `port-8645` onboard image with in-place patches; `genomeclaw/sandbox:phase3` is the rebuilt clean artifact.
 
 ---

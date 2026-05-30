@@ -12,9 +12,12 @@ the leak path is structural: ANY future failure of ANY argv-interpolated
 secret command will repeat the leak.
 
 This file enforces the structural floor: every `.sh` under `scripts/`
-is grepped for the forbidden argv-interpolation patterns. Per-script
-positive tests on `scripts/onboard-sandbox.sh` assert the stdin-based
-write pattern is present.
+is grepped for the forbidden argv-interpolation patterns. Positive
+tests on `scripts/onboard-sandbox.sh` assert the OpenAI key reaches the
+container only via env (`docker exec -e OPENAI_API_KEY=...`) and that no
+literal key is written into `auth-profiles.json` (deleted in
+nemoclaw-canonical-integration Phase 3, Facet A2 — see that plan's
+work-notes for the privacy-review finding that motivated removing it).
 
 The proposed invariant is INV-P003; promoted into docs/reference/INVARIANTS.md
 once this file's tests are green.
@@ -32,6 +35,20 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 ONBOARD_SCRIPT = SCRIPTS_DIR / "onboard-sandbox.sh"
 
+# INV-V001-allow:
+#
+# The regex patterns below detect **shell-argv anti-pattern shapes** for the
+# INV-P003 secret-leak rule. This is structural detection of the forbidden
+# *form* of a shell invocation (python -c with b64decode of a $VAR; bash -c
+# interpolating a secret-named env var; --key/--secret/--token flags with $VAR
+# values), NOT enumeration of paraphrases that a language model might use.
+# The target language here is shell, not LLM output.
+#
+# Different class than INV-V001's banned methodology (forbidden-phrase
+# enumeration over agent reply text). The structural-regex-over-source-code
+# pattern is explicitly allowed.
+
+# INV-V001-allow: structural shell-argv anti-pattern detection (see annotation above for full rationale)
 # Patterns that historically (or canonically) ship a secret through argv.
 # Each is a positive-match for a forbidden shape — finding any of these
 # means the script puts a secret-bearing value on a command line.
@@ -135,31 +152,67 @@ def test_invP003_discovery_no_argv_secret_patterns_across_scripts_dir() -> None:
     )
 
 
-def test_invP003_onboard_script_writes_authprofile_via_stdin() -> None:
-    """Positive complement: the auth-profile must be written via docker exec stdin.
+def _noncomment_lines(text: str) -> list[tuple[int, str]]:
+    """(line_no, line) for lines that aren't blank or shell comments."""
+    out: list[tuple[int, str]] = []
+    for i, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        out.append((i, line))
+    return out
 
-    Greps for the stdin-write shape. This is the structural opposite of the
-    argv-interpolation patterns above — Phase 2 introduces this pattern
-    when it removes the `nemoclaw exec ... python3 -c "..."` line.
+
+def test_invP003_onboard_writes_no_literal_key_to_authprofiles() -> None:
+    """No literal OpenAI key is written into `auth-profiles.json` (Facet A2).
+
+    The 2026-05-30 privacy review flagged the prior stdin write of a
+    `"key": "<literal>"` field into the container's auth-profiles.json as
+    HIGH severity (durable plaintext secret in the writable layer / any
+    `docker commit`). It was deleted because the gateway's env-ref provider
+    (key supplied via `docker exec -e OPENAI_API_KEY`, INV-P003-clean) already
+    covers the agent — verified empirically that the agent completes an LLM
+    turn with no auth-profiles.json present. This test keeps that write from
+    silently returning.
     """
     text = ONBOARD_SCRIPT.read_text()
-    # docker exec -i (interactive, takes stdin) anywhere followed by a
-    # reference to auth-profiles.json.
-    has_docker_exec_i_authprofile = bool(re.search(
-        r"docker\s+exec[^|\n]*\s-i[^|\n]*auth-profiles\.json",
-        text, re.DOTALL,
-    ))
-    has_cat_redirect_to_authprofile = bool(re.search(
-        r"cat\s*>\s*[^|\n]*auth-profiles\.json", text,
-    ))
-    assert has_docker_exec_i_authprofile, (
-        "INV-P003: expected `docker exec -i ... auth-profiles.json` pattern in "
-        f"{ONBOARD_SCRIPT.relative_to(REPO_ROOT)}. The auth-profile write must "
-        "use docker exec with stdin (-i) so the JSON payload never lands in "
-        "argv. Phase 2 of onboard-persistent-agent-fix introduces this pattern."
-    )
-    assert has_cat_redirect_to_authprofile, (
-        "INV-P003: expected `cat > ... auth-profiles.json` redirect pattern in "
-        f"{ONBOARD_SCRIPT.relative_to(REPO_ROOT)}. The auth-profile write should "
-        "redirect stdin into the target file inside the container."
-    )
+    # A non-comment line that writes (cat-redirect or tee) into auth-profiles.json
+    # is the regression. Comments referencing it (explaining the deletion) are fine.
+    for line_no, line in _noncomment_lines(text):
+        if "auth-profiles.json" not in line:
+            continue
+        assert not re.search(r"(cat\s*>|tee)\s*[^|\n]*auth-profiles\.json", line), (
+            f"INV-P003: {ONBOARD_SCRIPT.relative_to(REPO_ROOT)}:L{line_no} writes "
+            "auth-profiles.json. The literal-key write was deleted in Facet A2 "
+            "(the gateway env-ref covers the agent); do not reintroduce a "
+            f"plaintext-secret file. Offending line: {line.strip()[:120]}"
+        )
+
+
+def test_invP003_openai_key_only_in_env_positions() -> None:
+    """The OpenAI key VALUE expands only inside a `docker exec -e` env flag.
+
+    Reviewer guard (2026-05-30): the key value must reach the container via
+    `docker exec -e OPENAI_API_KEY="${OPENAI_API_KEY}"` (env, not argv) — never
+    inside a `-c "..."` payload, a file write, or a CLI flag value. We look for
+    actual value-expansions (`$OPENAI_API_KEY` / `${OPENAI_API_KEY}`); a bare
+    mention of the string (e.g. in a log `echo`) or the shell assignment that
+    DEFINES the var (`export OPENAI_API_KEY="$OPEN_AI_API_KEY"`, which expands
+    `$OPEN_AI_API_KEY`, not the key) are not value-leaks. Structural shell
+    inspection (INV-V001-allow).
+    """
+    text = ONBOARD_SCRIPT.read_text()
+    # A real value-expansion: `$OPENAI_API_KEY` / `${OPENAI_API_KEY}` NOT preceded
+    # by a backslash. Escaped `\$OPENAI_API_KEY` (printed literally inside a help
+    # `echo`, e.g. the "Next steps" block) does not expand and is not a leak.
+    key_value_expansion = re.compile(r"(?<!\\)\$\{?OPENAI_API_KEY\}?")
+    env_flag = re.compile(r'-e\s+OPENAI_API_KEY="?\$\{?OPENAI_API_KEY\}?"?')
+    for line_no, line in _noncomment_lines(text):
+        if not key_value_expansion.search(line):
+            continue
+        assert env_flag.search(line), (
+            f"INV-P003: {ONBOARD_SCRIPT.relative_to(REPO_ROOT)}:L{line_no} expands the "
+            "OPENAI_API_KEY value outside a `docker exec -e OPENAI_API_KEY=...` env "
+            "flag. The key value must travel via env, never argv or a file payload. "
+            f"Offending line: {line.strip()[:120]}"
+        )

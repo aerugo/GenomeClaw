@@ -193,27 +193,39 @@ nemoclaw genomeclaw policy-add \
 # openshell's filesystem-restriction wrapper that EACCESes on
 # /opt/genomeclaw.
 
-# ---- step 6 (REWRITTEN): write auth-profiles.json via docker exec stdin ---
+# ---- step 6 (DELETED): no more literal-key auth-profiles.json write ---------
 #
-# Replaces the prior `nemoclaw genomeclaw exec -- python3 -c
-# "import base64; ...base64.b64decode('$PROFILE_B64')..."` invocation
-# which leaked the operator's API key into a log on the 2026-05-24
-# onboard attempt (Python's default traceback prints the entire `-c`
-# source string verbatim — including the interpolated $PROFILE_B64 — on
-# any failure of the target command, structurally exposing the secret).
+# nemoclaw-canonical-integration Phase 3, Facet A2 (2026-05-30). This step
+# used to render the OpenAI API key into a `"key": "<literal>"` field of
+# /sandbox/.openclaw/agents/genomeclaw/agent/auth-profiles.json inside the
+# container. The 2026-05-30 privacy-safety review flagged that as HIGH
+# severity: the literal key persisted in the container's writable layer
+# (readable by any `docker exec --user sandbox`, and it would enter any
+# `docker commit`), undermining the Dockerfile's correct env-ref design
+# (`models.providers.openai.apiKey` → {source:env, id:OPENAI_API_KEY}).
 #
-# The new pattern: render the JSON on Python's stdout, pipe into
-# `docker exec -i --user sandbox` with a `cat > .../auth-profiles.json`
-# in-container, never letting the payload land on argv. `set +x` guards
-# against an upstream `bash -x` that would echo the heredoc body to stderr.
-# Enforced by tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py
-# (INV-P003 — Secrets via stdin or env, Never via argv).
+# It is also REDUNDANT: verified empirically (2026-05-30) that the agent
+# completes an LLM turn with NO auth-profiles.json present — it resolves the
+# credential from the gateway's `models.providers.openai.apiKey` env-ref,
+# which is supplied via the gateway's env at launch (Step 7b, `docker exec
+# -e OPENAI_API_KEY`, INV-P003-clean). So deleting this write removes a
+# durable plaintext-secret footprint with no functional loss.
 #
-# Required (preceded by onboard step 3): the openshell-genomeclaw-*
-# container is running. We bypass `nemoclaw exec` for the write because
-# its openshell-sandbox wrapper EACCESes on /opt/genomeclaw (per the
-# diagnosis in docs/reports/genomeclaw-demo-questions-2026-05-24.md);
-# plain `docker exec --user sandbox` has no such restriction.
+# NOTE (local-Docker credential limitation): the ideal Phase 3 end state —
+# nemoclaw's credential store owning the gateway credential via the OpenShell
+# L7 inference proxy (inference.local → placeholder rewritten to the real
+# secret at egress) — is NOT operational on local Docker: `inference.local`
+# does not resolve in the sandbox and no model-router runs there, and
+# `nemoclaw inference set` configures the route but its sandbox-sync step
+# uses a Kubernetes `kubectl exec` path that fails locally. So the gateway
+# still gets the key via Step 7b's env injection (the INV-P003-clean
+# `docker exec -e` path), and `nemoclaw recover` cannot self-restore the
+# credential on local Docker. Recovery on local Docker re-injects the key
+# via scripts/sandbox-up.sh (Phase 4). Tracked as an upstream/infra
+# follow-up in docs/plans/active/nemoclaw-canonical-integration/work-notes.md.
+#
+# Guarded by tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py
+# (no literal key written to auth-profiles.json).
 
 echo "[onboard] locating the deployed genomeclaw container"
 CID="$(docker ps --filter 'name=openshell-genomeclaw-' --format '{{.Names}}' | head -1)"
@@ -223,38 +235,19 @@ if [[ -z "${CID}" ]]; then
 fi
 echo "[onboard] container: ${CID}"
 
-echo "[onboard] writing genomeclaw agent auth-profiles.json (OpenAI credential, stdin-only)"
-set +x  # defense in depth: keep heredoc body out of any upstream `bash -x` trace
-python3 -c '
-import json, os
-profile = {
-    "version": 1,
-    "profiles": {
-        "openai/gpt-5.5": {"type": "api_key", "provider": "openai", "key": os.environ["OPENAI_API_KEY"]},
-        "openai":         {"type": "api_key", "provider": "openai", "key": os.environ["OPENAI_API_KEY"]},
-    },
-}
-print(json.dumps(profile))
-' | docker exec -i --user sandbox -e HOME=/sandbox "${CID}" \
-      bash -c 'mkdir -p /sandbox/.openclaw/agents/genomeclaw/agent && cat > /sandbox/.openclaw/agents/genomeclaw/agent/auth-profiles.json'
-
-# ---- step 7 (REWRITTEN): route the openai provider through inference.local ----
+# ---- step 7 (DELETED): inference.local rewrite of the agent models.json -----
 #
-# Carries no secret (just a baseUrl string) so INV-P003 doesn't strictly
-# require this rewrite — but it does need to switch off `nemoclaw exec`
-# for the same EACCES reason that broke step 5/6.
+# Removed alongside Step 6 (Facet A2, 2026-05-30). It pointed the agent's
+# models.json openai baseUrl at https://inference.local/v1 — but that route
+# is non-functional on local Docker (no inference.local DNS / model-router,
+# see the Step 6 note). The agent resolves its model calls through the
+# gateway's `models.providers.openai` provider (baked baseUrl
+# https://api.openai.com/v1 + the env-ref key), so writing a dead
+# inference.local baseUrl into the agent config was vestigial and
+# misleading. Verified (2026-05-30): the agent completes an LLM turn with
+# the gateway provider and no agent-level inference.local override.
 
-echo "[onboard] pointing genomeclaw openai provider at inference.local"
-docker exec -i --user sandbox -e HOME=/sandbox "${CID}" \
-  python3 -c "
-import json, os
-p = '/sandbox/.openclaw/agents/genomeclaw/agent/models.json'
-d = json.load(open(p)) if os.path.exists(p) else {}
-d.setdefault('providers', {}).setdefault('openai', {})['baseUrl'] = 'https://inference.local/v1'
-json.dump(d, open(p, 'w'), indent=2)
-"
-
-# ---- step 7b (NEW): start the openclaw gateway with OPENAI_API_KEY in env ----
+# ---- step 7b: start the openclaw gateway with OPENAI_API_KEY in env ---------
 #
 # Phase 1 baked `models.providers.openai.apiKey` as a ref to OPENAI_API_KEY
 # in the gateway process's env. The gateway reads the key at startup;
