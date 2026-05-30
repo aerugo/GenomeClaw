@@ -5,9 +5,13 @@
 #
 # Builds on the NemoClaw sandbox base image (which already includes OpenClaw,
 # Node.js, and the NemoClaw plugin). We add:
-#   - the GenomeClaw OpenClaw plugin (TypeScript, built into ./dist)
-#   - copies the plugin into /sandbox/.openclaw/extensions/genomeclaw
-#   - runs `openclaw doctor --fix` to register the new plugin
+#   - the GenomeClaw OpenClaw plugin (TypeScript, built into ./dist) staged
+#     at `/sandbox/build/genomeclaw/` (inside the OpenShell Landlock RW
+#     baseline at `/sandbox/`, but NOT under the auto-scanned extensions
+#     tree at `/sandbox/.openclaw/extensions/` — `openclaw plugins install
+#     --link` refuses a source path already in the scan tree).
+#   - register it via `openclaw plugins install --link` so the user source
+#     root surfaces it for `nemoclaw connect`, the dashboard, and `openclaw tui`
 #
 # This image is consumed via:
 #   nemoclaw onboard --from packages/nemoclaw-plugin/sandbox/Dockerfile
@@ -21,6 +25,28 @@
 #     only on the host; the sandbox has no path to them.
 #   - INV-R001: the plugin source is built into immutable `dist/` artifacts;
 #     the same Dockerfile + same plugin source produces the same image.
+#   - INV-D011 (provisional): the plugin lives at `/sandbox/build/genomeclaw/`,
+#     inside the OpenShell Landlock RW baseline (`/sandbox/`). The prior
+#     layout under `/opt/genomeclaw/` was OUTSIDE the Landlock baseline and
+#     produced EACCES on every NemoClaw-managed surface (dashboard, connect,
+#     TUI). `/sandbox/build/<plugin-id>/` is used (rather than
+#     `/sandbox/.openclaw/extensions/<plugin-id>/`) because
+#     `openclaw plugins install --link` rejects a source path already inside
+#     the auto-scan tree. The plugin is registered into openclaw's plugin
+#     index by the `RUN openclaw plugins install ... --link` step below; the
+#     plugin loader reads the dist tree from the linked path directly.
+#     See docs/plans/active/nemoclaw-canonical-integration/spec.md
+#     "Root cause 1" + work-notes Phase 2 for the empirical resolution.
+#
+# Base image pin (INV-D011): pinned by version tag matching the host
+# `nemoclaw --version`. Bump every time the host CLI is upgraded so the
+# sandbox runtime + the host CLI stay in lockstep (mismatch = the
+# `--port 18790` / 18789 split and the `nemoclaw genomeclaw rebuild` hint
+# the user saw on 2026-05-29). The `:latest` tag drifted silently against
+# the local docker image cache and produced the version skew that
+# motivated this plan — do NOT use it. Resolved multi-arch index digest
+# at pin time (2026-05-29): sha256:3d9391e6c27c986f4ded2e36c874b5f16f59001cdda3415daa48a43ccb5a2ed3.
+# Image contains OpenClaw 2026.5.18 (matches nemoclaw v0.0.50).
 #
 # To rebuild: nemoclaw onboard --from packages/nemoclaw-plugin/sandbox/Dockerfile
 # To override the host-service port (default 8645):
@@ -37,7 +63,7 @@
 #     --value '"http://host.openshell.internal:8645"' \
 #     --restart
 
-ARG SANDBOX_BASE=ghcr.io/nvidia/nemoclaw/sandbox-base:latest
+ARG SANDBOX_BASE=ghcr.io/nvidia/nemoclaw/sandbox-base:v0.0.50
 ARG GENOMECLAW_HOST_PORT=8645
 FROM ${SANDBOX_BASE}
 
@@ -46,26 +72,37 @@ ARG GENOMECLAW_HOST_PORT=8645
 
 USER root
 
+# Canonical plugin source path inside the Landlock RW baseline:
+# `/sandbox/build/genomeclaw/`. Every COPY / RUN / WORKDIR below references
+# this single root. Changing it requires updating the INV-D011 discovery
+# test in packages/toolkit/tests/invariants/test_invD011_plugin_install_path.py.
+#
+# We re-create the subdirectory as root via the first COPY and chown later
+# — simpler than juggling --chown on every COPY, and the layer-cache hit
+# on the chown step is the same.
+
 # Stage the policy preset + render the port into it. Default value (8645)
 # matches what ships in policy-preset.yaml; the sed is a no-op unless the
 # operator overrode --build-arg GENOMECLAW_HOST_PORT. Done early so the
 # rest of the build can reference the rendered file at a known path.
-COPY policy-preset.yaml /opt/genomeclaw/policy-preset.yaml
-RUN sed -i "s/port: 8645/port: ${GENOMECLAW_HOST_PORT}/g" /opt/genomeclaw/policy-preset.yaml \
+COPY policy-preset.yaml /sandbox/build/genomeclaw/policy-preset.yaml
+RUN sed -i "s/port: 8645/port: ${GENOMECLAW_HOST_PORT}/g" \
+      /sandbox/build/genomeclaw/policy-preset.yaml \
     && echo "[build] genomeclaw policy preset rendered with host port ${GENOMECLAW_HOST_PORT}"
 
-# Stage the plugin source under /opt and build it there.
+# Stage the plugin source under the canonical path and build it there.
 # The build context is `packages/nemoclaw-plugin/`, so `./` here refers to
 # the plugin package root containing package.json, tsconfig.json, src/.
-COPY package.json package-lock.json* tsconfig.json openclaw.plugin.json /opt/genomeclaw/
-COPY src/ /opt/genomeclaw/src/
+COPY package.json package-lock.json* tsconfig.json openclaw.plugin.json \
+     /sandbox/build/genomeclaw/
+COPY src/ /sandbox/build/genomeclaw/src/
 # `types/` carries the local stub of `openclaw/plugin-sdk` that `tsc` needs
 # to compile the plugin (Slice D, 2026-05-15). The real SDK is provided by
 # the sandbox base image at runtime; the stub only exists for build-time
 # type resolution.
-COPY types/ /opt/genomeclaw/types/
+COPY types/ /sandbox/build/genomeclaw/types/
 
-WORKDIR /opt/genomeclaw
+WORKDIR /sandbox/build/genomeclaw
 RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
 RUN npm run build
 
@@ -76,7 +113,12 @@ RUN npm run build
 #   2. Registers the plugin id (`genomeclaw`) in OpenClaw's plugin index so
 #      `openclaw plugins list` + `plugins.allow: [genomeclaw]` actually
 #      resolve to this extension.
-#   3. Links instead of copying so we still inspect from /opt/genomeclaw.
+#   3. Links instead of copying so we still inspect from the canonical path.
+#
+# File-drop alone (without `openclaw plugins install`) is NOT auto-discovered
+# in nemoclaw v0.0.50 — verified by Phase 1 probe of
+# `ghcr.io/nvidia/nemoclaw/sandbox-base:v0.0.50`. See
+# docs/plans/active/nemoclaw-canonical-integration/work-notes.md Phase 1.
 #
 # `node_modules/` must be present at the link target because Slice D
 # introduced a runtime dep on `@sinclair/typebox` (the TypeBox schemas the 5
@@ -87,9 +129,9 @@ RUN npm run build
 # Bundling via esbuild/rollup would shrink it but adds tooling complexity
 # without a clear win at this scale.
 #
-# `chown` to the sandbox user so the plugin is readable when openclaw runs
-# under USER sandbox below.
-RUN chown -R sandbox:sandbox /opt/genomeclaw
+# `chown` to the sandbox user so the plugin tree is readable + the
+# install metadata is writable when openclaw runs under USER sandbox below.
+RUN chown -R sandbox:sandbox /sandbox/build/genomeclaw
 USER sandbox
 WORKDIR /sandbox
 
@@ -102,10 +144,26 @@ WORKDIR /sandbox
 # every post-install `openclaw config set` failed with
 # `EACCES: permission denied, mkdir '/root/.openclaw'`. Setting HOME here
 # fixes the build-time and the runtime path in one line. See
-# docs/plans/active/onboard-persistent-agent-fix/.
+# docs/plans/completed/onboard-persistent-agent-fix/.
 ENV HOME=/sandbox
 
-RUN openclaw plugins install /opt/genomeclaw --link
+# `openclaw plugins install --link <source>` registers the plugin location
+# with the openclaw runtime by recording the source path directly (no copy,
+# no symlink into /sandbox/.openclaw/extensions/). Source path semantics
+# verified empirically against the v0.0.50 base image: install --link writes
+# the plugin entry with `Source: /sandbox/build/genomeclaw/dist/index.js`
+# in `openclaw plugins list` and the entry shows as enabled with the
+# expected 9-tool count.
+#
+# IMPORTANT: the source path MUST NOT live under /sandbox/.openclaw/extensions/.
+# That directory is auto-scanned by the openclaw runtime, and `install --link`
+# refuses to register a source that's already in the scan tree (errors with
+# "plugin already exists: <path> (delete it first)"). We use /sandbox/build/
+# instead — also inside the Landlock RW baseline (so the plugin loads under
+# `nemoclaw connect`, dashboard, and TUI), but outside the scan tree to avoid
+# the collision. Discovered 2026-05-29 during the first canonical-path
+# build attempt — see docs/plans/active/nemoclaw-canonical-integration/.
+RUN openclaw plugins install /sandbox/build/genomeclaw --link
 
 # `INV-P001` v1.7 (per agent-research-and-synthesis Phase 2b, 2026-05-15):
 # native OpenAI `web_search` (the hosted `web_search` tool that OpenAI's
@@ -135,18 +193,38 @@ RUN openclaw config set tools.web.search.enabled true \
 
 # Persistent-path runtime config (onboard-persistent-agent-fix, 2026-05-24):
 # the `nemoclaw genomeclaw exec` wrapper runs commands inside openshell's
-# filesystem-restriction layer that EACCESes on `/opt/genomeclaw`, so any
-# post-install `openclaw config set ...` issued by the operator's onboard
-# script fails. We bake the four keys that script used to set into the
-# image at build time (where the USER-sandbox-with-HOME-set context can
-# actually write to /sandbox/.openclaw). Without these bakes:
+# filesystem-restriction layer that previously EACCESed on `/opt/genomeclaw`,
+# so any post-install `openclaw config set ...` issued by the operator's
+# onboard script failed. We bake the four keys that script used to set into
+# the image at build time (where the USER-sandbox-with-HOME-set context can
+# actually write to /sandbox/.openclaw). The Landlock blocker no longer
+# applies after the canonical-path migration (the plugin tree is now inside
+# the RW baseline), but the bakes still guard the first-run experience:
 #   - missing gateway.mode → "Gateway start blocked: existing config is
 #     missing gateway.mode" + gateway refuses to start
 #   - missing plugins.allow → plugin loaded but disabled, 0 tools surfaced
 #   - missing hostService.baseUrl → plugin defaults wrong, ECONNREFUSED
 #     on every tool call
 # Verified by tests/invariants/test_invP001_sandbox_baked_config_persistent_path.py.
+#
+# `gateway.bind=loopback` (nemoclaw-canonical-integration Phase 3, Facet A1,
+# 2026-05-30): on sandbox-base:v0.0.50 (OpenClaw 2026.5.18) the gateway, in a
+# container, defaults to `bind=auto` (0.0.0.0) and *refuses to start without
+# auth* ("Refusing to bind gateway to auto without auth"). nemoclaw launches
+# the supervised gateway flag-lessly (`openclaw gateway run --port <n>`), so
+# without this bake the onboard gateway start, `nemoclaw recover`, and the
+# dashboard/TUI all fail. Baking `bind=loopback` makes the flag-less launch
+# bind 127.0.0.1 — where auth=none is valid — so no gateway-access secret is
+# baked into the image (per the 2026-05-30 privacy-safety review: a static
+# baked token would persist in image history; loopback containment adds no
+# capability an in-container attacker doesn't already have). The `ask.sh`
+# (`docker exec`) path and nemoclaw's authenticated port-forward both reach
+# the loopback gateway. A bind=auto + runtime-generated token is the future
+# path IF the dashboard forward ever needs 0.0.0.0 — that token must be
+# env-injected at launch, NEVER baked (INV-P003). Guarded by the
+# bound-address + no-baked-token tests (test_invP001_sandbox_baked_config_*).
 RUN openclaw config set gateway.mode local \
+ && openclaw config set gateway.bind loopback \
  && openclaw config set plugins.allow '["genomeclaw"]' \
  && openclaw config set plugins.entries.genomeclaw.config.hostService.baseUrl \
       "http://host.openshell.internal:${GENOMECLAW_HOST_PORT}" \
@@ -169,10 +247,11 @@ RUN printf '%s' '[{"path":"models.providers.openai.baseUrl","value":"https://api
 
 # Bind the OpenAI provider's apiKey to the OPENAI_API_KEY env var at
 # runtime. The gateway process reads the key from its env at startup
-# (operator passes it via `docker exec -e OPENAI_API_KEY=...` per the
-# onboard script). The literal key NEVER lands in this image layer —
-# only the ref-to-env-var-name lands. This makes the built image safe
-# to push to a private registry without leaking the operator's credential.
+# (NemoClaw's credential store stages the key into the gateway's env;
+# `nemoclaw onboard` registers the value from the operator's shell env).
+# The literal key NEVER lands in this image layer — only the ref-to-env-
+# var-name lands. This makes the built image safe to push to a private
+# registry without leaking the operator's credential.
 # Ref shape (verified empirically): {"source":"env","provider":"default","id":"OPENAI_API_KEY"}.
 RUN openclaw config set models.providers.openai.apiKey \
       --ref-provider default --ref-source env --ref-id OPENAI_API_KEY
@@ -209,9 +288,11 @@ RUN openclaw config set agents.defaults.model openai/gpt-5.5 \
 # text in `agents.list[].systemPromptOverride`. We use a small Python
 # helper to read the prompt off disk + emit a `--strict-json` batch so
 # the multi-line text survives shell quoting.
-COPY --chown=sandbox:sandbox sandbox/agent-system-prompt.md /opt/genomeclaw/sandbox/agent-system-prompt.md
-COPY --chown=sandbox:sandbox sandbox/install-agent-prompt.py /opt/genomeclaw/sandbox/install-agent-prompt.py
-RUN python3 /opt/genomeclaw/sandbox/install-agent-prompt.py
+COPY --chown=sandbox:sandbox sandbox/agent-system-prompt.md \
+     /sandbox/build/genomeclaw/sandbox/agent-system-prompt.md
+COPY --chown=sandbox:sandbox sandbox/install-agent-prompt.py \
+     /sandbox/build/genomeclaw/sandbox/install-agent-prompt.py
+RUN python3 /sandbox/build/genomeclaw/sandbox/install-agent-prompt.py
 
 # Workspace bootstrap (agent-research-and-synthesis Phase 3 slice 4, 2026-05-15):
 # the OpenClaw `pi` agent harness auto-injects workspace files into the system
@@ -233,7 +314,7 @@ COPY --chown=sandbox:sandbox sandbox/workspace/USER.md /sandbox/.openclaw/worksp
 RUN rm -f /sandbox/.openclaw/workspace/BOOTSTRAP.md
 
 USER root
-WORKDIR /opt/genomeclaw
+WORKDIR /sandbox/build/genomeclaw
 
 # Drop back to the unprivileged sandbox user; NemoClaw's entrypoint expects this.
 USER sandbox

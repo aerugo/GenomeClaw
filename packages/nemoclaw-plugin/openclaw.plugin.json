@@ -4,6 +4,22 @@
   "name": "GenomeClaw",
   "version": "0.0.1",
   "description": "Personal genomics tools for OpenClaw — query findings, variants, evidence, and reports against a host-side derived store. All raw artifacts stay host-side (INV-D002); the plugin only reaches the host service via the configured network policy preset.",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "genomeclaw_status",
+      "genomeclaw_findings",
+      "genomeclaw_variant",
+      "genomeclaw_evidence",
+      "genomeclaw_gene",
+      "genomeclaw_pgs_list",
+      "genomeclaw_pgs_get",
+      "genomeclaw_pgs_compute",
+      "genomeclaw_pgs_compute_status"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

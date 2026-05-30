@@ -25,11 +25,24 @@ The bakes asserted here:
   to `/sandbox/.openclaw/` (the sandbox user's writeable home) rather
   than `/root/.openclaw` (which EACCESes for uid 998).
 
+Historical note: prior to the nemoclaw-canonical-integration plan
+(2026-05-29) the plugin lived at `/opt/genomeclaw/` — outside the
+OpenShell Landlock RW baseline — so any post-install
+`openclaw config set` issued via `nemoclaw genomeclaw exec` failed
+with EACCES. The persistent-path bakes here were the primary mitigation.
+The plugin now lives at `/sandbox/.openclaw/extensions/genomeclaw/`
+(inside the Landlock baseline), so post-install `openclaw config set`
+also works in principle — but the build-time bakes remain because the
+first-run experience must not depend on the operator re-running
+`openclaw config set`.
+
 Gated on `GENOMECLAW_SANDBOX_IMAGE` per the rest of the sandbox-image
 invariant suite — skips cleanly without a built image.
 
 Tracks the onboard-persistent-agent-fix plan
-(docs/plans/active/onboard-persistent-agent-fix/).
+(docs/plans/completed/onboard-persistent-agent-fix/) + the
+nemoclaw-canonical-integration plan
+(docs/plans/active/nemoclaw-canonical-integration/).
 """
 
 from __future__ import annotations
@@ -196,6 +209,55 @@ def test_invP001_baked_openai_apikey_is_env_ref_not_literal(
         f"openclaw.json at offset {match.start() if match else '?'}; the "
         "image must never carry the operator's credential in a layer. "
         f"Matched substring (redacted): {match.group(0)[:8]}...{match.group(0)[-4:]}"
+    )
+
+
+@pytest.mark.needs_sandbox
+def test_invP001_baked_gateway_bind_is_loopback(baked_openclaw_json: dict) -> None:
+    """`gateway.bind == "loopback"` (nemoclaw-canonical-integration Phase 3, Facet A1).
+
+    On sandbox-base:v0.0.50 the gateway defaults to `bind=auto` (0.0.0.0) in a
+    container and refuses to start without auth. nemoclaw launches the
+    supervised gateway flag-lessly, so baking `bind=loopback` is what lets it
+    start (127.0.0.1, where auth=none is valid) without baking a gateway-access
+    secret. See the Dockerfile gateway-config bake + work-notes Phase 3.
+    """
+    bind = baked_openclaw_json.get("gateway", {}).get("bind")
+    assert bind == "loopback", (
+        f"INV-P001 / Facet A1: baked gateway.bind={bind!r}; expected 'loopback'. "
+        "Without it the supervised gateway (`openclaw gateway run --port`) hits "
+        "the container bind=auto auth guard and refuses to start, breaking onboard, "
+        "`nemoclaw recover`, and the dashboard/TUI."
+    )
+
+
+@pytest.mark.needs_sandbox
+def test_invP001_no_static_gateway_token_baked(baked_openclaw_json: dict) -> None:
+    """No static gateway-access token is baked into the image config.
+
+    Per the 2026-05-30 privacy-safety review: a static `gateway.auth.token`
+    baked into a Dockerfile layer persists in image history and is identical
+    across every deployment — the same INV-P003 class of risk a baked API key
+    would be. The loopback-bind posture needs no token; if a token is ever
+    required for a bind=auto dashboard path it MUST be generated at runtime and
+    passed via env, never baked. This guards against that regression.
+    """
+    gateway = baked_openclaw_json.get("gateway", {})
+    auth = gateway.get("auth") or {}
+    token = auth.get("token")
+    # Absent / empty / OpenClaw's redaction sentinel are all fine. A real
+    # non-empty literal is the regression this test catches.
+    redaction_sentinels = {"__OPENCLAW_REDACTED__", "", None}
+    assert token in redaction_sentinels, (
+        f"INV-P003 / Facet A1: a static gateway.auth.token is baked into the "
+        f"image config (value redacted). Remove it — the loopback gateway needs "
+        "no token, and a bind=auto token must be runtime-generated + env-injected, "
+        "never baked into an image layer."
+    )
+    assert auth.get("mode") != "token", (
+        f"INV-P003 / Facet A1: baked gateway.auth.mode='token' implies a baked "
+        "static token. The loopback posture uses auth=none (or unset); a token "
+        "mode belongs only to a runtime-generated, env-injected dashboard path."
     )
 
 
