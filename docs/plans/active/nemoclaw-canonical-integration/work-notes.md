@@ -388,9 +388,22 @@ Recovery restores a **working** agent (not just a listening port). `nemoclaw rec
 ---
 
 ### Phase 6: Documentation Cleanup + Optional Invariant Promotion
-**Status**: Pending
-**Started**:
-**Completed**:
+**Status**: Reconciled — premise invalidated by Phase 5; doc edits + INV-D011 registry entry SPECIFIED + handed off (in-flight doc WIP blocks clean commit). INV-D011 enforced by committed test.
+**Started**: 2026-05-30
+**Completed**: spec + handoff 2026-05-30
+
+**Two findings reshaped Phase 6** (full detail in [phases/phase-6.md](phases/phase-6.md) "Reconciliation"):
+1. **Premise invalidated**: Phase 6 assumed "dashboard/connect/TUI now work → remove docker-exec guidance, make them primary." Phase 5 proved the opposite on local Docker — `docker exec`/`ask.sh` REMAINS canonical (embedded agent + keyed gateway); dashboard/TUI are plumbing-fixed (canonical path + loopback-tokenless gateway) but data-blocked (host 503) + manual. So the sweeping doc rewrite is WITHDRAWN; the in-flight `CLAUDE.md` "Running the Agent Locally" is already accurate.
+2. **Clean-commit blocker**: README/CLAUDE.md/test-engineer.md/INVARIANTS.md all carry substantial uncommitted in-flight WIP that is NOT this plan's (INVARIANTS.md alone is +224 lines of other invariants; the in-flight README diff even *adds* a stale `/opt/genomeclaw` probe line overlapping the exact troubleshooting sections this phase would edit). Editing+committing them would bundle the maintainer's WIP. So the doc edits are **specified + handed off**, not applied here.
+
+**What was done in Phase 6**:
+- Reconciled `phases/phase-6.md` with the above + the residual doc-edit handoff list (mainly: README's stale `/opt/genomeclaw`-EACCES troubleshooting entries describe a problem the migration FIXED → update to `/sandbox/build/genomeclaw`; reconcile the in-flight README `sandbox-up.sh` description to its new canonical-path + port-based behavior).
+- **INV-D011**: enforced by the committed `test_invD011_plugin_install_path.py` (path + version-tag pin) + `test_plugin_manifest_tool_contract.py` (cold-metadata tool contract), green through Phases 2–5. The INVARIANTS.md **registry entry text is written in phase-6.md** for the maintainer to paste once INVARIANTS.md's +224-line WIP settles (a Version bump + Invariant Index entry). De-facto promoted at the test level; registry entry deferred.
+
+**Not done (handed off / external blockers)** — see development-plan "Deferred Follow-ups":
+- README/CLAUDE.md/test-engineer.md doc edits (blocked by in-flight doc WIP).
+- INV-D011 INVARIANTS.md registry entry (blocked by INVARIANTS.md WIP).
+- Phase 5 data-grounded smoke + dashboard/TUI manual gates (blocked by the v0.4 derived-store rebuild → needs a pipeline host / colima mounts / native bio tools).
 
 ---
 

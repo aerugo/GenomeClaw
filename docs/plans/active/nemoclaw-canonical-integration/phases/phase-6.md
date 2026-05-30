@@ -1,13 +1,33 @@
 # Phase 6: Documentation Cleanup + Optional Invariant Promotion
 
-**Status**: Pending
-**Started**:
-**Completed**:
+**Status**: Reconciled — premise largely invalidated by Phase 5; doc edits + INV-D011 registry entry SPECIFIED and deferred (in-flight doc-file WIP). INV-D011 enforced by the committed discovery test.
+**Started**: 2026-05-30
+**Completed**: spec + handoff 2026-05-30; doc-file commits deferred to the maintainer
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
 
-## Objective
+## ⚠️ Reconciliation (2026-05-30) — premise invalidated by Phase 5, and a clean-commit blocker
+
+Two findings reshaped this phase:
+
+1. **Phase 6's original premise is wrong for local Docker.** It assumed "the dashboard / `nemoclaw connect` / TUI now work, so remove the docker-exec guidance and make them primary." Phase 5 proved the opposite on local Docker: **`docker exec` / `scripts/ask.sh` REMAINS the canonical working path** (the embedded agent + the keyed gateway), while the dashboard/TUI are plumbing-fixed (canonical plugin path + loopback-tokenless gateway) but **data-blocked** (no v0.4 derived store → host 503) and require manual interaction. So the "remove docker-exec, dashboard-primary" rewrite must NOT be made. The current in-flight `CLAUDE.md` "Running the Agent Locally" section is already accurate for local Docker and needs no change.
+
+2. **The doc files are entangled with substantial uncommitted in-flight WIP** that is NOT this plan's: `docs/reference/INVARIANTS.md` (+224 lines of other invariants), `README.md`/`CLAUDE.md`/`.claude/agents/test-engineer.md` (the workaround-docs additions, partly overlapping the exact troubleshooting sections this phase would edit — the in-flight README diff even *adds* a stale `/opt/genomeclaw` reference). Editing + committing these would bundle the maintainer's WIP. **Therefore the doc edits below are SPECIFIED and handed off; this plan does not edit those files.** INV-D011 is enforced by its committed discovery test; the INVARIANTS.md registry entry is deferred for the same reason.
+
+## Objective (reconciled)
+
+Specify the (small, residual) doc edits + the `INV-D011` registry entry as a maintainer handoff, to be applied alongside the in-flight doc-file WIP. Keep `INV-D011` enforced via the already-committed `test_invD011_plugin_install_path.py` (green through Phases 2–5). The original sweeping "remove docker-exec / dashboard-primary" rewrite is withdrawn (Phase 5 showed docker-exec/ask.sh stays canonical on local Docker).
+
+### Deferred doc edits (handoff — apply with the in-flight doc WIP)
+- **README.md § Troubleshooting**: the `/opt/genomeclaw` EACCES entries (≈ lines 392, 411, 502–506) describe a problem the canonical-path migration FIXED — the plugin is now at `/sandbox/build/genomeclaw` (inside the Landlock RW baseline). Update/remove those entries; update the `sandbox-up.sh` description (its plugin check now targets `/sandbox/build/genomeclaw/dist/index.js` and gateway detection is port-based, not the `/opt` EACCES probe). The in-flight README diff that *adds* an `EACCES-on-/opt/genomeclaw` probe line should be reconciled away.
+- **CLAUDE.md § Running the Agent Locally**: already accurate for local Docker (docker-exec/ask.sh canonical, `sandbox-up.sh` recovery). No change needed beyond optionally noting the gateway is now loopback + auth=none (token-free) and the plugin path is `/sandbox/build/genomeclaw`.
+- **.claude/agents/test-engineer.md**: the in-flight content (live-agent gates via `docker exec`, INV-V001 rule) is accurate; no canonical-path change needed.
+
+### `INV-D011` registry entry (handoff — paste into INVARIANTS.md when its WIP settles)
+> **INV-D011 — Plugin Install Path Follows NemoClaw's Canonical (Landlock-RW) Pattern.** Any plugin baked into a GenomeClaw sandbox image MUST live inside the OpenShell Landlock RW baseline (`/sandbox/…` or `/tmp/…`), registered with the OpenClaw runtime via `openclaw plugins install … --link`, and MUST declare its agent tools as cold metadata in `openclaw.plugin.json` (`contracts.tools` + `activation.onStartup`) so the gateway surfaces them without importing the runtime. Plugins MUST NOT live under `/opt/<plugin-id>/` or any path outside the baseline. **Where it applies**: `packages/*/sandbox/Dockerfile`. **How to verify**: `packages/toolkit/tests/invariants/test_invD011_plugin_install_path.py` (path + version-tag pin) and `test_plugin_manifest_tool_contract.py` (cold-metadata tool contract). Bump INVARIANTS.md Version + add to the Invariant Index.
+
+## Objective (original — superseded, retained for context)
 
 Update README, CLAUDE.md, and `.claude/agents/test-engineer.md` to reflect the canonical NemoClaw-managed paths now that they actually work. Remove the *"nemoclaw exec is broken upstream"* warnings and the *"docker exec is the working path"* guidance. If Phases 1–5 validated the canonical-path discipline cleanly, promote `INV-D011` into [docs/reference/INVARIANTS.md](../../../reference/INVARIANTS.md) with a discovery test.
 

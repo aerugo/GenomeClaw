@@ -1,8 +1,10 @@
 # NemoClaw Canonical Integration — Development Plan
 
-**Status**: Draft
+**Status**: Implementation complete + committed (Phases 1–4 + Phase 5 surface gate). Closeout follow-ups deferred on external blockers (v0.4 data rebuild needs a pipeline host; doc-file edits + INV-D011 registry entry blocked by unrelated in-flight WIP in those files). See **Deferred Follow-ups** below. Kept in `active/` until the deferred closeout lands.
 **Created**: 2026-05-29
+**Completed (implementation)**: 2026-05-30
 **Branch**: `main` (working from `main` per repo convention)
+**Commits**: `0403859` (Phase 2 + 3B + 3A1), `8e9090a` (3A2), `226e3b9` (Phase 4), `c7d7931` (Phase 5 surface gate + A1 auth.mode=none)
 **Spec**: [spec.md](spec.md)
 
 ---
@@ -302,7 +304,7 @@ If a smoke gate **fails**, the phase does NOT close. We diagnose the failure (`t
 | Phase 3 | Facets B ✅ + A1 ✅ + A2 ✅ (pragmatic) — verified end-to-end | 2026-05-30 | 2026-05-30 | **B** (manifest `contracts.tools`+`activation.onStartup`; agent calls tools). **A1** (bake `gateway.bind=loopback` — no token, per privacy review). **A2** (delete onboard Step 6 literal-key `auth-profiles.json` write [reviewer HIGH finding] + dead Step 7 `inference.local`; key stays env-only via Step 7b, INV-P003-clean). The native L7-proxy credential ownership is infeasible on local Docker (no `inference.local` DNS / model-router; `inference set` sandbox-sync uses a failing k8s path) → documented upstream/Phase-4 follow-up. Clean re-onboard verified: auth-profiles.json absent, gateway loopback, `1 plugin: genomeclaw`, agent calls `genomeclaw_status`. Research: [initial_findings.md](initial_findings.md). |
 | Phase 4 | Complete | 2026-05-30 | 2026-05-30 | `sandbox-up.sh`/`onboard-sandbox.sh` cleanup: canonical-path plugin check, port-based gateway detection, best-effort `nemoclaw recover` + keyed docker-exec restart (local-Docker recovery; nemoclaw recover infeasible locally). 5 script-shape tests + manual kill-and-recover smoke (agent calls `genomeclaw_status` after recovery). |
 | Phase 5 | Surface gate ✅; data gate ⛔ blocked (infra) | 2026-05-30 | | Surface gate PASSED: regression suite 1175 passed (8 failures all pre-existing/in-flight, outside this plan); ask.sh muscle-question smoke = 22 tool calls incl. 4 `genomeclaw_*`, faithful reply handling the 503 honestly (vs 0 tools pre-fix); spec-Q4 clean. Completed A1 (`gateway.auth.mode=none` → gateway-routed surfaces token-free on loopback). **Data-grounded gate + dashboard/TUI BLOCKED**: no `v0.4` derived store (existing data v0.3) and a rebuild is infeasible here (colima won't mount `/Volumes/Genome_Work`; native bio tools absent) → host 503. Follow-up: rebuild on a pipeline host. |
-| Phase 6 | Pending | | | Docs + invariant promotion |
+| Phase 6 | Reconciled + handed off | 2026-05-30 | 2026-05-30 | Premise invalidated by Phase 5 (docker-exec/ask.sh stays canonical on local Docker → no sweeping doc rewrite). INV-D011 enforced by committed tests (path-pin + cold-metadata tool contract); registry entry + residual README `/opt`-staleness edits SPECIFIED + handed off (doc files have unrelated in-flight WIP — INVARIANTS.md +224 lines). See phase-6 "Reconciliation". |
 
 ---
 
@@ -313,3 +315,15 @@ If a smoke gate **fails**, the phase does NOT close. We diagnose the failure (`t
 - **Plugin auto-discovery may need a manifest convention**: Phase 1 audit will tell us. If `openclaw plugins install` is still the right invocation, Phase 2 keeps it; if file-drop alone suffices, the Dockerfile loses a step.
 - **Base-image SHA bump cadence**: this is a one-time pin now, but we'll drift again as soon as NemoClaw upstream releases. Track in `work-notes.md` § Open Risks; add a CLAUDE.md note in Phase 6.
 - **`packages/toolkit/tests/integration/test_host_service_toolkit_image.py` may reference `/opt/genomeclaw/`** (spec Q4). Phase 5 audit; small follow-up if so.
+
+---
+
+## Deferred Follow-ups (external blockers — not implementation gaps)
+
+The plan's implementation is complete and committed (4 commits). These remaining closeout items are blocked by factors outside this plan and outside safe reach in this environment:
+
+1. **v0.4 derived-store rebuild + data-grounded smoke + dashboard/TUI manual gates** (Phase 5). The host service serves schema `v0.4`; the only derived store on disk is `v0.3` → `/v1/health` 503. Rebuilding is infeasible here: colima does not mount `/Volumes/Genome_Work` into its VM (docker pipeline can't reach the inputs) and native bio tools (`bcftools`/`tabix`/`vep`/`vcfanno`/`samtools`/`nextflow`) are absent. **Action**: run `genomeclaw pipeline run` on a pipeline host (or after wiring colima mounts / installing the toolchain), then re-run `scripts/ask.sh` for the data-grounded muscle-question smoke and do the dashboard/TUI manual gates (their auth/plumbing is already fixed — loopback + auth=none, canonical plugin path).
+2. **Doc-file edits** (Phase 6): README's stale `/opt/genomeclaw`-EACCES troubleshooting (the migration fixed it; plugin is at `/sandbox/build/genomeclaw`) and the in-flight README `sandbox-up.sh` description need updating. **Blocked** because README/CLAUDE.md/`.claude/agents/test-engineer.md` carry unrelated uncommitted in-flight WIP in the exact sections to edit. **Action**: apply the edits specified in `phases/phase-6.md` alongside committing that doc WIP.
+3. **INV-D011 registry entry** (Phase 6): the invariant is enforced by committed tests (`test_invD011_plugin_install_path.py` + `test_plugin_manifest_tool_contract.py`), but its INVARIANTS.md entry is deferred because INVARIANTS.md has +224 lines of unrelated in-flight WIP. **Action**: paste the entry text from `phases/phase-6.md` + bump the Version/Index when that WIP settles.
+
+Once (1)–(3) land, set Status to **Complete** and move the plan to `docs/plans/completed/nemoclaw-canonical-integration/`.
