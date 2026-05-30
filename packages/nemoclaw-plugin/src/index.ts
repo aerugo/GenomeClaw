@@ -177,6 +177,108 @@ async function callHostService(
   }
 }
 
+// ---------------------------------------------------------------------------
+// INV-A006 structured failure envelopes (Plan A.1 of
+// inv-a005-structural-faithfulness)
+// ---------------------------------------------------------------------------
+//
+// The three failure-path helpers below (`safeCall`/`safePost` catch blocks,
+// `wrapHostResponse`, `rejectIfPlaceholder`) used to return prose strings
+// as the tool-result `text` field. The agent then had to substring-match
+// the prose to classify the failure mode — forcing downstream tests to
+// enumerate banned phrases (`_FORBIDDEN_PHRASES`), which doesn't generalize
+// against LLM paraphrase-space.
+//
+// Plan A.1 changes the helpers to emit JSON-encoded `ToolFailureEnvelope`
+// values: a discriminated union over `error_type` with structured detail
+// fields. The agent reads `error_type` literally + quotes structured fields
+// verbatim per the §INV-A005 rewrite (Plan A.2). The `advisory` field is
+// human-readable text for operator-facing logs but is NOT load-bearing for
+// any test or downstream consumer (per `INV-A006` requirements).
+
+/**
+ * Phase 3 of agent-synthesis-over-rich-tool-data — rich diagnostic context
+ * the agent reads on host-side failure paths. Mirrors the Pydantic
+ * `ToolDiagnosticTrace` model the host service emits in `PgsComputeTaskResponse`
+ * (see [packages/toolkit/src/genomeclaw_toolkit/schemas/pgs.py]).
+ *
+ * All fields are optional — the host service may not capture every facet of
+ * every failure mode. The agent treats absent fields as "no additional
+ * context available" and synthesizes honestly from what's present.
+ */
+type ToolDiagnosticTrace = {
+  /** Pipeline stage at which the failure occurred (e.g., "scorefile_staging"). */
+  stage?: string | null;
+  /** Higher-level cause class (e.g., "scorefile_missing", "pgsc_calc_failed"). */
+  upstream_cause?: string | null;
+  /** User-actionable next step in plain language. */
+  suggested_fix?: string | null;
+  /** Filesystem paths / PGS IDs the user can inspect. */
+  related_paths?: string[];
+  /** Last ~2KB of worker stderr/stdout when captured. */
+  partial_log_tail?: string | null;
+};
+
+type ToolFailureEnvelope =
+  | {
+      status: "failed";
+      error_type: "placeholder_rejected";
+      tool_name: string;
+      arg_name: string;
+      value: unknown;
+      advisory: string;
+    }
+  | {
+      status: "failed";
+      error_type: "host_failure";
+      http_path: string;
+      host_status: string;
+      host_error: string;
+      advisory: string;
+      diagnostic?: ToolDiagnosticTrace;
+    }
+  | {
+      status: "failed";
+      error_type: "network_error";
+      http_path: string;
+      raw_error: string;
+      advisory: string;
+    }
+  | {
+      status: "failed";
+      error_type: "http_error";
+      http_path: string;
+      http_status: number;
+      raw_error: string;
+      advisory: string;
+    };
+
+/**
+ * Wrap a `ToolFailureEnvelope` in the SDK's `failedTextResult` envelope so
+ * its tool-result `text` field is the JSON-stringified envelope. The agent's
+ * tool-result text is then parseable structured JSON.
+ *
+ * Two-layer wrapping is deliberate: the SDK's `isError: true` flag is the
+ * coarse signal any aggregator (e.g., `toolSummary.failures`) keys off; the
+ * structured envelope inside the `text` field carries the per-failure-mode
+ * detail the agent reasons over.
+ */
+function failureEnvelopeResult(
+  envelope: ToolFailureEnvelope,
+): ReturnType<typeof failedTextResult> {
+  return failedTextResult(JSON.stringify(envelope, null, 2), envelope);
+}
+
+/**
+ * Extract HTTP status from a `callHostService` error message of the form
+ * `"genomeclaw-service <path> -> HTTP <status>"`. Returns `null` if the
+ * message doesn't match (e.g., a network-level fetch failure).
+ */
+function parseHttpStatusFromError(msg: string): number | null {
+  const m = /-> HTTP (\d{3})/.exec(msg);
+  return m === null ? null : parseInt(m[1] ?? "0", 10);
+}
+
 /**
  * Wrap an HTTP call in the `jsonResult` / `failedTextResult` envelope
  * shape every tool returns. Centralises the success-vs-error envelope
@@ -189,11 +291,97 @@ async function safeCall<T = unknown>(
 ): Promise<ReturnType<typeof jsonResult<T>> | ReturnType<typeof failedTextResult>> {
   try {
     const payload = (await callHostService(cfg, path, query)) as T;
-    return jsonResult(payload);
+    return wrapHostResponse(payload, path);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return failedTextResult(msg, { path });
+    const httpStatus = parseHttpStatusFromError(msg);
+    if (httpStatus !== null) {
+      return failureEnvelopeResult({
+        status: "failed",
+        error_type: "http_error",
+        http_path: path,
+        http_status: httpStatus,
+        raw_error: msg,
+        advisory:
+          `Host returned HTTP ${httpStatus} for ${path}. The call reached the host but the host responded with a non-2xx status. Scope this failure to this one tool call; do NOT generalize to other tool calls in the same turn.`,
+      });
+    }
+    return failureEnvelopeResult({
+      status: "failed",
+      error_type: "network_error",
+      http_path: path,
+      raw_error: msg,
+      advisory:
+        `Network-level failure reaching the host service for ${path}. The call did not reach the host. If multiple tool calls in this turn all return network_error, the host service is likely unreachable; do NOT classify this as a guard rejection.`,
+    });
   }
+}
+
+/**
+ * Convert a host-side structured failure (HTTP 200 + `{"status":"failed",...}`)
+ * into a `failedTextResult` envelope so:
+ *
+ * 1. The agent's tool-result text starts with an unambiguous failure marker
+ *    (rather than the agent having to JSON-parse the body's `status` field to
+ *    discover the call failed — which is the exact mode the 2026-05-26 muscle
+ *    question trace exposed: agent confabulated a guard-rejection narrative
+ *    for tools that succeeded because the one that failed slipped through as
+ *    `jsonResult`).
+ * 2. Any future `toolSummary.failures` counter that observes the SDK's
+ *    `isError` flag picks up host-side failures, not just thrown HTTP errors
+ *    (the plan-2 telemetry gap documented in
+ *    `docs/plans/active/investigate-toolsummary-failure-counter-blindness.md`).
+ *
+ * Detection rule: top-level `status === "failed"`. Only the compute endpoints
+ * (`/v1/pgs/compute`, `/v1/pgs/compute/{task_id}`) use that field with that
+ * semantics — health/gene/variant/etc. either don't carry `status` or use it
+ * with `"ok"` / `"queued"` / `"running"` / `"done"` (none of which trip the
+ * rule). The fallback preserves the existing `jsonResult` shape.
+ */
+function wrapHostResponse<T>(
+  payload: T,
+  path: string,
+): ReturnType<typeof jsonResult<T>> | ReturnType<typeof failedTextResult> {
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    "status" in (payload as Record<string, unknown>) &&
+    (payload as Record<string, unknown>).status === "failed"
+  ) {
+    const errField = (payload as Record<string, unknown>).error;
+    const errMsg =
+      typeof errField === "string" && errField.length > 0
+        ? errField
+        : JSON.stringify(errField);
+
+    // Phase 3 (agent-synthesis-over-rich-tool-data): forward the host body's
+    // optional `diagnostic` field verbatim. Per Phase 2, the host service
+    // surfaces ToolDiagnosticTrace on `status="failed"` paths. The plugin
+    // does NOT pre-summarize — the agent decides what's relevant.
+    const diagField = (payload as Record<string, unknown>).diagnostic;
+    const diagnostic =
+      diagField !== null && typeof diagField === "object"
+        ? (diagField as ToolDiagnosticTrace)
+        : undefined;
+
+    const envelope: Extract<ToolFailureEnvelope, { error_type: "host_failure" }> = {
+      status: "failed",
+      error_type: "host_failure",
+      http_path: path,
+      host_status: "failed",
+      host_error: errMsg,
+      advisory:
+        `Host returned status=failed for ${path}: ${errMsg}. ` +
+        "This is a host-side structured failure (not an HTTP error, not a " +
+        "plugin guard rejection). Surface the error code to the user and " +
+        "do NOT generalize this rejection to other tool calls in the same turn.",
+    };
+    if (diagnostic !== undefined) {
+      envelope.diagnostic = diagnostic;
+    }
+    return failureEnvelopeResult(envelope);
+  }
+  return jsonResult(payload);
 }
 
 /**
@@ -211,10 +399,29 @@ async function safePost<T = unknown>(
 ): Promise<ReturnType<typeof jsonResult<T>> | ReturnType<typeof failedTextResult>> {
   try {
     const payload = (await callHostService(cfg, path, undefined, body)) as T;
-    return jsonResult(payload);
+    return wrapHostResponse(payload, path);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return failedTextResult(msg, { path });
+    const httpStatus = parseHttpStatusFromError(msg);
+    if (httpStatus !== null) {
+      return failureEnvelopeResult({
+        status: "failed",
+        error_type: "http_error",
+        http_path: path,
+        http_status: httpStatus,
+        raw_error: msg,
+        advisory:
+          `Host returned HTTP ${httpStatus} for POST ${path}. The call reached the host but the host responded with a non-2xx status. Scope this failure to this one tool call.`,
+      });
+    }
+    return failureEnvelopeResult({
+      status: "failed",
+      error_type: "network_error",
+      http_path: path,
+      raw_error: msg,
+      advisory:
+        `Network-level failure reaching the host service for POST ${path}. The call did not reach the host.`,
+    });
   }
 }
 
@@ -256,31 +463,46 @@ function rejectIfPlaceholder(
   // the bare OpenAI tool-call ID ("call_xxx|fc_yyy") as the args value
   // instead of an {args} object. Catch that explicitly.
   if (args === null || typeof args !== "object") {
-    return failedTextResult(
-      `${opts.toolName}: expected an object of arguments but received ${typeof args} ` +
+    return failureEnvelopeResult({
+      status: "failed",
+      error_type: "placeholder_rejected",
+      tool_name: opts.toolName,
+      arg_name: opts.argName,
+      value: args,
+      advisory:
+        `${opts.toolName}: expected an object of arguments but received ${typeof args} ` +
         `(value: ${JSON.stringify(args)?.slice(0, 200) ?? "?"}). ` +
         `This usually means the agent's tool-call args serializer lost the JSON shape. ` +
         `Re-emit the tool call with a proper JSON object body.`,
-      { receivedArgs: args, toolName: opts.toolName },
-    );
+    });
   }
   const value = (args as Record<string, unknown>)[fieldName];
   if (typeof value !== "string" || value.trim().length === 0) {
-    return failedTextResult(
-      `${opts.toolName}: required argument \`${opts.argName}\` is missing or not a string ` +
+    return failureEnvelopeResult({
+      status: "failed",
+      error_type: "placeholder_rejected",
+      tool_name: opts.toolName,
+      arg_name: opts.argName,
+      value: value,
+      advisory:
+        `${opts.toolName}: required argument \`${opts.argName}\` is missing or not a string ` +
         `(got ${typeof value}: ${JSON.stringify(value)?.slice(0, 100) ?? "?"}). ` +
         (opts.hint ?? "Pass the real value."),
-      { receivedArgs: args, toolName: opts.toolName },
-    );
+    });
   }
   if (PLACEHOLDER_TOKENS.has(value.trim().toLowerCase())) {
-    return failedTextResult(
-      `${opts.toolName}: argument \`${opts.argName}\` is the placeholder string ` +
+    return failureEnvelopeResult({
+      status: "failed",
+      error_type: "placeholder_rejected",
+      tool_name: opts.toolName,
+      arg_name: opts.argName,
+      value: value,
+      advisory:
+        `${opts.toolName}: argument \`${opts.argName}\` is the placeholder string ` +
         `"${value}" — this usually means the agent's tool-call argument resolution ` +
         `lost track of the real value upstream. Re-emit the tool call with the ` +
         `actual ${opts.argName}. ${opts.hint ?? ""}`.trimEnd(),
-      { receivedArgs: args, toolName: opts.toolName },
-    );
+    });
   }
   return null;
 }
@@ -351,6 +573,80 @@ const PgsGetParams = Type.Object(
   { pgs_id: Type.String({ minLength: 1 }) },
   { additionalProperties: false },
 );
+
+// Phase 6 Slice E v2 — PGS response shapes (agent-decline-taxonomy-exposure
+// Phase 2). The plugin forwards host-service JSON verbatim via `jsonResult`
+// rather than re-validating it, so these schemas are documentation-grade:
+// they declare the response contract in TypeScript so future edits to the
+// host's Pydantic models surface here, and they satisfy `INV-A004` (the
+// decline taxonomy must traverse every layer — Python enum values must
+// appear here as `Type.Literal` arms). The Python-side cross-language diff
+// lives at `packages/toolkit/tests/invariants/test_invA004_decline_taxonomy_traverse.py`.
+const PgsListRowResponseSchema = Type.Object(
+  {
+    pgs_id: Type.String(),
+    trait_label: Type.String(),
+    percentile_in_user_ancestry: Type.Union([Type.Number(), Type.Null()]),
+    calibration_warning: Type.Union([Type.String(), Type.Null()]),
+    // calibration_status (INV-C001 v1.7 + INV-A004): machine-readable classifier
+    // outcome. `null` on pre-Phase-3a rows that predate the calibration classifier.
+    calibration_status: Type.Union([
+      Type.Literal("clean"),
+      Type.Literal("warning"),
+      Type.Literal("decline"),
+      Type.Null(),
+    ]),
+    // decline_reason (INV-C001 v1.7 + INV-A004): structural decline reason
+    // when `calibration_status == "decline"`; `null` otherwise. The five
+    // values mirror the Python `DeclineReason` enum exactly.
+    decline_reason: Type.Union([
+      Type.Literal("population_transferability_insufficient"),
+      Type.Literal("pgs_catalog_tier_insufficient"),
+      Type.Literal("phenotype_heterogeneous"),
+      Type.Literal("variant_overlap_insufficient"),
+      Type.Literal("ancestry_calibration_uncertain"),
+      Type.Null(),
+    ]),
+    superseded_by: Type.Union([Type.String(), Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+
+const PgsRowResponseSchema = Type.Object(
+  {
+    pgs_id: Type.String(),
+    trait_label: Type.String(),
+    percentile_in_user_ancestry: Type.Union([Type.Number(), Type.Null()]),
+    raw_score: Type.Union([Type.Number(), Type.Null()]),
+    source_pgs_id: Type.String(),
+    study_population: Type.String(),
+    calibration_warning: Type.Union([Type.String(), Type.Null()]),
+    calibration_status: Type.Union([
+      Type.Literal("clean"),
+      Type.Literal("warning"),
+      Type.Literal("decline"),
+      Type.Null(),
+    ]),
+    decline_reason: Type.Union([
+      Type.Literal("population_transferability_insufficient"),
+      Type.Literal("pgs_catalog_tier_insufficient"),
+      Type.Literal("phenotype_heterogeneous"),
+      Type.Literal("variant_overlap_insufficient"),
+      Type.Literal("ancestry_calibration_uncertain"),
+      Type.Null(),
+    ]),
+    agent_choice_rationale: Type.String(),
+    requested_for_question: Type.String(),
+    superseded_by: Type.Union([Type.String(), Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+
+// Re-export for type inference; the schemas exist primarily as cross-language
+// documentation but downstream tooling (e.g. typedoc, future runtime validators)
+// may consume them.
+export type PgsListRowResponse = Static<typeof PgsListRowResponseSchema>;
+export type PgsRowResponse = Static<typeof PgsRowResponseSchema>;
 
 const PgsComputeParams = Type.Object(
   {
@@ -453,8 +749,15 @@ export default function register(api: OpenClawPluginApi): void {
   api.registerTool({
     name: "genomeclaw_gene",
     description:
-      "Aggregate per-gene summary for an HGNC symbol: variant count, mean coverage depth, and (for the " +
-      "curated subset) the list of exons below the low-coverage threshold. Resolves case-insensitively — " +
+      "Aggregate per-gene summary for an HGNC symbol: variant count, mean coverage depth, " +
+      "list of exons below the low-coverage threshold, and (for the curated panel) " +
+      "`region_class` + `caveat`. When `region_class` is non-standard (one of " +
+      "`difficult_pseudogene`, `difficult_segdup`, `requires_dedicated_caller`, " +
+      "`mitochondrial`), the `caveat` field carries an explicit warning that " +
+      "`mean_depth` is NOT sufficient to confirm variant callability for this locus. " +
+      "Always surface the caveat verbatim or paraphrase it when present — do NOT " +
+      "interpret a clean depth number over a difficult region as confirmation that " +
+      "pathogenic variants would have been detected. Resolves case-insensitively — " +
       "`brca1` and `BRCA1` refer to the same gene.",
     parameters: GeneParams,
     outputClass: "summary",
@@ -477,9 +780,13 @@ export default function register(api: OpenClawPluginApi): void {
     name: "genomeclaw_pgs_list",
     description:
       "List PRSs already computed for this user. Each row carries pgs_id (PGS Catalog ID), " +
-      "trait_label, percentile_in_user_ancestry, calibration_warning, and superseded_by. " +
+      "trait_label, percentile_in_user_ancestry, calibration_warning, calibration_status " +
+      "(one of 'clean' | 'warning' | 'decline' | null), decline_reason (snake_case " +
+      "DeclineReason value or null), and superseded_by. " +
       "Call this before `genomeclaw_pgs_compute` — if a suitable PGS is already computed, " +
-      "use `genomeclaw_pgs_get` to fetch it instead of triggering a new ~5-minute compute.",
+      "use `genomeclaw_pgs_get` to fetch it instead of triggering a new ~5-minute compute. " +
+      "Rows with calibration_status='decline' MUST NOT be presented as findings — surface " +
+      "decline_reason instead per INV-C001 v1.7.",
     parameters: PgsListParams,
     outputClass: "summary",
     execute: async (_args: Static<typeof PgsListParams>, _ctx: AgentToolContext) => {
@@ -496,7 +803,11 @@ export default function register(api: OpenClawPluginApi): void {
       "Fetch one computed PRS by its PGS Catalog ID (e.g. `PGS000018`). Returns the percentile, " +
       "raw score, study population, calibration warning, plus the agent's choice rationale " +
       "(alternatives considered + why this scorefile) and the verbatim user question that " +
-      "triggered the compute. The choice-rationale field is the user's audit surface per INV-A003.",
+      "triggered the compute. The choice-rationale field is the user's audit surface per INV-A003. " +
+      "The response also carries calibration_status ('clean' | 'warning' | 'decline' | null) and " +
+      "decline_reason (snake_case structural reason or null) per INV-C001 v1.7 + INV-A004. " +
+      "If calibration_status is 'decline', do NOT present this PGS as a finding — surface " +
+      "decline_reason verbatim with a brief explanation of why the score was declined.",
     parameters: PgsGetParams,
     outputClass: "summary",
     execute: async (args: Static<typeof PgsGetParams>, _ctx: AgentToolContext) => {

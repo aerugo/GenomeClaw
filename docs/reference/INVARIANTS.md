@@ -1,10 +1,26 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.17
-**Last Updated**: 2026-05-25
+**Version**: 1.24
+**Last Updated**: 2026-05-28
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.24 (2026-05-28)** — **rewrites `INV-A005` to v1.23** (analyze-and-present synthesis, verified by LLM-judge). Promoted from the [agent-synthesis-over-rich-tool-data](../plans/active/agent-synthesis-over-rich-tool-data/) plan. The v1.22 mechanism (verbatim-quoting of `error_type` and structured fields, asserted by a literal-token trace-walker) was an overcorrection: it forced the agent into robotic JSON-field transcription. User correction (2026-05-28 evening): *"The Host tool should return the whole trace to the agent as well as all results of analysis and queries etc. But the agent should definately analyze and present those to the user in an understandable manner, not just repeat verbatim."* v1.23 is the corrected architecture: (a) host service surfaces rich `ToolDiagnosticTrace` data (stage, upstream_cause, suggested_fix, related_paths) on failure paths via `PgsComputeTaskResponse.diagnostic`; (b) plugin's `wrapHostResponse` forwards the diagnostic verbatim into the `host_failure` envelope; (c) agent system prompt §INV-A005 teaches analyze-and-present — translate structured data into plain language, do NOT mechanically quote field names; (d) verification is semantic LLM-judge at [tests/agent_replay/test_invA005_v123_reply_is_faithful_to_trajectory.py](../../packages/toolkit/tests/agent_replay/test_invA005_v123_reply_is_faithful_to_trajectory.py) (default-skip when `GENOMECLAW_REPLAY_LLM` env unset; preserves `INV-P001`). The v1.22 `test_invA005_v122_reply_quotes_error_type_for_every_failure` walker is deleted. Per `INV-V001`, LLM-judge is the sanctioned semantic alternative to phrase enumeration.
+
+**v1.23 (2026-05-28)** — **introduces the `INV-V*` category** (Verification Methodology) and **adds `INV-V001`** (Verification Mechanisms Must Not Enumerate Forbidden Phrases for Agent Output). Promoted from the [eliminate-forbidden-phrase-enumeration](../plans/completed/eliminate-forbidden-phrase-enumeration/) plan (Stage 5 of [structural-verification-meta](../plans/completed/structural-verification-meta/meta-plan.md)). Companion to v1.22's `INV-A005` rewrite + new `INV-A006`. The rule formalizes the user's 2026-05-28 verdict that substring/regex enumeration of forbidden phrases over LLM-generated agent output cannot generalize — LLM paraphrase-space is effectively infinite, and a `_FORBIDDEN_PHRASES` tuple shipped 2026-05-28 morning was already worked around by the agent inventing "object-shape serialization error" by afternoon. INV-V001 forbids load-bearing phrase enumeration over agent output; non-load-bearing substring backstops (regression pins, sanity smokes) are allowed with explicit `# INV-V001-backstop:` annotation; structural anti-pattern detection over source code (e.g., INV-P003's argv-shape regex) is allowed with `# INV-V001-allow:` annotation. Enforced by [test_invV001_no_phrase_enumeration_in_agent_output_gates.py](../../packages/toolkit/tests/invariants/test_invV001_no_phrase_enumeration_in_agent_output_gates.py) — annotation-based discovery test that walks the toolkit's test + integration directories.
+
+**v1.22 (2026-05-28)** — **rewrites `INV-A005` rule mechanism** + **adds `INV-A006`** (Plugin Tool-Result Returns Structured Envelopes). Promoted from the [inv-a005-structural-faithfulness](../plans/completed/inv-a005-structural-faithfulness/) plan (Stages 0–3 of [structural-verification-meta](../plans/completed/structural-verification-meta/meta-plan.md)). After the 2026-05-28 AC8 manual gate showed v1.21.1's catalogue + `_FORBIDDEN_PHRASES` substring enumeration was non-generalizable (the agent invented "object-shape serialization error" — same confabulation class, paraphrase not on the list), the user ruled out phrase-list enforcement as a primary verification mechanism. v1.22 replaces it: (a) `INV-A005`'s mechanism is now **structural** — the plugin returns `ToolFailureEnvelope` JSON with an `error_type` discriminator, the agent quotes structured fields verbatim, and the walker reads the trajectory file's per-tool-call records to verify; (b) `INV-A006` formalizes the plugin-side contract that every failure-path return goes through a structured envelope. Stage-2 GATE re-ran the muscle question against the rebuilt sandbox + passed all four pass criteria cleanly (`error_type:` quoted 3 times, structured fields in backticks, per-tool decomposition, no invented paraphrases). Sister plan [eliminate-forbidden-phrase-enumeration](../plans/completed/eliminate-forbidden-phrase-enumeration/) generalizes the methodology project-wide via `INV-V001`.
+
+**v1.21.1 (2026-05-28)** — **extends `INV-A005` enforcement surface** (no rule-text change). Promoted from the [agent-stale-memory-and-failure-mode-confabulation](../plans/completed/agent-stale-memory-and-failure-mode-confabulation/) plan, which addressed two regressions captured during the 2026-05-27 muscle-question regression sweep: (Bug 1) the agent cited a stale capability-failure memory note 30 minutes after the sidecar repair landed; (Bug 2) the agent homogenized an all-network-failure turn into the most-rehearsed failure phrase. Phase 1 added a 4th validation bullet to Step 3 (Capability claims override the freshness-date rule for tool-failure memory notes) — enforced by `test_invA002_step3_memory_validation_special_cases_capability_claims`. Phase 2 replaced the single forbidden-phrase rule in §INV-A005 with a 5-row failure-phrase catalogue + a decompose-per-tool rule + 3 worked examples — enforced by `test_invA005_system_prompt_carries_failure_phrase_catalogue` (parametrized over the catalogue), `test_invA005_system_prompt_carries_decompose_per_tool_rule`, and extended `_FORBIDDEN_PHRASES` / `_trace_has_real_failure` in the trace-walker test (now recognizing the rejectIfPlaceholder / wrapHostResponse / safeCall catch-block prose families as structural failure signals). Phase 3's automated agent-replay harness was deferred to a follow-up plan ([agent-replay-harness-for-prompt-regression](../plans/completed/agent-replay-harness-for-prompt-regression.md)); the manual muscle-question gate provides the end-to-end verification.
+
+**v1.21 (2026-05-26)** — **adds `INV-A005`** (Tool-Failure Narratives Match Trace Evidence). Promoted from the [investigate-genomeclaw-gene-tool-bug](../plans/active/investigate-genomeclaw-gene-tool-bug/) plan (Stage 1b–3a of the [finish-open-plans-meta](../plans/active/finish-open-plans-meta/meta-plan.md)). Phase 1 confirmed hypothesis #6 (agent confabulation): the agent's "argument-serialization bug" narrative for `genomeclaw_gene` in the 2026-05-24 + 2026-05-25 demo replies had no supporting evidence — every relevant trace recorded `toolSummary.failures == 0`. The mechanism: the agent system prompt's unconditional Q-001 escape hatch (line 152) supplied vocabulary the agent paraphrased onto perfectly-successful HTTP-200 responses. Phase 2 (Branch A) tightened the prompt with a positive constraint and named the forbidden phrase. Phase 3 promotes the structural enforcement via a trace-walk invariant test ([packages/toolkit/tests/invariants/test_invA005_no_serialization_bug_confabulation.py](../../packages/toolkit/tests/invariants/test_invA005_no_serialization_bug_confabulation.py)) that scans `*.trace.json` files under `docs/reports/` for forbidden phrases without supporting failure events; date-gated to bind on traces dated ≥ 2026-05-26 so historical artifacts skip cleanly.
+
+**v1.20 (2026-05-25)** — **adds `INV-C003`** (Uncallable Sites Excluded from PGS Overlap). Promoted from the [force-genotype-callable-mask](../plans/active/force-genotype-callable-mask/) plan (Stage 3 of the [bioinformatics-review followup](../plans/active/bioreview-followup-meta/meta-plan.md)). Note: the proposed-id in the original plan was `INV-C002`, but `INV-C002` (CLI Output Contract Stability) already exists; the new invariant gets the next free ID, `INV-C003`. The Tier-1/Tier-2 force-genotyping primitive in `coverage_fill.py` previously treated every produced row identically; a REF/REF dosage from sparse pileup outside any externally-validated callable mask inflated the PGS match-rate denominator with an unconfident dosage. The new per-site `genotype_source` classifier (`nebula_called` / `force_genotyped_high_conf` / `force_genotyped_low_conf` / `uncallable`) intersects against the GIAB Personal Genomes v4.2.1 high-confidence BED + the per-site mpileup depth; the sidecar TSV (`forced_genotype_provenance.tsv`) carries the per-site classification. `parse_match_stats(uncallable_sites=...)` excludes the uncallable set from BOTH numerator and denominator of the PGS match-rate; the count of excluded sites is reported as `MatchStats.uncallable_excluded` for the provenance trail.
+
+**v1.19 (2026-05-25)** — **adds `INV-D009`** (Coverage Panel Difficult-Region Annotations). Promoted from the [coverage-panel-v2](../plans/active/coverage-panel-v2/) plan (Stage 2 of the [bioinformatics-review followup](../plans/active/bioreview-followup-meta/meta-plan.md)). The v1 panel was BED4 and carried no per-region coverage-reliability flag, so mosdepth's per-gene mean depth over PMS2 (exons 11-15 uncallable by short-read WGS due to the PMS2CL pseudogene), SMN1 (SMN1/SMN2 paralog problem), HBA1/HBA2 (α-globin segdup), CYP21A2 (CYP21A1P pseudogene), GBA1 (GBAP1 pseudogene), STRC, NCF1, NEB, HLA, and CYP2D6 silently looked fine. The agent's `genomeclaw_gene` tool now surfaces `region_class` + a derived `caveat` string — the agent's coverage-status responses for these regions must include the caveat verbatim. The v2 panel (BED5) also bumps ACMG SF v3.2 → v3.3 (adds ABCD1, CYP27A1, PLN) and adds lifestyle anchors (MC1R, MCM6, HFE, FUT2) + mitochondrial coverage.
+
+**v1.18 (2026-05-25)** — **adds `INV-A004`** (Decline Taxonomy Must Traverse Every Layer). Promoted from the [agent-decline-taxonomy-exposure](../plans/active/agent-decline-taxonomy-exposure/) plan (Stage 1 of the [bioinformatics-review followup](../plans/active/bioreview-followup-meta/meta-plan.md)). The DB persisted `calibration_status` and `decline_reason` columns since `prs-input-coverage-fill` Phase 3b3b1, but the HTTP boundary models (`PgsRowResponse`, `PgsListRow`) used `extra="forbid"` and did not list either field; the agent could only pattern-match a free-text `calibration_warning` string to infer a decline. The rule is enforced by a cross-language schema-diff test ([packages/toolkit/tests/invariants/test_invA004_decline_taxonomy_traverse.py](../../packages/toolkit/tests/invariants/test_invA004_decline_taxonomy_traverse.py)) that compares the Python `CalibrationStatus` / `DeclineReason` enum values against the TypeBox literal sets in [packages/nemoclaw-plugin/src/index.ts](../../packages/nemoclaw-plugin/src/index.ts).
 
 **v1.17 (2026-05-25)** — **adds `INV-P003`** (Secrets Pass via stdin or env, Never via argv). Promoted from the onboard-persistent-agent-fix plan after the 2026-05-24 onboard-sandbox.sh leak — where a `nemoclaw genomeclaw exec -- python3 -c "...base64.b64decode('$PROFILE_B64')..."` crashed on a `FileNotFoundError` and dumped the operator's base64-encoded OpenAI API key into a committed report log via Python's default traceback. The leak path was structural (Python prints `-c` source verbatim on any exception); the fix is structural too — secrets transit via stdin (`docker exec -i ... cat > ...`) or env (`docker exec -e KEY=...`), never via argv. Discovery test at [packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py](../../packages/toolkit/tests/invariants/test_invP003_onboard_script_no_secrets_in_argv.py) walks `scripts/` and catches any future re-introduction of the pattern. See [docs/plans/active/onboard-persistent-agent-fix/](../plans/active/onboard-persistent-agent-fix/).
 
@@ -240,6 +256,35 @@ Numbers are assigned in order of introduction within a category and never reused
 **How to verify**:
 - [packages/toolkit/tests/integration/test_pgsc_calc_wrapper.py::test_compute_pgs_writes_nextflow_config_redirecting_tmpdir](../../packages/toolkit/tests/integration/test_pgsc_calc_wrapper.py) asserts the generated ``nextflow.config`` contains ``stageInMode = 'copy'`` AND the argv carries ``-c <config>``.
 - Smoke-time signal: a regression to symlink-staging surfaces as the canonical Phase-7-v14 error: ``plink2: Failed to open <staged-asset>.txt: No such file or directory``.
+
+---
+
+## INV-D009: Coverage Panel Difficult-Region Annotations
+
+**Rule** *(v1.19; per [coverage-panel-v2](../plans/active/coverage-panel-v2/))*: the bundled coverage QC panel (BED5 format from panel v2 onward) carries a per-region `region_class` column flagging short-read-WGS-unreliable loci. Any gene in the panel that corresponds to a known short-read-WGS difficult region (paralogous pseudogene, segmental duplication, VNTR, or requires-dedicated-caller) MUST carry a non-`"standard"` `region_class` value. The agent's `genomeclaw_gene` tool surfaces this class + a derived caveat string; the agent's coverage-status response for those regions MUST include the caveat (a clean `mean_depth` does NOT confirm variant callability).
+
+**Why this exists** — The v1 panel was BED4 with no class column. Mosdepth's per-gene mean depth over PMS2 (exons 11-15 uncallable by short-read WGS due to PMS2CL), SMN1 (SMN1/SMN2 paralog ambiguity), HBA1/HBA2 (α-globin segdup), CYP21A2 (CYP21A1P pseudogene), GBA1 (GBAP1 pseudogene), STRC, NCF1, NEB, HLA, and CYP2D6 silently reads "adequate" — but variant calls in those regions are technically unreliable regardless of depth. A user (or the agent on their behalf) seeing "PMS2 mean_depth = 28×" with no caveat could falsely conclude that Lynch-syndrome-relevant variants in PMS2 would be called; in fact short-read WGS routinely misses them. The 2026-05-25 bioinformatics review surfaced this as a P0 false-reassurance gap. INV-D009 closes it structurally: the BED5 `region_class` column is the truth source; the `genomeclaw_gene` route derives a per-class caveat string; the agent surface receives both.
+
+**Requirements**:
+- **Panel schema**: the default coverage panel BED (currently `coverage_panel_default_v2.bed.gz`) is BED5; column 5 is `region_class` ∈ {`standard`, `difficult_pseudogene`, `difficult_segdup`, `requires_dedicated_caller`, `mitochondrial`}. The panel's provenance JSON documents the schema as `bed5_v1`.
+- **Difficult-region coverage**: every gene known to be a short-read-WGS difficult region (the enumeration is the union of GIAB challenging-MRG genes per Wagner et al. 2022 + the bioinformatics-review-2026-05-25 list) carries a non-`"standard"` `region_class`. The current overlay table lives in [scripts/build_coverage_panel_v2.py::_DIFFICULT_REGIONS](../../scripts/build_coverage_panel_v2.py).
+- **Coverage_qc projection**: the `coverage_qc` DuckDB table includes a nullable `region_class` TEXT column ([packages/toolkit/src/genomeclaw_toolkit/schemas/coverage_qc.py](../../packages/toolkit/src/genomeclaw_toolkit/schemas/coverage_qc.py)). Pre-v2 rows decode as NULL → service layer treats as `"standard"`.
+- **Service projection**: `GeneAggregate` ([packages/toolkit/src/genomeclaw_toolkit/service/store.py](../../packages/toolkit/src/genomeclaw_toolkit/service/store.py)) projects `region_class`; `GeneResponse` ([packages/toolkit/src/genomeclaw_toolkit/schemas/gene.py](../../packages/toolkit/src/genomeclaw_toolkit/schemas/gene.py)) carries `region_class` + a derived `caveat`. The caveat is derived at the route layer via `_region_class_caveat`, never stored in the DB.
+- **Agent surface**: the `genomeclaw_gene` plugin tool description ([packages/nemoclaw-plugin/src/index.ts](../../packages/nemoclaw-plugin/src/index.ts)) instructs the agent to surface the caveat verbatim or paraphrased; the agent system prompt's § 6 has a "Coverage reliability for technically challenging genes" clause forbidding the agent from interpreting `mean_depth` as confirmation of variant callability for these loci.
+
+**Where it applies**:
+- The bundled panel BED files under [packages/toolkit/src/genomeclaw_toolkit/data/](../../packages/toolkit/src/genomeclaw_toolkit/data/).
+- The `coverage_qc` DuckDB table schema + `parse_regions_bed` + `write_coverage_qc` + `query_gene`.
+- The agent-facing `/v1/gene/{symbol}` HTTP route + `genomeclaw_gene` plugin tool + agent system prompt § 6.
+- The `_DIFFICULT_REGIONS` overlay table in [scripts/build_coverage_panel_v2.py](../../scripts/build_coverage_panel_v2.py) (the truth source for which genes get which class).
+
+**How to verify**:
+- [packages/toolkit/tests/unit/test_panel_v2_content.py](../../packages/toolkit/tests/unit/test_panel_v2_content.py) — `test_panel_v2_difficult_regions_annotated`: enumerates the difficult-region genes and asserts each carries the expected `region_class` in the bundled v2 panel.
+- [packages/toolkit/tests/unit/test_mosdepth_region_class.py](../../packages/toolkit/tests/unit/test_mosdepth_region_class.py) — `parse_regions_bed(panel_bed=...)` reads col 5 and propagates it to each `CoverageRow`.
+- [packages/toolkit/tests/integration/test_coverage_qc_region_class.py](../../packages/toolkit/tests/integration/test_coverage_qc_region_class.py) — round-trip through DuckDB + `query_gene`; `INV-R001` structural-provenance gate (`region_class` is a named column).
+- [packages/toolkit/tests/unit/test_gene_response_caveat.py](../../packages/toolkit/tests/unit/test_gene_response_caveat.py) — `test_invC001_caveat_non_null_for_all_difficult_classes`: every non-standard class yields a non-null caveat; INV-P002 sub-test asserts no user data leaks into the caveat string.
+- [packages/toolkit/tests/integration/test_gene_endpoint_region_class.py](../../packages/toolkit/tests/integration/test_gene_endpoint_region_class.py) — `/v1/gene/PMS2` end-to-end: response carries `region_class="difficult_pseudogene"` + a non-null caveat.
+- (Future) `tests/invariants/test_invD009_panel_giab_intersection.py` (gated `@pytest.mark.requires_giab_mrg_bed`): intersects the panel BED against the GIAB challenging-MRG BED (Wagner et al. 2022) and asserts every overlapping panel row has a non-`standard` class — the canonical truth check. Lands once the GIAB BED is fetched (`genomeclaw refs fetch giab_mrg`).
 
 ---
 
@@ -495,6 +540,32 @@ Other remote integrations (alternative annotators, telemetry, crash reporting) a
 
 ---
 
+## INV-C003: Uncallable Sites Excluded from PGS Overlap
+
+**Rule** *(v1.20; per [force-genotype-callable-mask](../plans/active/force-genotype-callable-mask/))*: every site that the per-site genotype-source classifier flags as `"uncallable"` must be excluded from BOTH the numerator AND the denominator of the PGS match-rate calculation. The exclusion count must be reported alongside the match-rate so the provenance trail records how many sites were dropped.
+
+**Why this exists** — The Tier-1/Tier-2 force-genotyping primitive in `coverage_fill.py` runs `bcftools mpileup --min-BQ 20 --min-MQ 20 | bcftools call --constrain alleles` at every PGS scoring site that the Nebula variant-only VCF doesn't contain. Without further classification, every produced row was treated identically: a REF/REF dosage from sparse pileup (≤ 9 reads, or outside any externally-validated callable mask) appeared as `matched` in the pgsc_calc log, inflating both raw score and match-rate denominator with an unconfident dosage. The 2026-05-25 bioinformatics review surfaced this as a P0 PGS-correctness gap. INV-C003 closes it structurally: a four-tier classifier (`nebula_called` / `force_genotyped_high_conf` / `force_genotyped_low_conf` / `uncallable`) intersects each forced-genotype site against the GIAB Personal Genomes v4.2.1 high-confidence BED + the per-site mpileup depth (threshold: ≥ 10 supporting reads at MQ/BQ ≥ 20); the `uncallable` sites are excluded from PGS overlap arithmetic.
+
+**Requirements**:
+- **Per-site classification**: every site emitted by Tier-1 or Tier-2 force-genotyping is classified as one of `{nebula_called, force_genotyped_high_conf, force_genotyped_low_conf, uncallable}` via [packages/toolkit/src/genomeclaw_toolkit/prep/_genotype_source.py::classify_site](../../packages/toolkit/src/genomeclaw_toolkit/prep/_genotype_source.py).
+- **Sidecar TSV**: the classification is persisted to `forced_genotype_provenance.tsv` (or `.tsv.zst` once large-data compression is wired) alongside the forced VCF in the Tier-1/Tier-2 cache directory. Schema: 5 tab-separated columns + 1 header line.
+- **GIAB intersection**: the `force_genotyped_high_conf` class requires intersection with the GIAB Personal Genomes Benchmark NA12878/HG001 v4.2.1 high-confidence regions BED. The BED is registered as a fetchable source `giab_high_confidence` in [packages/toolkit/src/genomeclaw_toolkit/prep/fetch.py](../../packages/toolkit/src/genomeclaw_toolkit/prep/fetch.py).
+- **PGS overlap arithmetic**: [packages/toolkit/src/genomeclaw_toolkit/prep/_pgsc_calc_match.py::parse_match_stats](../../packages/toolkit/src/genomeclaw_toolkit/prep/_pgsc_calc_match.py) accepts an `uncallable_sites: set[(str, int)] | None = None` argument; when non-None, sites in that set are excluded from BOTH `matched` and `unmatched` counts. The exclusion count surfaces as `MatchStats.uncallable_excluded`.
+- **Fallback policy**: if the GIAB BED isn't fetched on the host, the classifier demotes every force-genotyped site to `force_genotyped_low_conf` (adequate depth) or `uncallable` (low depth). The pipeline doesn't block.
+
+**Where it applies**:
+- The per-site classifier in [packages/toolkit/src/genomeclaw_toolkit/prep/_genotype_source.py](../../packages/toolkit/src/genomeclaw_toolkit/prep/_genotype_source.py).
+- The PGS match-rate calculator in [packages/toolkit/src/genomeclaw_toolkit/prep/_pgsc_calc_match.py](../../packages/toolkit/src/genomeclaw_toolkit/prep/_pgsc_calc_match.py).
+- The Tier-1/Tier-2 cache layout under `<derived>/<sample>/coverage_fill/` (one sidecar per forced VCF).
+- Future agent-facing surfacing of `uncallable_excluded` count on the `pgs_scores` row (lands in `prs-calibration-phase3b`).
+
+**How to verify**:
+- [packages/toolkit/tests/unit/test_genotype_source.py](../../packages/toolkit/tests/unit/test_genotype_source.py) — exhaustive enumeration of the classifier's branches: `nebula_called` precedence, GIAB inclusion, depth threshold, missing-intervals fallback, sidecar TSV round-trip.
+- [packages/toolkit/tests/integration/test_pgsc_calc_uncallable_filter.py](../../packages/toolkit/tests/integration/test_pgsc_calc_uncallable_filter.py) — `test_invC002_uncallable_sites_excluded_from_match_rate`: end-to-end sidecar → set → filter → corrected match-rate; `test_parse_match_stats_excludes_uncallable_sites` confirms both matched and unmatched sites are dropped; `test_parse_match_stats_uncallable_filter_normalises_chr_prefix` guards against the sidecar/pgsc_calc chrom-prefix mismatch.
+- [packages/toolkit/tests/integration/test_fetch_giab_high_confidence.py](../../packages/toolkit/tests/integration/test_fetch_giab_high_confidence.py) — `giab_high_confidence` fetch layout + MD5 verification + atomic rename.
+
+---
+
 ## INV-A001: Agent Memory Provenance
 
 **Rule** *(v1.8; per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*: when the agent persists a research synthesis to its workspace memory, the note must record enough provenance for a future agent session (or the user inspecting the workspace) to understand *what was learned, from where, at what reasoning level, and with what freshness*.
@@ -564,6 +635,7 @@ When the user switches default model (e.g. to `openai/o3` for higher-stakes depl
 - **Behavioural per-call probe**: openclaw `--thinking <level>` validates the per-call level at dispatch time + errors loudly if invalid. A live-test probe at any unsupported level (e.g. `--thinking max` on gpt-5.5) surfaces `"Thinking level X is not supported for Y. Use one of: …"` — the message itself documents the valid set per model.
 - Live-LLM snapshot tests (Stories 4 / 9 / 10) verify the agent produces calibrated answers; under the v1.7 fix they run at the model's actual ceiling.
 - A negative gate: a manual probe asking *"what should I have for breakfast tomorrow?"* (non-interpretation, casual) should not elevate to the ceiling; if it does, the agent system prompt's classification rule is over-applying.
+- **Memory-validation bullet 4 (capability claims; v1.21.1)**: [test_agent_system_prompt_contract.py::test_invA002_step3_memory_validation_special_cases_capability_claims](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py) — prompt-contract test (filed 2026-05-28 under [agent-stale-memory-and-failure-mode-confabulation](../plans/completed/agent-stale-memory-and-failure-mode-confabulation/) Phase 1). Asserts Step 3 carries a 4th validation bullet that special-cases tool-capability claims: stale memory notes asserting "tool X failed / X is unavailable" are superseded by live tool results in the same turn, overriding the calendar-freshness rule. Closes the v1.8 bullet-3 gap surfaced when the agent cited a 2026-05-26 capability-failure note 30 minutes after the failure was repaired.
 
 ---
 
@@ -593,6 +665,148 @@ When the user switches default model (e.g. to `openai/o3` for higher-stakes depl
 - **Behavioural `live_llm` decline gate**: ask the agent about a known-immature trait (e.g. creativity PRS); assert (a) the agent does NOT invoke `genomeclaw_pgs_compute`, (b) the reply names two specific decline reasons, (c) the trace shows the agent did the research step before declining (reasoned decline, not hardcoded refusal), (d) a decline-shaped memory note lands on disk with `compute_decision: decline`.
 - **Behavioural `live_llm` compute-with-provenance gate**: a successful PRS compute (e.g. Story 10 CAD) produces a `pgs_scores` row whose `agent_choice_rationale` enumerates ≥1 alternative scorefile + states why this one over them; the matching memory note is well-formed per `INV-A001`.
 - **Supersession gate**: pre-stage an outdated PRS computed row + ask a question that triggers re-evaluation; assert the agent (a) writes a new row with `superseded_by` set on the prior, (b) writes a memory note recording the gap, (c) the prior row stays on disk for audit.
+
+---
+
+## INV-A004: Decline Taxonomy Must Traverse Every Layer
+
+**Rule** *(v1.18; per [agent-decline-taxonomy-exposure](../plans/active/agent-decline-taxonomy-exposure/))*: every `CalibrationStatus` value and every `DeclineReason` value that exists as a DB column value on `pgs_scores` (or any future agent-triggered-compute table that carries equivalent structured decline metadata) must appear in the public HTTP response models (Pydantic) AND the agent plugin's TypeBox schemas. A Python enum value that exists at the DB layer but is absent from any downstream layer is a silent traceability gap and falsifies the agent's ability to enforce `INV-C001` v1.7's decline pattern.
+
+**Why this exists** — `INV-C001` v1.7 requires the agent to refuse to present a declined PGS as a finding. That requirement is structurally unenforceable if the agent only receives a free-text `calibration_warning` and has to pattern-match decline language. The decline taxonomy is the load-bearing signal; it must traverse every layer (DB → store query projection → Pydantic response model → TypeBox schema → agent tool description → agent system prompt) without being stripped at any boundary. The 2026-05-25 bioinformatics review's triage surfaced that `_PGS_SCORES_LIST_COLUMNS` and `_PGS_SCORES_GET_COLUMNS` in `service/store.py` projected only `calibration_warning`; both `PgsRowResponse` and `PgsListRow` used `extra="forbid"` which would have rejected the new fields even if the store had projected them. The agent received no machine-readable decline signal at all.
+
+**Requirements**:
+- **DB-to-Pydantic projection**: every column in `pgs_scores` (and equivalent tables) that carries structured decline metadata appears in both `_PGS_SCORES_LIST_COLUMNS` and `_PGS_SCORES_GET_COLUMNS` in [packages/toolkit/src/genomeclaw_toolkit/service/store.py](../../packages/toolkit/src/genomeclaw_toolkit/service/store.py).
+- **Pydantic response models**: `PgsRowResponse` and `PgsListRow` in [packages/toolkit/src/genomeclaw_toolkit/schemas/pgs.py](../../packages/toolkit/src/genomeclaw_toolkit/schemas/pgs.py) declare each decline-related field with the matching `CalibrationStatus | None` / `DeclineReason | None` type. The fields are nullable to handle pre-Phase-3a legacy rows where no classifier verdict exists.
+- **TypeBox cross-language mirror**: the agent plugin's [packages/nemoclaw-plugin/src/index.ts](../../packages/nemoclaw-plugin/src/index.ts) declares matching `Type.Union([Type.Literal("..."), ...])` blocks for `calibration_status` and `decline_reason`, listing every Python enum value as a `Type.Literal` arm. New enum values added in Python that are absent from the TypeBox schemas fail the cross-language diff test.
+- **Agent-facing description + system prompt**: the `genomeclaw_pgs_list` and `genomeclaw_pgs_get` tool descriptions enumerate the fields and instruct the agent NOT to present a declined row as a finding. The agent system prompt's PRS-decline pattern (§ 6) teaches the binding rule that `calibration_status="decline"` overrides the agent's own (a)-(e) reasoning.
+
+**Where it applies**:
+- The `pgs_scores` table and any future derived-store table emitting agent-triggered-compute decline metadata.
+- The host-service projection helpers `query_pgs_computed` and `query_pgs_computed_list` in `service/store.py`.
+- The Pydantic response models `PgsRowResponse` and `PgsListRow` in `schemas/pgs.py`.
+- The TypeBox response shapes `PgsRowResponseSchema` and `PgsListRowResponseSchema` in `packages/nemoclaw-plugin/src/index.ts`.
+- The agent system prompt's § 6 PRS-decline pattern.
+
+**How to verify**:
+- [packages/toolkit/tests/invariants/test_invA004_decline_taxonomy_traverse.py](../../packages/toolkit/tests/invariants/test_invA004_decline_taxonomy_traverse.py) — cross-language schema diff: parses the TypeBox unions in `index.ts` as text and asserts set-equality against the Python `CalibrationStatus` / `DeclineReason` enum values.
+- [packages/toolkit/tests/unit/test_pgs_decline_fields.py](../../packages/toolkit/tests/unit/test_pgs_decline_fields.py) — Pydantic-layer assertions: both fields present on both models; nullable; serializes to the canonical snake_case strings; `extra="forbid"` still rejects unknown fields; an unknown enum value raises `ValidationError`.
+- [packages/toolkit/tests/integration/test_pgs_store_decline_projection.py](../../packages/toolkit/tests/integration/test_pgs_store_decline_projection.py) — end-to-end: writes a fixture `pgs_scores` row via `stamp_pgs_row`; calls `query_pgs_computed` / `query_pgs_computed_list`; asserts both fields appear in the returned dict; an INV-A003 provenance-payload-complete sub-test asserts the read-path dict carries the full known field set.
+- [packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py::test_system_prompt_teaches_machine_readable_decline_status](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py) — prompt content gate: asserts the prompt names `calibration_status` + all three values + the null-legacy case + the binding `do NOT present` rule.
+
+---
+
+## INV-A005: Tool-Failure Narratives Match Trace Evidence
+
+**Rule** *(v1.23; per [agent-synthesis-over-rich-tool-data](../plans/active/agent-synthesis-over-rich-tool-data/) — supersedes v1.22's verbatim-quoting mechanism)*: The agent's reply to the user MUST be a **faithful + understandable synthesis** of the rich tool-result data this turn produced. **Faithful**: every claim the reply makes about tool calls (succeeded / failed, what was found, what error happened, what the cause was) is consistent with the structured tool-result envelopes. The reply does NOT invent failures that didn't happen, claim successes that did fail, conflate distinct failure modes, or misattribute causes. **Understandable**: the reply uses natural language a user can act on, translating structured fields (`error_type`, `diagnostic.stage`, `diagnostic.suggested_fix`, etc.) into plain explanations. **Robotic JSON-field transcription** (e.g. literally writing `` `error_type: network_error` `` into the user-facing reply) explicitly FAILS this rule — that's transcription, not synthesis. Verification is **semantic via LLM-judge** (per `INV-V001`'s sanctioned alternatives) over the trajectory file's per-tool-call records + the agent's reply text.
+
+**Why this exists** — Three cumulative findings drove v1.23:
+
+1. The v1.21 phrase-list catalogue + `_FORBIDDEN_PHRASES` substring-matching walker (2026-05-26 → 2026-05-28 morning) failed the AC8 manual gate when the agent invented `"object-shape serialization error"` — same confabulation class, paraphrase not on the list. LLM paraphrase-space is effectively infinite; substring enumeration is whack-a-mole. The user's 2026-05-28 rule: *"never rely on enumeration of 'forbidden phrases'."*
+2. The v1.22 verbatim-quoting mechanism (2026-05-28 afternoon) overcorrected: the prompt forced the agent to quote `error_type` values literally in the reply, producing robotic JSON-field transcription like `` `error_type: network_error` with `raw_error: fetch failed` ``. The user read this and said: *"The Host tool should return the whole trace to the agent as well as all results of analysis and queries etc. But the agent should definately analyze and present those to the user in an understandable manner, not just repeat verbatim."*
+3. The right architecture (v1.23): the host service surfaces RICH data (full trace, diagnostic stages, suggested fixes); the plugin forwards the rich data without truncation (per `INV-A006`); the agent ANALYZES the data and PRESENTS its findings to the user in plain language; verification is semantic (LLM-judge), not literal-token presence. Structured fields exist for the agent's *reasoning*, not for verbatim insertion into the reply.
+
+**Requirements**:
+
+- Agent reply MUST be a faithful interpretation of the structured tool-result data (no invented failures; no claimed successes that actually failed; no conflated causes; no misattributed errors). Quoting structured fields verbatim is NOT required — meaning-faithfulness, not transcription.
+- Agent reply MUST be understandable to a non-technical user. Translation of structured fields (`error_type`, `diagnostic.stage`, etc.) into plain language is required. Robotic JSON-field transcription is explicitly forbidden.
+- When the agent encounters an unfamiliar failure shape (`error_type` it doesn't recognize, or an unexpected `diagnostic` value), it MUST call additional diagnostic tools (multi-turn investigation) before composing the reply.
+- Per-tool decomposition is absolute: multiple failed tools in one turn get described separately based on their individual envelopes, never homogenized into a single guess.
+- Host service tool responses MUST carry rich diagnostic context (`diagnostic.stage`, `diagnostic.upstream_cause`, `diagnostic.suggested_fix`, `diagnostic.related_paths`) so the agent has meaningful material to synthesize from. Skeletal failure responses (just `error_type` + short code) leave the agent nothing to translate.
+
+**Where it applies**:
+
+- Agent reply text in trace JSON (`result.meta.finalAssistantVisibleText`).
+- The agent system prompt's §INV-A005 section in [packages/nemoclaw-plugin/sandbox/agent-system-prompt.md](../../packages/nemoclaw-plugin/sandbox/agent-system-prompt.md).
+- The host service's response models in [packages/toolkit/src/genomeclaw_toolkit/schemas/](../../packages/toolkit/src/genomeclaw_toolkit/schemas/) — failure responses MUST carry `ToolDiagnosticTrace` where the worker has the context (currently `PgsComputeTaskResponse`).
+- The plugin's `wrapHostResponse` in [packages/nemoclaw-plugin/src/index.ts](../../packages/nemoclaw-plugin/src/index.ts) — MUST forward the host's `diagnostic` field into the `host_failure` envelope without truncation.
+
+**How to verify**:
+
+- [packages/toolkit/tests/agent_replay/test_invA005_v123_reply_is_faithful_to_trajectory.py](../../packages/toolkit/tests/agent_replay/test_invA005_v123_reply_is_faithful_to_trajectory.py) — **LLM-judge harness** (v1.23 mechanism, 2026-05-28). Parametrized over `docs/reports/**/*.trace.json` traces dated ≥ 2026-05-29 with a sibling `.trajectory.jsonl`. Sends `(trajectory_summary, reply_text)` to `gpt-5.5` for a semantic verdict on faithfulness + understandability. Default-skip when `GENOMECLAW_REPLAY_LLM` env var is unset (preserves `INV-P001`). Per `INV-V001`, LLM-judge is the sanctioned semantic alternative to phrase enumeration.
+- [packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py::test_invA005_v123_system_prompt_teaches_structured_error_type_rule](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py) — prompt-content gate: §INV-A005 mentions `error_type` literally + at least 2 of the 4 enum values so the agent has reasoning vocabulary.
+- [packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py::test_invA005_v123_system_prompt_teaches_analyze_and_present_discipline](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py) — prompt teaches analyze-and-present (positive markers: `analyze`/`present`/`interpret`/`plain language`/etc.) + explicitly warns against verbatim transcription.
+- [packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py::test_invA005_v123_system_prompt_does_not_mandate_verbatim_quoting](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py) — **negative gate**: §INV-A005 does NOT contain v1.22-era verbatim-quoting phrasings (`"backtick-quoted excerpt"`, `"quote verbatim before paraphrasing"`, etc.). Protects against accidental revert.
+- [packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py::test_invA005_v123_system_prompt_teaches_multi_turn_investigation](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py) — prompt authorizes multi-turn investigation when failure shapes are unfamiliar.
+- [packages/toolkit/tests/integration/test_pgs_compute_diagnostic_trace.py](../../packages/toolkit/tests/integration/test_pgs_compute_diagnostic_trace.py) — host-service side: the `ToolDiagnosticTrace` field is populated for known failure shapes (`scorefile_missing`, `prs_compute_config_missing`, `pgsc_calc_failed:rc=<n>`, etc.) on `GET /v1/pgs/compute/{task_id}`.
+- [packages/nemoclaw-plugin/tests/index.test.ts](../../packages/nemoclaw-plugin/tests/index.test.ts) — plugin side: `wrapHostResponse` forwards the host's `diagnostic` field into the `host_failure` envelope.
+
+**Historical evolution of `INV-A005`**:
+
+- v1.21 (2026-05-26) — original promotion (phrase-list catalogue, `_FORBIDDEN_PHRASES` substring walker).
+- v1.21.1 (2026-05-28 morning) — catalogue extended to 5 rows + decompose-per-tool rule.
+- v1.22 (2026-05-28 afternoon) — **mechanism rewrite #1**: phrase-list deleted; structural envelope verification via `INV-A006` + trajectory file. Required the agent to quote `error_type` verbatim — discovered to be robotic transcription, not synthesis. **Withdrawn.**
+- **v1.23 (2026-05-28 evening)** — **mechanism rewrite #2 (this entry)**: drops the verbatim-quoting requirement. Rich host data + agent analyzes-and-presents + LLM-judge verification. The architecture the user originally intended.
+
+**Related plans**: this is the third invariant in the agent-cognition category to capture a "data exists but the agent's account of it diverges from the data" failure mode (`INV-A001` for memory notes vs. primary sources; `INV-A004` for decline taxonomy at the API boundary; `INV-A005` for tool-failure narratives vs. trace events). Promoted in 2026-05-26 by [investigate-genomeclaw-gene-tool-bug](../plans/completed/investigate-genomeclaw-gene-tool-bug/) (v1.21 phrase-list). Extended 2026-05-28 morning by [agent-stale-memory-and-failure-mode-confabulation](../plans/completed/agent-stale-memory-and-failure-mode-confabulation/) (v1.21.1 catalogue + Step 3 bullet 4). Rewritten 2026-05-28 afternoon by [inv-a005-structural-faithfulness](../plans/completed/inv-a005-structural-faithfulness/) (v1.22 structural / verbatim-quoting — discovered to be the wrong fix). **Rewritten again 2026-05-28 evening** by [agent-synthesis-over-rich-tool-data](../plans/active/agent-synthesis-over-rich-tool-data/) (v1.23 analyze-and-present + LLM-judge) — the architecture the user originally intended.
+
+---
+
+## INV-A006: Plugin Tool-Result Returns Structured Envelopes
+
+**Rule** *(v1.22, per [inv-a005-structural-faithfulness](../plans/completed/inv-a005-structural-faithfulness/) Phase 1 + 3)*: Every failure-path return from a tool wrapper in any GenomeClaw plugin MUST emit a structured `ToolFailureEnvelope` JSON value as the tool-result `text` field. The envelope MUST carry a `status: "failed"` field and an `error_type` enum discriminator, plus structured detail fields appropriate to the error class. Prose paraphrases of the error MAY appear as an `advisory` field but MUST NOT be the only signal of the error class — `error_type` is load-bearing; `advisory` is operator-facing flavor text.
+
+**Why this exists** — `INV-A005` v1.22's structural verification depends on the agent reading + quoting structured envelope fields. Without `INV-A006`, the plugin can regress back to prose-only returns and downstream verification has no schema to anchor against. The user's 2026-05-28 rule (*"never rely on enumeration of forbidden phrases"*) is architecturally infeasible if the plugin returns prose. `INV-A006` is the architectural counterpart of `INV-A005` v1.22 — together they replace the v1.21 catalogue + `_FORBIDDEN_PHRASES` mechanism.
+
+**Requirements**:
+- The plugin source declares a `ToolFailureEnvelope` TypeScript type — discriminated union over `error_type`.
+- The four currently-declared `error_type` enum values: `placeholder_rejected` (runtime guard fired), `host_failure` (host returned status=failed), `network_error` (call did not reach the host), `http_error` (host returned non-2xx HTTP status). Extending the enum requires updating both this invariant entry + the `INV-A005` walker's vocabulary set in lockstep.
+- All failure-path returns route through a `failureEnvelopeResult` helper that wraps the envelope into the SDK's `failedTextResult`. Bare `failedTextResult(<prose>, ...)` callsites outside that helper's body are forbidden — a discovery test asserts.
+- Each envelope variant carries structured detail fields specific to its class (`placeholder_rejected` → `tool_name`, `arg_name`, `value`; `host_failure` → `http_path`, `host_status`, `host_error`; `network_error` → `http_path`, `raw_error`; `http_error` → `http_path`, `http_status`, `raw_error`).
+- The `advisory` field carries human-readable description; it is operator-facing only and must NOT be load-bearing for any downstream consumer.
+
+**Where it applies**:
+- [packages/nemoclaw-plugin/src/index.ts](../../packages/nemoclaw-plugin/src/index.ts) — primary surface; `ToolFailureEnvelope` type + `failureEnvelopeResult` helper + three failure-path helpers (`rejectIfPlaceholder`, `wrapHostResponse`, `safeCall`/`safePost`).
+- Any future plugin under `packages/*-plugin/src/` adding tool wrappers — same envelope shape + same enforcement.
+
+**How to verify**:
+- [packages/toolkit/tests/invariants/test_invA006_plugin_returns_structured_envelopes.py](../../packages/toolkit/tests/invariants/test_invA006_plugin_returns_structured_envelopes.py) — discovery test (3 assertions):
+  - `test_invA006_plugin_source_declares_ToolFailureEnvelope_type` — the type exists in `index.ts`.
+  - `test_invA006_plugin_source_declares_all_four_error_type_enum_values` — all four enum values appear as `error_type: "<value>"` literals.
+  - `test_invA006_failure_helpers_route_through_failureEnvelopeResult` — every `failedTextResult(` callsite outside the `failureEnvelopeResult` body fails the test (catches prose-only regressions).
+- Plugin-side unit tests at [packages/nemoclaw-plugin/tests/index.test.ts](../../packages/nemoclaw-plugin/tests/index.test.ts) — the four envelope-shape tests under the `INV-A006 structured failure envelopes (Plan A.1)` describe block assert each enum's structured fields on a live tool invocation. Plus six pre-existing failure-path tests rewired to use `parseFailureEnvelope` instead of prose substrings.
+
+**Related plans**: introduced by [inv-a005-structural-faithfulness](../plans/completed/inv-a005-structural-faithfulness/); its architectural counterpart `INV-A005` v1.22 depends on this invariant. Project-wide methodology rule `INV-V001` (sister plan [eliminate-forbidden-phrase-enumeration](../plans/completed/eliminate-forbidden-phrase-enumeration/)) builds on the precedent.
+
+---
+
+# Category: Verification Methodology (INV-V*)
+
+Rules about HOW the project verifies correctness — what kinds of tests, content gates, and discovery checks are acceptable. Distinct from runtime invariants (which govern what the code does); these govern how we check what the code does.
+
+---
+
+## INV-V001: Verification Mechanisms Must Not Enumerate Forbidden Phrases for Agent Output
+
+**Rule** *(v1.23; per [eliminate-forbidden-phrase-enumeration](../plans/completed/eliminate-forbidden-phrase-enumeration/) — companion to [inv-a005-structural-faithfulness](../plans/completed/inv-a005-structural-faithfulness/))*: Any test or content gate that verifies properties of agent-generated output (reply text, memory notes, tool-call planning text) MUST use structural inspection (typed envelopes, schema fields, AST), quote-verbatim discipline, or semantic / LLM-judge evaluation. **Substring-list enumeration of banned or required failure-narrative phrases is forbidden as a load-bearing correctness gate.** Non-load-bearing substring backstops (regression pins, sanity smokes) MAY exist but MUST carry an inline `# INV-V001-backstop:` annotation declaring why the check is non-load-bearing. Structural anti-pattern detection over source code (regex over shell argv shapes, AST over Python types, etc.) MAY use enumeration with an inline `# INV-V001-allow:` annotation — different class than agent-output paraphrase enumeration.
+
+**Why this exists** — Demonstrated empirically by the 2026-05-28 AC8 manual gate (parent plan [agent-stale-memory-and-failure-mode-confabulation](../plans/completed/agent-stale-memory-and-failure-mode-confabulation/)): a `_FORBIDDEN_PHRASES` tuple shipped 2026-05-28 morning was already worked around by the agent inventing **"object-shape serialization error"** by afternoon — same confabulation class, paraphrase not on the list. LLM paraphrase-space is effectively infinite; enumeration is whack-a-mole. User's verdict (2026-05-28): *"never rely on enumeration of 'forbidden phrases'."* The architectural fix lives in `INV-A005` v1.22 (structural envelope verification) + `INV-A006` (plugin returns structured data); this invariant generalizes the discipline project-wide and prevents regression to the methodology.
+
+**Requirements**:
+
+- **Load-bearing primary gates** over agent-generated output MUST use one of:
+  - **Structural inspection** — typed envelopes, schema fields, AST walks. E.g., `INV-A005` v1.22's walker reads `error_type` enum values from the openclaw trajectory file's per-tool-call records.
+  - **Quote-verbatim discipline** — require the agent to quote structured field values verbatim (in backticks) before paraphrasing; the test then checks for the presence of backticked excerpts (structural).
+  - **Semantic / LLM-judge** — a second model evaluates `(trace, reply)` for consistency (deferred per the parent plan's Stage 5 decision; trigger conditions documented).
+- **Non-load-bearing substring backstops** MAY exist but MUST carry an inline `# INV-V001-backstop: <one-line rationale>` annotation within 15 lines preceding the suspect tuple/assertion. A file-level header `# INV-V001-backstop-file: <rationale>` covers every site in the file.
+- **Structural anti-pattern detection over non-LLM source** (e.g., `INV-P003`'s `_FORBIDDEN_ARGV_PATTERNS` regex over shell-argv shapes) MAY use enumeration with an inline `# INV-V001-allow: <rationale>` annotation. The target language must NOT be LLM-generated output.
+- **Plans proposing new verification mechanisms** MUST justify their approach as one of the three preferred alternatives or document an explicit waiver.
+
+**Where it applies**:
+
+- `packages/toolkit/tests/invariants/`
+- `packages/toolkit/tests/integration/`
+- `packages/*-plugin/tests/`
+- Plan docs that propose verification mechanisms.
+
+**How to verify**:
+
+- [packages/toolkit/tests/invariants/test_invV001_no_phrase_enumeration_in_agent_output_gates.py](../../packages/toolkit/tests/invariants/test_invV001_no_phrase_enumeration_in_agent_output_gates.py) — annotation-based discovery test. Walks `packages/toolkit/tests/{invariants,integration}/` + `packages/nemoclaw-plugin/tests/`. Flags suspect tuples (module-level `_<NAME> = (...)` whose name contains `FORBIDDEN_PHRASE`, `BANNED_*`, `FAILURE_PATTERN`, `ERROR_PATTERN`, `CATALOGUE_ROWS`, `STRUCTURAL_FAILURE_SIGNALS`, or `FORBIDDEN_ARGV`) + suspect assertions (`assert "..." in <agent-output-var>` where the var name is `reply` / `agent_reply` / `agent_response` / `finalAssistantVisibleText` / etc.). For each, requires an `INV-V001-backstop:` or `INV-V001-allow:` annotation within 15 lines preceding, OR a file-level header. Plus three confidence-check tests (synthetic violation detected; per-site annotation accepted; file-level annotation accepted).
+
+**Related plans**:
+
+- [eliminate-forbidden-phrase-enumeration](../plans/completed/eliminate-forbidden-phrase-enumeration/) — this invariant's promoting plan.
+- [inv-a005-structural-faithfulness](../plans/completed/inv-a005-structural-faithfulness/) — pilot case that established the structural-envelope precedent + the v1.22 `INV-A005` rewrite + `INV-A006`.
+- [agent-stale-memory-and-failure-mode-confabulation (completed)](../plans/completed/agent-stale-memory-and-failure-mode-confabulation/) — the 2026-05-28 AC8 gate that empirically demonstrated v1.21's phrase-list methodology is non-generalizable.
 
 ---
 
@@ -648,6 +862,7 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 | INV-D006 | DooD-Safe Path Annotation | Data |
 | INV-D007 | Shim Seam Singularity | Data |
 | INV-D008 | Copy-Stage for DooD-Spawning Pipelines | Data |
+| INV-D009 | Coverage Panel Difficult-Region Annotations | Data |
 | INV-E001 | Assistant Claims Must Be Traceable to Evidence | Evidence |
 | INV-P001 | Privacy Is the Default Operating Mode | Privacy |
 | INV-P002 | Agent Egress Is a Named, Minimal-Sufficient Boundary | Privacy |
@@ -656,7 +871,12 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 | INV-R002 | Never Cache a Degenerate Result | Rebuildability |
 | INV-C001 | Separate Clinical Advice from Lifestyle and Research Assistance | Clinical Boundary |
 | INV-C002 | CLI Output Contract Stability | Communication |
+| INV-C003 | Uncallable Sites Excluded from PGS Overlap | Clinical Boundary |
 | INV-A001 | Agent Memory Provenance | Agent Cognition |
 | INV-A002 | Synthesis Reasoning Floor | Agent Cognition |
 | INV-A003 | Agent-Curated Compute Provenance | Agent Cognition |
+| INV-A004 | Decline Taxonomy Must Traverse Every Layer | Agent Cognition |
+| INV-A005 | Tool-Failure Narratives Match Trace Evidence | Agent Cognition |
+| INV-A006 | Plugin Tool-Result Returns Structured Envelopes | Agent Cognition |
+| INV-V001 | Verification Mechanisms Must Not Enumerate Forbidden Phrases for Agent Output | Verification Methodology |
 | INV-T001 | External-Tool Conventions Captured as Typed Wrappers | Tool Integration |

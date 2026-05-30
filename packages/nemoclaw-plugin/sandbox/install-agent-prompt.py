@@ -2,9 +2,10 @@
 
 Runs inside the Dockerfile after `openclaw plugins install` + the web_search
 config-set step. Reads the prompt text off disk (the COPY step lands it at
-/opt/genomeclaw/sandbox/agent-system-prompt.md) and uses `openclaw config set
---batch-file` to write `agents.list[].systemPromptOverride` with the
-multi-line text intact — shell heredocs would mangle escape sequences.
+/sandbox/build/genomeclaw/sandbox/agent-system-prompt.md) and uses
+`openclaw config set --batch-file` to write
+`agents.list[].systemPromptOverride` with the multi-line text intact — shell
+heredocs would mangle escape sequences.
 
 Verified by:
 - tests/invariants/test_agent_system_prompt_contract.py (content gates on the prompt file in the repo)
@@ -19,7 +20,7 @@ import pathlib
 import subprocess
 import sys
 
-PROMPT_PATH = pathlib.Path("/opt/genomeclaw/sandbox/agent-system-prompt.md")
+PROMPT_PATH = pathlib.Path("/sandbox/build/genomeclaw/sandbox/agent-system-prompt.md")
 BATCH_PATH = pathlib.Path("/tmp/agents-batch.json")  # noqa: S108 — Docker build, ephemeral
 
 prompt = PROMPT_PATH.read_text()
