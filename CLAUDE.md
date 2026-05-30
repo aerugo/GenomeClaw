@@ -154,6 +154,35 @@ flowchart TB
 
 ---
 
+## Running the Agent Locally
+
+When asked to invoke the GenomeClaw agent via CLI (the muscle question, demo battery turns, AC8 manual gates, ad-hoc smokes), the canonical flow is:
+
+1. **Secrets**: the repo-root `.env` carries `OPEN_AI_API_KEY=…` (gitignored). The onboarding + the up-script both source it and export it as `OPENAI_API_KEY` for the openclaw gateway. Never paste the key on argv (`INV-P003`).
+2. **Sandbox state**: ensure the sandbox is reachable.
+   - First-time setup or after prompt/plugin edits: `./scripts/onboard-sandbox.sh` — full rebuild + onboard. Heavy (rebuilds the image), but the canonical reset path.
+   - Day-to-day (gateway died, missing `OPENAI_API_KEY` in env, plugin permissions slipped): `./scripts/sandbox-up.sh` — lightweight, idempotent. Auto-delegates to the full reset if the image is stale or the plugin dir is unreadable.
+   - Force a full rebuild from the wrapper: `./scripts/sandbox-up.sh --rebuild`.
+3. **Host service** (only if the agent needs to read derived data): `bin/genomeclaw host service` in a separate shell. Binds 8645 by default. Skip this only when you're intentionally testing the network-failure path (`safeCall` catch-block flow).
+4. **Send a message** (one-shot CLI):
+
+   ```bash
+   set -a; source ./.env; set +a; export OPENAI_API_KEY="$OPEN_AI_API_KEY"
+   CID=$(docker ps --filter 'name=openshell-genomeclaw-' --format '{{.Names}}' | head -1)
+   docker exec -i -e HOME=/sandbox -e OPENAI_API_KEY="$OPENAI_API_KEY" --user sandbox "$CID" \
+     bash -c 'openclaw agent --local --json --agent genomeclaw --message "your question here"'
+   ```
+
+   Use `docker exec` (not `nemoclaw genomeclaw exec`) — the latter is broken upstream for multi-line and WebSocket-reaching commands. The pattern above is what `scripts/onboard-sandbox.sh` and `_live_smoke/run.py` both use.
+
+5. **Capture the trace** as JSON. The first ~6 lines are plugin-loader log noise; the JSON envelope starts at line 7. To clean for the trace-walker: `tail -n +7 <file> | python3 -m json.tool > clean.json`. To make the trace-walker pick it up via its date-convention path, place under `docs/reports/demo-<YYYY-MM-DD>-logs/`.
+
+**Pinned model**: `gpt-5.5` (configured in the sandbox image, baked at build time). Cheaper substitutes (`gpt-4o-mini`, `gpt-5-mini`) are NOT used in this project — the agent's prompt-following discipline is reasoning-ceiling-sensitive (`INV-A002`).
+
+For the full multi-section setup — secrets, dashboard, troubleshooting (EACCES, port conflicts, missing colima mounts, gateway recovery) — see [README.md § Sandbox setup](README.md).
+
+---
+
 ## 🎯 Critical Workflow Principle: Plan Before You Mutate
 
 For any non-trivial feature, data model change, ingestion pipeline, annotation flow, or reporting workflow, use the planning protocol in `docs/plans/CLAUDE.md` before making broad code changes.

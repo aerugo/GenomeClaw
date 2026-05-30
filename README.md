@@ -395,6 +395,25 @@ After this completes, `nemoclaw list` shows `genomeclaw` next to any other sandb
 
 The script is a direct counterpart of [DevRelClaw's `scripts/onboard-sandbox.sh`](https://github.com/OpenRavenClaw/DevRelClaw/blob/main/scripts/onboard-sandbox.sh) — both projects use the same onboarding pattern + the same workarounds (auth-profiles injection, inference.local routing) because they hit the same upstream NemoClaw quirks.
 
+#### 2b. Day-to-day: bring the sandbox to a usable state
+
+After the first onboard, use the lightweight wrapper for the common cases where the sandbox is running but the gateway died (e.g. after a reboot, or `OPENAI_API_KEY` aged out of the gateway's env):
+
+```bash
+./scripts/sandbox-up.sh             # smart: starts gateway with .env if container is otherwise OK
+./scripts/sandbox-up.sh --rebuild   # full image rebuild via onboard-sandbox.sh (use after prompt/plugin edits)
+```
+
+What it does:
+
+1. Sources `.env` and exports `OPEN_AI_API_KEY` as `OPENAI_API_KEY`.
+2. Locates the running `openshell-genomeclaw-*` container; if none, delegates to `scripts/onboard-sandbox.sh` (full reset).
+3. Probes the container for the EACCES-on-`/opt/genomeclaw` plugin-load failure; if present, delegates to `onboard-sandbox.sh`.
+4. Checks the gateway is bound; if not, restarts it with `OPENAI_API_KEY` supplied via `docker exec -e` (env, not argv — per `INV-P003`).
+5. Reports the working `docker exec` agent-CLI snippet for the now-healthy container.
+
+Use `--rebuild` whenever you edit the agent system prompt at [packages/nemoclaw-plugin/sandbox/agent-system-prompt.md](packages/nemoclaw-plugin/sandbox/agent-system-prompt.md) or the plugin source under [packages/nemoclaw-plugin/src/](packages/nemoclaw-plugin/src/) — those land in the image at build time, so a running container won't pick them up until the image is rebuilt + the container recreated.
+
 #### 3. Run the host service (in another shell)
 
 The agent's tools all route through the host-side `genomeclaw host service` over `host.openshell.internal:8645`. Before asking questions, start it:
@@ -485,6 +504,12 @@ The sandbox user (uid 998) cannot write `/root`. Means `HOME=/sandbox` is not se
 
 **`nemoclaw genomeclaw exec ...` fails with `EACCES: permission denied, scandir '/opt/genomeclaw'`**
 `nemoclaw genomeclaw exec` runs every command inside openshell's filesystem-restriction wrapper that blocks reads of `/opt/genomeclaw` (kernel-level — landlock-ish — even though the directory is owned by the sandbox user and world-readable inside the container). The onboarding script avoids this by using plain `docker exec --user sandbox -e HOME=/sandbox <CID>` for any step that needs to read the plugin dir. Agent calls (`openclaw agent --local`) still go through `nemoclaw genomeclaw exec` because they only talk to the already-running gateway over WebSocket — they don't read `/opt`. See [docs/reports/genomeclaw-demo-questions-2026-05-24.md § Onboarding diagnosis](docs/reports/genomeclaw-demo-questions-2026-05-24.md) for the full forensics.
+
+**Gateway dies with `SecretRefResolutionError: Environment variable "OPENAI_API_KEY" is missing or empty`**
+The gateway resolves the OpenAI key from its own process env at startup. If it dies (sandbox rebuild, reboot, manual kill) and gets re-launched without `-e OPENAI_API_KEY=...` it can't resolve the secret. **Recovery in one command**: `./scripts/sandbox-up.sh` — sources `.env`, restarts the gateway with the key in env, ready in ~10 s. If the underlying image is also stale (you've edited the prompt or plugin since the last build), use `./scripts/sandbox-up.sh --rebuild`.
+
+**Agent reply uses a tool-failure phrase the trace doesn't actually carry** (e.g. "object-shape serialization error", "argument-shape guard fired" when all calls were network failures)
+This is the §INV-A005 confabulation pattern. The agent reaches for the most-rehearsed failure framing instead of the one in this turn's tool-result text. See the prompt's [§INV-A005 catalogue](packages/nemoclaw-plugin/sandbox/agent-system-prompt.md) (the catalogue + decompose-per-tool rule). Trace-walker enforcement at [packages/toolkit/tests/invariants/test_invA005_no_serialization_bug_confabulation.py](packages/toolkit/tests/invariants/test_invA005_no_serialization_bug_confabulation.py). The catalogue's coverage of paraphrases isn't exhaustive — if you see a new variant the agent invented, extend `_FORBIDDEN_PHRASES` and the prompt catalogue together (per the discipline in [docs/plans/completed/agent-stale-memory-and-failure-mode-confabulation/](docs/plans/completed/agent-stale-memory-and-failure-mode-confabulation/)).
 
 ---
 

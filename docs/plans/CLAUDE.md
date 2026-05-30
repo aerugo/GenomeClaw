@@ -302,6 +302,20 @@ A phase that is too small is fine; a phase that is too large is a rewrite waitin
 
 If a plan touches egress, secrets, phenotype-linked content, or report wording, the **Privacy & Safety Considerations** section is filled in *before* the **Solution Design** section is finalized, and the `privacy-safety-reviewer` agent is invoked at least once.
 
+### G. Verification methodology: never enumerate forbidden phrases for agent output
+
+Per `INV-V001` (Verification Methodology category, [docs/reference/INVARIANTS.md](../reference/INVARIANTS.md)): when proposing tests or content gates over agent-generated output (reply text, memory notes, tool-call planning text), do NOT propose substring-list enumeration of banned/required failure-narrative phrases as the primary verification mechanism.
+
+The 2026-05-28 AC8 manual gate of `agent-stale-memory-and-failure-mode-confabulation` showed empirically that LLM paraphrase-space is effectively infinite — a `_FORBIDDEN_PHRASES` tuple shipped that morning was already worked around by the agent inventing "object-shape serialization error" by afternoon. Phrase enumeration is whack-a-mole.
+
+Use one of these three alternatives instead:
+
+- **Structural inspection** — read typed envelopes, schema fields, AST. Preferred when the property is shape-checkable. (E.g., `INV-A005` v1.22's walker reads `error_type` enum values from the trajectory file's per-tool-call records.)
+- **Quote-verbatim discipline** — require the agent to quote structured field values verbatim before paraphrasing; the test then checks for the presence of backticked excerpts. Preferred when both shape and meaning matter.
+- **Semantic / LLM-judge** — a second model evaluates `(trace, reply)` for consistency. Preferred when the property is meaning-bound and no schema is available.
+
+Non-load-bearing substring checks (regression pinning, sanity smokes) are still allowed but MUST be inline-annotated with `# INV-V001-backstop: <rationale>`. Structural regex over source-code shapes (e.g., `INV-P003`'s argv-leak detection — target is shell, not LLM output) is allowed with `# INV-V001-allow: <rationale>`. See `INV-V001` for the full rule + the [discovery test](../../packages/toolkit/tests/invariants/test_invV001_no_phrase_enumeration_in_agent_output_gates.py) that enforces it.
+
 ---
 
 ## Required Verification Gates

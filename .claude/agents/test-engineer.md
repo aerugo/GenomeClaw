@@ -65,6 +65,17 @@ Therefore:
 - **`tests/perf/<name>.py`** is a recognized first-class category. Each perf test exercises a representative-scale workload (e.g. ~100k rows, ~10 MB inputs) inside the toolkit image and asserts a wall-clock budget. Marked `@pytest.mark.needs_bio` when the path needs real bio binaries; runs in CI's image-build job. Budget pads ~10× headroom over the observed best path so noisy CI runners don't false-fail.
 - **Real-data smoke is a phase-completion gate** for any phase touching scale-sensitive surfaces (DuckDB ingest, large-file streaming, multi-pass annotation joins, mosdepth/`pgsc_calc` over a genome). At least once per phase, run the pipeline against the project owner's actual genome on actual hardware. The synthetic→real gap is exactly where production bugs live. The result lands in the phase's work-notes alongside the synthetic-test green output.
 - **Synthetic + image-resident is not the same as real-data smoke.** The image-resident test still reads from the container's writable layer, not the user's USB-attached / virtiofs-mounted volume. Reliability bugs hide in the bind-mount path.
+- **Live-agent manual gates (AC-style)**. For tests that require a live agent turn (the muscle-question regression gate, demo-battery questions, INV-A005 catalogue verification against real LLM behaviour), use the canonical sandbox-up flow documented in [CLAUDE.md § Running the Agent Locally](../../CLAUDE.md): `./scripts/sandbox-up.sh` (light) or `./scripts/sandbox-up.sh --rebuild` (full rebuild after prompt/plugin edits). Send messages via `docker exec`, not `nemoclaw genomeclaw exec` (the latter is broken upstream). Capture the trace under `docs/reports/demo-<YYYY-MM-DD>-logs/` so the existing trace-walker date convention picks it up. Strip the first ~6 log lines before parsing (the JSON envelope starts at line 7). Also `docker cp` the sibling `<run-id>.trajectory.jsonl` file from inside the sandbox — `INV-A005` v1.22's structural walker requires it for per-tool-call inspection.
+
+### Verification methodology rule (INV-V001)
+
+Never propose substring-list enumeration of banned/required failure-narrative phrases as the primary verification of agent output. Per `INV-V001` (see [docs/reference/INVARIANTS.md](../../docs/reference/INVARIANTS.md)):
+
+- **Use structural inspection** (typed envelopes, schema fields, AST) when the property is shape-checkable. Example: `INV-A005` v1.22's walker reads `error_type` enum values from the openclaw trajectory file's per-tool-call records.
+- **Use quote-verbatim discipline** — require the agent to quote structured field values verbatim before paraphrasing; the test checks for backticked excerpts.
+- **Use semantic / LLM-judge** when meaning-bound + no schema available.
+
+Backstop substring checks (regression pins, sanity smokes) are allowed but MUST carry an inline `# INV-V001-backstop:` annotation. Structural regex over source-code shapes (e.g., argv-leak detection) is allowed with `# INV-V001-allow:`. The [INV-V001 discovery test](../../packages/toolkit/tests/invariants/test_invV001_no_phrase_enumeration_in_agent_output_gates.py) flags un-annotated suspect sites at PR time.
 
 ## TDD Ritual
 
@@ -139,6 +150,7 @@ You write or review the tests that enforce **all** invariants in `INVARIANTS.md`
 - Determinism tests that diff timestamps or run IDs without normalizing them — pin those upstream.
 - Skipped tests with `TODO` and no plan entry.
 - Real or realistic genomic data committed as fixtures.
+- **Substring-list enumeration of forbidden/required failure-narrative phrases over agent output as a primary verification gate** (per `INV-V001`). LLM paraphrase-space is effectively infinite; enumeration is whack-a-mole. Use structural inspection (typed envelopes, schema fields), quote-verbatim discipline, or semantic LLM-judge instead. Substring backstops (regression pins) are allowed only with an inline `# INV-V001-backstop:` annotation declaring why the check is non-load-bearing.
 
 ## Handoffs
 
