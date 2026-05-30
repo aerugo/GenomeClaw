@@ -1,15 +1,22 @@
 # Phase 4: Simplify Onboard Script + Recovery Wrapper
 
-**Status**: Pending
-**Started**:
-**Completed**:
+**Status**: Complete (reconciled to local-Docker reality — see work-notes Phase 4)
+**Started**: 2026-05-30
+**Completed**: 2026-05-30
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
 
 ## Objective
 
-Now that NemoClaw owns the gateway lifecycle (Phase 3), strip the remaining workaround layers from `scripts/onboard-sandbox.sh` and update `scripts/sandbox-up.sh` to delegate gateway recovery to `nemoclaw <name> recover`. Decide whether `sandbox-up.sh` should remain a separate entry point or fold into `onboard-sandbox.sh` based on Phase 3 results.
+Clean up `scripts/sandbox-up.sh` and `scripts/onboard-sandbox.sh` so the recovery path is correct and free of stale-path / fragile-detection bugs, now that the plugin lives at `/sandbox/build/genomeclaw` and the gateway binds loopback (Phases 2–3).
+
+> **Premise revised after Phase 3 (2026-05-30).** The original objective was "delegate gateway recovery to `nemoclaw <name> recover`." Phase 3 proved that is **not feasible on local Docker**: `nemoclaw recover` relaunches the gateway WITHOUT injecting `OPENAI_API_KEY` (the native OpenShell L7-proxy credential path — `inference.local` + model-router — is not operational locally), so the gateway fails startup on the missing secret. The sanctioned local-Docker recovery is therefore the **keyed `docker exec -e OPENAI_API_KEY` restart** (INV-P003-clean: env, not argv) — which `sandbox-up.sh` already does. So Phase 4 keeps that as the primary recovery, makes a **best-effort** `nemoclaw genomeclaw connect --probe-only` attempt first (so the supervised path is used whenever it does work — e.g. remote GPU deployments), and documents the local-Docker limitation. The flag-gating the original plan imagined (docker-exec behind `--force-direct-restart`) is inverted: on local Docker the docker-exec restart is the default working path, not an opt-in fallback.
+
+### Stale-path / fragile-detection bugs to fix (found 2026-05-30)
+- `sandbox-up.sh` Step 2 checks `/opt/genomeclaw` for EACCES — obsolete; the plugin is at `/sandbox/build/genomeclaw`. The check should reflect the canonical path (or be dropped, since the canonical path is inside the Landlock RW baseline and no longer EACCESes).
+- Both scripts detect the gateway via `ss -lntp | grep -q openclaw-gatew` — fragile (the process is named `openclaw`, and the truncated match is version-dependent). Switch to a port-based check (`:18789`).
+- `onboard-sandbox.sh` Step 7b's wait-loop uses the same fragile grep.
 
 ## Scope Boundaries
 

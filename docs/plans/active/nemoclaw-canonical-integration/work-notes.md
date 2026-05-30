@@ -336,9 +336,33 @@ The full native path proved NOT operational on local Docker (empirically: `infer
 ---
 
 ### Phase 4: Simplify Onboard Script + Recovery Wrapper
-**Status**: Pending
-**Started**:
-**Completed**:
+**Status**: Complete (reconciled to local-Docker reality)
+**Started**: 2026-05-30
+**Completed**: 2026-05-30
+
+**Premise reconciled**: the original Phase 4 ("delegate recovery to `nemoclaw recover`") is invalid on local Docker — Phase 3 proved `nemoclaw recover` can't inject the credential there. So the keyed `docker exec -e OPENAI_API_KEY` restart (INV-P003-clean) is the sanctioned local recovery; `sandbox-up.sh` now tries `nemoclaw genomeclaw connect --probe-only` best-effort first (supervised path when available, e.g. remote) then falls through to the keyed restart.
+
+**Changes (GREEN)**:
+- `scripts/sandbox-up.sh`: Step 2 plugin check now targets the canonical `/sandbox/build/genomeclaw/dist/index.js` (was the stale `/opt/genomeclaw` EACCES grep); gateway liveness is PORT-based (`ss … :18789`, via a `gateway_listening()` helper) instead of the fragile `grep openclaw-gatew`; added the best-effort supervised-recover attempt before the keyed restart, with comments documenting the local-Docker credential limitation.
+- `scripts/onboard-sandbox.sh`: Step 7b wait-loop switched to the same port-based check.
+- Step 8 smoke is left as the docker-exec **agent** smoke (a superset of the plan's suggested HTTP probe — it exercises the agent + a `genomeclaw_*` tool, INV-V001-clean, not log-grep).
+
+**Tests**: `packages/toolkit/tests/integration/test_phase4_script_shape.py` (5 structural: no legacy `/opt` ref in either script; port-based detection; keyed restart env-not-argv [INV-P003]; best-effort recover wired) — 5/5 pass. INV-P003 onboard tests still pass (9/9 combined). No new regressions (only the pre-existing `test_invP002_policy_preset` 8643/8645 failure).
+
+**Recovery smoke (manual, INV-V001 structural — captured here rather than a fragile live pytest)**:
+```text
+# kill the gateway, then run sandbox-up.sh:
+$ docker exec --user sandbox <CID> pkill -9 openclaw   → PORT FREE (gateway down)
+$ ./scripts/sandbox-up.sh
+  [sandbox-up] gateway down — trying supervised recovery (nemoclaw connect --probe-only, best-effort)
+  [sandbox-up] starting gateway directly with OPENAI_API_KEY in env (never argv; INV-P003)
+  [sandbox-up] gateway ready
+$ ss -lntp | grep :18789   → 127.0.0.1:18789 (loopback), new pid
+  gateway log: "http server listening (1 plugin: genomeclaw)"
+$ openclaw agent --agent genomeclaw -m "Call genomeclaw_status now."
+  → toolSummary={"calls":1,"tools":["genomeclaw_status"],"failures":0}, stop
+```
+Recovery restores a **working** agent (not just a listening port). `nemoclaw recover` itself remains non-functional on local Docker (documented; tracked as upstream/infra follow-up).
 
 ---
 

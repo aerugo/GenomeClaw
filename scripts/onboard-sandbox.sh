@@ -261,9 +261,11 @@ docker exec --user sandbox "${CID}" bash -c 'pkill -f "openclaw gateway" 2>/dev/
 docker exec -d -e HOME=/sandbox -e OPENAI_API_KEY="${OPENAI_API_KEY}" --user sandbox "${CID}" \
   bash -c 'rm -f /tmp/gateway.log; openclaw gateway run > /tmp/gateway.log 2>&1'
 
-echo "[onboard] waiting for gateway to bind 0.0.0.0:18789 (max 30s)"
+echo "[onboard] waiting for gateway to bind 127.0.0.1:18789 (max 30s)"
 for _ in $(seq 1 30); do
-  if docker exec --user sandbox "${CID}" bash -c 'ss -lntp 2>/dev/null | grep -q openclaw-gatew'; then
+  # Port-based liveness (the process is named `openclaw`; the old
+  # `grep openclaw-gatew` name match was fragile/version-dependent).
+  if docker exec --user sandbox "${CID}" bash -c 'ss -lntp 2>/dev/null | grep -q ":18789 "'; then
     echo "[onboard] gateway ready"
     break
   fi
