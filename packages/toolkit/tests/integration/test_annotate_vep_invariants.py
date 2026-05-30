@@ -305,11 +305,18 @@ def test_invR001_annotate_vep_appends_step_to_provenance(
     assert params["fork"] == 0
     assert isinstance(params["flags"], list)
     # Sanity-check the flag list carries the production-defining VEP flags
-    # so a future regression that drops e.g. --mane_select surfaces here.
-    for required_flag in ("--mane_select", "--hgvs", "--symbol", "--canonical", "--cache"):
+    # so a future regression that drops e.g. --mane surfaces here.
+    # Per vep-mane-plus-clinical Phase 1: `--mane_select` → `--mane`
+    # (activates both MANE_SELECT and MANE_PLUS_CLINICAL CSQ fields);
+    # `--pick_order` added as a forward-compat self-documenting flag.
+    for required_flag in ("--mane", "--pick_order", "--hgvs", "--symbol", "--canonical", "--cache"):
         assert required_flag in params["flags"], (
             f"missing required flag in provenance.params.flags: {required_flag}"
         )
+    assert "--mane_select" not in params["flags"], (
+        "`--mane_select` must be replaced by `--mane` (the Select-only flag "
+        "silently drops MANE Plus Clinical entries)"
+    )
     # Plugins: both LoF + AlphaMissense were staged in the reference layout,
     # so both must appear in the recorded plugin list.
     plugins = params["plugins"]

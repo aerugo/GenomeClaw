@@ -132,10 +132,23 @@ _VEP_SKIPPED_VARIANT_RE = re.compile(r"^WARNING: line \d+ skipped \((\S+)\s")
 
 # CLI flags always present in the production invocation. The orchestrator
 # layers plugins + per-run flags on top via :class:`VepConfig`.
+#
+# vep-mane-plus-clinical Phase 1: `--mane_select` → `--mane` (activates
+# both MANE_SELECT and MANE_PLUS_CLINICAL CSQ fields); `--pick_order
+# <value>` added as a forward-compat self-documenting flag (no-op until
+# a future caller adds `--pick`). Both flag literals come from
+# :class:`VepConventions` so a future pin bump produces a typed test
+# failure rather than a silent flag-name drift.
+from genomeclaw_toolkit.prep._vep_conventions import VepConventions as _VepConventions
+
+_VEP_CONV = _VepConventions()
+
 _STATIC_FLAGS: tuple[str, ...] = (
     "--cache",
     "--offline",
-    "--mane_select",
+    _VEP_CONV.mane_flag,
+    _VEP_CONV.pick_order_flag,
+    _VEP_CONV.pick_order_value,
     "--hgvs",
     "--symbol",
     "--canonical",

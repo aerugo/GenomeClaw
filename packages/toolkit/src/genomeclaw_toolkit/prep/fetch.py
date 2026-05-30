@@ -819,6 +819,55 @@ _LAYOUTS: dict[str, _SourceLayout] = {
         # Canonical layout: reference/pgs_scorefile/<PGS_ID>/<PGS_ID>_hmPOS_GRCh38.txt.gz
         # (matches grch38's reference/grch38/<release>/<file> shape).
     ),
+    # coverage-panel-v2 Phase 2 — GIAB "challenging medically relevant
+    # genes" stratification BED (Wagner et al., Nat Biotechnol 2022,
+    # doi:10.1038/s41587-021-01158-1). Public-domain NCBI Reference
+    # Samples bundle. Consumed by `test_invD009_panel_giab_intersection.py`
+    # to verify the v2 panel's `region_class` overlay is complete
+    # against the canonical short-read-WGS difficult-region truth source.
+    "giab_mrg": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath=(
+                    "/ReferenceSamples/giab/release/genome-stratifications/v3.3/"
+                    "GRCh38@all/Challenges/GRCh38_MedicallyRelevantGenes_v1.00.bed.gz"
+                ),
+                output_filename="GRCh38_MedicallyRelevantGenes_v1.00.bed.gz",
+            ),
+        ),
+    ),
+    # force-genotype-callable-mask Phase 1 — GIAB Personal Genomes
+    # Benchmark NA12878 / HG001 v4.2.1 high-confidence regions BED.
+    # NIST/NCBI Genome-In-A-Bottle Consortium, public-domain. The
+    # canonical "regions where short-read WGS variant calling is
+    # reliable" truth source; consumed by Phase 2's per-site
+    # `genotype_source` classifier in `coverage_fill.py` to distinguish
+    # `force_genotyped_high_conf` (inside GIAB) from `force_genotyped_low_conf`
+    # (outside GIAB). Two files: `.bed.gz` carries Mode-1 MD5 sidecar
+    # (per NCBI convention, same as clinvar / dbsnp); `.tbi` has no MD5
+    # (structural verify at first tabix query).
+    "giab_high_confidence": _SourceLayout(
+        files=(
+            _FetchFile(
+                relpath=(
+                    "/giab/ftp/release/NA12878_HG001/NISTv4.2.1/GRCh38/"
+                    "HG001_GRCh38_1_22_v4.2.1_benchmark.bed.gz"
+                ),
+                output_filename="HG001_GRCh38_1_22_v4.2.1_benchmark.bed.gz",
+                md5_relpath=(
+                    "/giab/ftp/release/NA12878_HG001/NISTv4.2.1/GRCh38/"
+                    "HG001_GRCh38_1_22_v4.2.1_benchmark.bed.gz.md5"
+                ),
+            ),
+            _FetchFile(
+                relpath=(
+                    "/giab/ftp/release/NA12878_HG001/NISTv4.2.1/GRCh38/"
+                    "HG001_GRCh38_1_22_v4.2.1_benchmark.bed.gz.tbi"
+                ),
+                output_filename="HG001_GRCh38_1_22_v4.2.1_benchmark.bed.gz.tbi",
+            ),
+        ),
+    ),
 }
 
 _DEFAULT_BASE_URLS: dict[str, str] = {
@@ -842,6 +891,14 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     # PGS Catalog scoring files — same EBI FTP root, under the per-PGS
     # ScoringFiles/Harmonized/ tree.
     "pgs_scorefile": "https://ftp.ebi.ac.uk",
+    # GIAB challenging medically relevant genes BED (Wagner et al.,
+    # Nat Biotechnol 2022; coverage-panel-v2 Phase 2). Public-domain
+    # NCBI Reference Samples bundle.
+    "giab_mrg": "https://ftp-trace.ncbi.nlm.nih.gov",
+    # GIAB Personal Genomes Benchmark NA12878/HG001 v4.2.1 high-confidence
+    # regions BED (force-genotype-callable-mask Phase 1). Public-domain
+    # NIST/NCBI Genome-In-A-Bottle Consortium.
+    "giab_high_confidence": "https://ftp-trace.ncbi.nlm.nih.gov",
 }
 
 

@@ -447,7 +447,7 @@ def test_default_panel_v1_contains_disease_area_genes() -> None:
     )
 
 
-def test_default_panel_v1_uses_real_gencode_coordinates() -> None:
+def test_default_panel_uses_real_gencode_coordinates() -> None:
     """Detect drift back to placeholder coordinates.
 
     The original v1 placeholder shipped exactly 8 deterministic exons per gene
@@ -455,6 +455,10 @@ def test_default_panel_v1_uses_real_gencode_coordinates() -> None:
     Real GENCODE v44 MANE Select exons number in the thousands and span every
     autosome plus chrX. This test fails if anyone reverts to the placeholder
     pattern.
+
+    Per coverage-panel-v2 Phase 2: accepts BED4 (v1) or BED5 (v2). The v2
+    panel adds a 5th `region_class` column; this drift-detection test
+    cares about row count + chromosome diversity, not the column count.
     """
     from genomeclaw_toolkit.prep.ingest import _DEFAULT_PANEL_BED_NAME
     data_dir = Path(__file__).parent.parent.parent / "src" / "genomeclaw_toolkit" / "data"
@@ -468,7 +472,7 @@ def test_default_panel_v1_uses_real_gencode_coordinates() -> None:
             if not line:
                 continue
             cols = line.split("\t")
-            assert len(cols) == 4, f"BED row not BED4: {line!r}"
+            assert len(cols) in (4, 5), f"BED row not BED4 or BED5: {line!r}"
             rows.append((cols[0], int(cols[1]), int(cols[2]), cols[3]))
             chroms.add(cols[0])
 

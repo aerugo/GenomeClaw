@@ -50,13 +50,13 @@ registerLoader(
   pathToFileURL("/"),
 );
 
-// Phase 5 Slice E switched the install path from
-//   /sandbox/.openclaw/extensions/genomeclaw/dist/index.js  (cp pattern)
-// to
-//   /opt/genomeclaw/dist/index.js                            (plugins install --link)
-// Agent-research-and-synthesis Phase 1 preserved this; the harness uses the
-// link target directly so it works regardless of where openclaw's index points.
-const pluginPath = "/opt/genomeclaw/dist/index.js";
+// Path history:
+//   Phase 5 Slice E (initial)              /sandbox/.openclaw/extensions/genomeclaw/dist/index.js  (cp pattern)
+//   onboard-persistent-agent-fix           /opt/genomeclaw/dist/index.js                            (plugins install --link, broken under Landlock)
+//   nemoclaw-canonical-integration (now)   /sandbox/build/genomeclaw/dist/index.js                  (inside Landlock RW baseline; outside auto-scan tree so plugins install --link accepts it)
+// The harness loads the dist file directly so it works regardless of where
+// `openclaw plugins list` reports the user source root.
+const pluginPath = "/sandbox/build/genomeclaw/dist/index.js";
 const mod = await import(pluginPath);
 
 // Build a stub OpenClawPluginApi that captures registered tools.

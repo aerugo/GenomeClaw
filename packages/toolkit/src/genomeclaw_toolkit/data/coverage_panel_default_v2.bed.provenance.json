@@ -1,0 +1,90 @@
+{
+  "version": "v2",
+  "created_at": "2026-05-25",
+  "schema": "bed5_v1",
+  "source": {
+    "gene_list": [
+      {
+        "source": "coverage_panel_default_v1 (carried forward)",
+        "ref": "packages/toolkit/src/genomeclaw_toolkit/data/coverage_panel_default_v1.bed.provenance.json",
+        "description": "All 160 v1 genes preserved with their GENCODE v44 MANE Select exon coordinates; region_class column added per _DIFFICULT_REGIONS overlay where applicable."
+      },
+      {
+        "source": "ACMG_SF_v3.3",
+        "url": "https://www.gimjournal.org/article/S1098-3600(25)00148-X/fulltext",
+        "citation": "Lee et al., Genetics in Medicine 27(8):101454, 2025-07-09",
+        "added_genes": [
+          "ABCD1",
+          "CYP27A1",
+          "PLN"
+        ],
+        "description": "ACMG SF v3.3 update from v3.2 adds 3 genes; total ACMG SF set now 84 genes. v2 panel carries the 3 new entries as gene-level rows (no per-exon split) with canonical hg38 RefSeq coordinates."
+      },
+      {
+        "source": "Lifestyle / population-genetics anchors",
+        "added_genes": [
+          "MC1R",
+          "MCM6",
+          "HFE",
+          "FUT2"
+        ],
+        "description": "The most-asked-about lifestyle genes in consumer-genomics contexts. MC1R: skin/hair pigmentation. MCM6: LCT lactase-persistence regulatory region. HFE: hemochromatosis. FUT2: secretor status. Gene-level coordinates; coverage QC suffices."
+      },
+      {
+        "source": "Mitochondrial contig",
+        "added_regions": [
+          {
+            "chrom": "chrM",
+            "start": 0,
+            "end": 16569
+          }
+        ],
+        "description": "Full MT contig (rCRS / NC_012920.1, 16569 bp). Supports CPIC MT-RNR1 aminoglycoside-ototoxicity coverage QC. Per-MT-gene enumeration is a future refinement."
+      }
+    ],
+    "difficult_region_annotations": {
+      "source": "Hardcoded overlay table (scripts/build_coverage_panel_v2.py ::_DIFFICULT_REGIONS); cross-references GIAB challenging-MRG (Wagner et al., Nat Biotechnol 2022) + the bioinformatics-review-2026-05-25 difficult-region enumeration.",
+      "url": "https://www.nature.com/articles/s41587-021-01158-1",
+      "classes_used": [
+        "difficult_pseudogene",
+        "difficult_segdup",
+        "requires_dedicated_caller"
+      ],
+      "genes_annotated": [
+        "CYP21A2",
+        "CYP2D6",
+        "GBA",
+        "GBA1",
+        "HBA1",
+        "HBA2",
+        "HLA-A",
+        "HLA-B",
+        "HLA-C",
+        "HLA-DRB1",
+        "NCF1",
+        "NEB",
+        "PMS2",
+        "SMN1",
+        "SMN2",
+        "STRC"
+      ]
+    },
+    "exon_coordinates": {
+      "source": "GENCODE v44 (inherited from v1 panel rows)",
+      "build": "GRCh38",
+      "transcript_selection": "MANE Select"
+    },
+    "build_script": "scripts/build_coverage_panel_v2.py"
+  },
+  "gene_count": 179,
+  "row_count": 2818,
+  "region_class_distribution": {
+    "standard": 2770,
+    "difficult_pseudogene": 29,
+    "difficult_segdup": 3,
+    "requires_dedicated_caller": 15,
+    "mitochondrial": 1
+  },
+  "low_coverage_threshold_default": "20x",
+  "curation_notes": "v2 extends v1 with: (a) BED5 region_class column, (b) ACMG SF v3.3 additions ABCD1/CYP27A1/PLN, (c) lifestyle anchors MC1R/MCM6/HFE/FUT2, (d) MT contig row. The hardcoded difficult-region overlay flags PMS2, SMN1/SMN2, HBA1/HBA2, CYP21A2, GBA1, STRC, NCF1, NEB, HLA-A/B/C/DRB1, CYP2D6 as non-standard so the agent's coverage-status surface (genomeclaw_gene) cannot falsely reassure the user that mosdepth mean_depth alone is sufficient. INV-D009 (proposed) verifies the overlay is complete against GIAB challenging-MRG (Wagner et al., 2022)."
+}

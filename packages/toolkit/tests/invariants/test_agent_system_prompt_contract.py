@@ -24,6 +24,21 @@ snapshots and live separately under `tests/integration/` once Phase 2
 ships the sandbox image with the prompt baked in.
 """
 
+# INV-V001-backstop-file:
+#
+# Every substring assertion in this file is a **prompt-content backstop** — a
+# check that the agent system prompt teaches a required concept (memory-note
+# schema, lifestyle-vs-clinical, decline patterns, error_type vocabulary,
+# etc.). These assertions are NOT load-bearing for agent behaviour: the
+# prompt could rephrase the same concept and the agent would still be correct;
+# the test would just need updating. The load-bearing correctness gates live
+# elsewhere (live-LLM smokes, structural trace inspection under INV-A005 v1.22,
+# etc.).
+#
+# Per INV-V001 (no forbidden-phrase enumeration as primary verification),
+# substring backstops are allowed when declared as such. This file-level
+# annotation covers every test function below.
+
 from __future__ import annotations
 
 import re
@@ -149,6 +164,84 @@ def test_invC001_system_prompt_documents_memory_validation_protocol() -> None:
         "INV-C001 v1.6: prompt must teach the source-quality check"
     )
     assert "freshness" in text, "INV-C001 v1.6: prompt must teach the freshness check"
+
+
+def _extract_step3_section(prompt: str) -> str:
+    """Return the Step 3 section text (between `### Step 3` and `### Step 4`).
+
+    Used by the capability-claim test (and any future Step-3 contract test) so
+    assertions can be section-scoped — checking ``"genomeclaw_status" in text``
+    against the whole prompt would always pass (the tool catalog names it
+    too), which is the wrong contract.
+    """
+    pattern = re.compile(
+        r"^###\s+Step\s+3\b.*?(?=^###\s+Step\s+4\b)",
+        re.DOTALL | re.MULTILINE,
+    )
+    match = pattern.search(prompt)
+    assert match is not None, "Step 3 section not found in prompt"
+    return match.group(0)
+
+
+def test_invA002_step3_memory_validation_special_cases_capability_claims() -> None:
+    """``INV-A002`` v1.8 bullet 3 + Phase 1 of agent-stale-memory-and-failure-mode-confabulation:
+    Step 3 must special-case **tool-capability claims** so a stale "X is unavailable"
+    note is superseded by a live tool result in the same turn, overriding the
+    calendar-freshness rule.
+
+    Bug 1 (2026-05-27 muscle-question regression sweep run 4): the agent cited a
+    2026-05-26 memory note saying "PGS000027 not computable / GenomeClaw refresh
+    is currently unavailable" 30 minutes after Plan 1's sidecar repair landed and
+    `_pgs_list` was returning PGS000018 at percentile 14.54. The Step 3 freshness
+    bullet (line 183 of the prompt at the time of writing) asked the wrong
+    question ("is the calendar date old?") for capability claims, where the right
+    question is "did this turn's structured trace contradict the note?"
+
+    This test pins the 4th validation bullet so future prompt edits don't silently
+    drop the capability-claim override.
+    """
+    text = _read_prompt()
+    step3 = _extract_step3_section(text)
+    step3_lower = step3.lower()
+
+    # Marker 1: a dedicated capability-claim validation bullet exists.
+    assert "capability claim" in step3_lower or "capability claims" in step3_lower, (
+        "INV-A002 v1.8 bullet 3: Step 3 must carry a dedicated capability-claim "
+        "validation bullet that special-cases tool-failure / 'X is unavailable' "
+        "memory notes"
+    )
+
+    # Marker 2: the bullet explicitly overrides the freshness-date rule. Generic
+    # supersession language (line 185 of the prompt) is not enough — the bullet
+    # must teach that freshness DOES NOT apply to capability claims.
+    assert "freshness" in step3_lower, (
+        "INV-A002: capability-claim bullet must reference the freshness rule "
+        "it overrides"
+    )
+    override_markers = ("irrelevant", "override", "bypass", "does not apply", "doesn't apply")
+    assert any(marker in step3_lower for marker in override_markers), (
+        "INV-A002: capability-claim bullet must explicitly override the "
+        f"freshness-date rule (looked for any of {override_markers})"
+    )
+
+    # Marker 3: the three example contradiction signals are named in Step 3.
+    # Section-scoped assertion — the prompt's tool catalog (elsewhere) names
+    # these tools too, but Step 3 must teach them specifically as
+    # supersession-triggering signals.
+    for signal in ("_pgs_list", "genomeclaw_status", "genomeclaw_gene"):
+        assert signal in step3, (
+            f"INV-A002: Step 3 capability-claim bullet must name {signal!r} as "
+            "an example signal that contradicts a stale capability-failure memory note"
+        )
+
+    # Marker 4: the bullet teaches the "supersede the stale note" resolution.
+    # Generic 'supersede' language already lives in Step 3 (line 185) for the
+    # three-check protocol; the capability-claim bullet adds its own supersession
+    # signal so the rule's resolution path is unambiguous.
+    assert "supersede" in step3_lower, (
+        "INV-A002: Step 3 capability-claim bullet must teach the 'supersede the "
+        "stale note' resolution"
+    )
 
 
 def test_invC001_system_prompt_documents_lifestyle_direct_guidance_rule() -> None:
@@ -352,6 +445,279 @@ def test_system_prompt_documents_prs_decline_pattern_with_five_named_reasons() -
     assert "two" in text.lower() and ("named reasons" in text or "specific reasons" in text), (
         "prompt must preserve the 'two named reasons' decline-pattern rule "
         "(the agent names two specific reasons when declining, not a generic refusal)"
+    )
+
+
+def test_system_prompt_teaches_machine_readable_decline_status() -> None:
+    """INV-C001 v1.7 + agent-decline-taxonomy-exposure Phase 3: the prompt
+    teaches the machine-readable decline-status rule.
+
+    Every PGS row returned by `genomeclaw_pgs_list` and `genomeclaw_pgs_get`
+    carries a `calibration_status` field. The host's calibration classifier
+    has the first word: when `calibration_status='decline'`, the agent must
+    surface `decline_reason` verbatim and refuse to present the row as a
+    finding regardless of its own (a)-(e) reasoning.
+
+    Asserts: field name appears; all three string values + the null-legacy
+    case are documented; the binding `do NOT present` rule is explicit.
+    """
+    text = _read_prompt()
+    # The field name + decline_reason companion must both appear.
+    assert "calibration_status" in text, (
+        "INV-C001 v1.7: prompt must name `calibration_status` as the "
+        "machine-readable decline signal"
+    )
+    assert "decline_reason" in text, (
+        "INV-C001 v1.7: prompt must name `decline_reason` as the structural "
+        "decline-reason field the agent surfaces verbatim"
+    )
+    # All three string values must be enumerated.
+    for value in ('"clean"', '"warning"', '"decline"'):
+        assert value in text, (
+            f"INV-C001 v1.7: prompt must enumerate calibration_status value {value}"
+        )
+    # The null-legacy case must be explicit (pre-Phase-3a rows).
+    text_lower = text.lower()
+    assert "null" in text_lower and (
+        "pre-phase-3a" in text_lower or "legacy" in text_lower or "classifier shipped" in text_lower
+    ), (
+        "INV-C001 v1.7: prompt must teach the null-status (legacy / pre-classifier) case"
+    )
+    # The binding rule must be explicit, not implied.
+    assert "do NOT present" in text or "do not present" in text_lower, (
+        "INV-C001 v1.7: prompt must explicitly forbid presenting a declined row "
+        "as a finding"
+    )
+
+
+def test_system_prompt_teaches_cyp2d6_indeterminate_handling() -> None:
+    """INV-C001 v1.7 + cyp2d6-no-call-finding Phase 2: prompt teaches the
+    CYP2D6 indeterminate rule.
+
+    The host's Cyrius caller can fail to resolve CYP2D6 (low coverage at
+    the CYP2D6/CYP2D7 locus, structural variant interference, BAM SM-tag
+    mismatch). When that happens, the pipeline inserts an indeterminate
+    `findings` row with `evidence_ref` starting with `cyrius_no_call:`.
+
+    The agent's prompt MUST teach this case explicitly so the agent
+    cannot silently infer "Normal Metabolizer" from the absence of a
+    diplotype. Asserts: the prompt names CYP2D6 + indeterminate; the
+    "do not interpret as Normal Metabolizer" rule is explicit; the
+    `cyrius_no_call:` evidence-ref prefix is documented so the agent
+    knows what marker to look for.
+    """
+    text = _read_prompt()
+    text_lower = text.lower()
+    assert "cyp2d6" in text_lower, "prompt must name CYP2D6"
+    assert "indeterminate" in text_lower, (
+        "INV-C001 v1.7: prompt must teach the 'indeterminate' CYP2D6 case"
+    )
+    assert (
+        "do not interpret" in text_lower
+        and "normal metabolizer" in text_lower
+    ), (
+        "INV-C001 v1.7: prompt must explicitly forbid the 'Normal Metabolizer' "
+        "inference on the indeterminate path"
+    )
+    assert "cyrius_no_call" in text, (
+        "prompt must document the `cyrius_no_call:` evidence-ref prefix so the "
+        "agent recognises the indeterminate-row marker"
+    )
+
+
+def _extract_invA005_section(prompt: str) -> str:
+    """Return the §INV-A005 section text: from the anchor paragraph containing the
+    invariant ID until the next ``### Step N`` heading.
+
+    Section-scoping matters here because catalogue signal substrings
+    (``"Failed to connect"``, ``"placeholder string"``, ``"Expected"``) would
+    otherwise collide with English-usage occurrences elsewhere in the prompt.
+    """
+    pattern = re.compile(
+        r"\*\*Tool-failure narratives.*?(?=^###\s+Step\s+\d)",
+        re.DOTALL | re.MULTILINE,
+    )
+    match = pattern.search(prompt)
+    assert match is not None, "§INV-A005 anchor paragraph not found in prompt"
+    return match.group(0)
+
+
+# INV-A005 v1.22 (Plan A.2 of inv-a005-structural-faithfulness) — the §INV-A005
+# enforcement mechanism is structural, not phrase-list. The plugin returns
+# `ToolFailureEnvelope` discriminated-union envelopes with an `error_type` field
+# (Plan A.1, INV-A006). The prompt's job is to teach the agent to (a) read
+# `error_type` as the source of truth, (b) quote structured fields verbatim
+# before paraphrasing, and (c) call additional tools multi-turn when the
+# failure shape is unfamiliar — not enumerate banned phrases.
+#
+# These three tests pin the new rule's content; they replace the prior
+# `_CATALOGUE_ROWS` parametrized catalogue test + decompose-rule contract test
+# + serialization-bug forbidden-phrase test that the v1.21 prompt carried.
+
+# The four `error_type` enum values emitted by the plugin per INV-A006. The
+# prompt MUST name at least two so the agent has concrete vocabulary to read.
+_ERROR_TYPE_ENUM_VALUES = (
+    "placeholder_rejected",
+    "host_failure",
+    "network_error",
+    "http_error",
+)
+
+
+def test_invA005_v123_system_prompt_teaches_structured_error_type_rule() -> None:
+    """INV-A005 v1.23 (Phase 4 of agent-synthesis-over-rich-tool-data): the
+    prompt's §INV-A005 section must teach the agent that the plugin returns
+    structured envelopes with an `error_type` discriminator the agent reads
+    for reasoning — NOT for verbatim transcription into the reply.
+
+    The structural-envelope shape (per INV-A006) is the agent's source of
+    truth for classifying failures. The four enum values give the agent
+    concrete vocabulary to *reason with*. v1.23 dropped the verbatim-quoting
+    requirement — the agent translates the structured fields into plain-
+    language synthesis for the user.
+    """
+    section = _extract_invA005_section(_read_prompt())
+
+    # The rule must name `error_type` literally — it's the schema's discriminator.
+    assert "error_type" in section, (
+        "INV-A005 v1.23: §INV-A005 must teach the agent that the plugin "
+        "returns an `error_type` field on failures. Did the rewrite drop "
+        "the structured-envelope reference?"
+    )
+
+    # The rule must name at least two of the four `error_type` enum values
+    # so the agent has concrete vocabulary for its reasoning.
+    named = [v for v in _ERROR_TYPE_ENUM_VALUES if v in section]
+    assert len(named) >= 2, (
+        f"INV-A005 v1.23: §INV-A005 must name at least 2 of the four error_type "
+        f"enum values (placeholder_rejected / host_failure / network_error / "
+        f"http_error) for the agent's reasoning vocabulary. Found: {named}"
+    )
+
+
+def test_invA005_v123_system_prompt_teaches_analyze_and_present_discipline() -> None:
+    """INV-A005 v1.23 (Phase 4 of agent-synthesis-over-rich-tool-data): the
+    §INV-A005 section MUST teach the agent to ANALYZE the rich tool-result
+    data and PRESENT findings to the user in plain, natural language —
+    translation, not transcription; synthesis, not quotation.
+
+    User correction (2026-05-28): the v1.22 mechanism forced the agent into
+    robotic JSON-field transcription. The corrected design is: host returns
+    rich data; agent interprets it; user reads natural language.
+    """
+    section_lower = _extract_invA005_section(_read_prompt()).lower()
+
+    # Positive markers: at least 2 of these synthesis-oriented words must appear.
+    synthesis_markers = (
+        "analyze",
+        "analyse",
+        "present",
+        "interpret",
+        "understandable",
+        "plain language",
+        "natural language",
+        "synthesize",
+        "synthesise",
+        "summarize",
+        "summarise",
+        "translate",
+    )
+    matched_synthesis = [m for m in synthesis_markers if m in section_lower]
+    assert len(matched_synthesis) >= 2, (
+        f"INV-A005 v1.23: §INV-A005 must teach analyze-and-present discipline "
+        f"(must mention at least 2 of {synthesis_markers}). Found: {matched_synthesis}"
+    )
+
+    # The rule must also teach that structured fields are for REASONING, not
+    # for verbatim insertion into the reply.
+    assert "reasoning" in section_lower or "reason" in section_lower, (
+        "INV-A005 v1.23: §INV-A005 must teach that structured fields exist "
+        "for the agent's REASONING (not for verbatim insertion). "
+        "The word 'reasoning' or 'reason' must appear."
+    )
+    anti_transcription_markers = (
+        "not for verbatim",
+        "not for quoting",
+        "do not quote",
+        "not insert",
+        "not transcribe",
+        "not repeat verbatim",
+        "do not just",
+        "not just quote",
+        "translation, not transcription",
+        "synthesis, not quotation",
+    )
+    matched_anti = [m for m in anti_transcription_markers if m in section_lower]
+    assert len(matched_anti) >= 1, (
+        f"INV-A005 v1.23: §INV-A005 must explicitly warn against verbatim "
+        f"transcription of structured fields (must mention at least 1 of "
+        f"{anti_transcription_markers}). Found: {matched_anti}"
+    )
+
+
+def test_invA005_v123_system_prompt_does_not_mandate_verbatim_quoting() -> None:
+    """INV-A005 v1.23 (Phase 4 of agent-synthesis-over-rich-tool-data,
+    negative gate): the §INV-A005 section MUST NOT carry the v1.22
+    verbatim-quoting language. Specifically, it must NOT contain phrasings
+    like 'MUST contain at least one backtick-quoted excerpt' or
+    'quote verbatim before paraphrasing' — those are the v1.22 mistake.
+
+    This gate protects against an accidental revert.
+    """
+    section_lower = _extract_invA005_section(_read_prompt()).lower()
+
+    # Phrases that, if present, indicate the v1.22 verbatim-quoting mandate
+    # has crept back in. Each is a specific construction from the v1.22 prompt.
+    forbidden_v122_phrasings = (
+        "must contain at least one backtick",
+        "must contain a backtick",
+        "backtick-quoted excerpt",
+        "quote verbatim before paraphrasing",
+        "quote the actual `error_type`",
+        "quote the actual error_type",
+        "verbatim before paraphrasing",
+        "reply must quote",
+        "your reply must contain",
+        "must quote at least one",
+    )
+    present = [p for p in forbidden_v122_phrasings if p in section_lower]
+    assert not present, (
+        "INV-A005 v1.23 negative gate: §INV-A005 must NOT mandate verbatim "
+        f"quoting of structured fields. Found v1.22-era phrasings: {present}. "
+        "The corrected rule is analyze-and-present, not transcribe-verbatim. "
+        "See [docs/plans/active/agent-synthesis-over-rich-tool-data/] for the "
+        "rewrite rationale."
+    )
+
+
+def test_invA005_v123_system_prompt_teaches_multi_turn_investigation() -> None:
+    """INV-A005 v1.23 (renamed from v1.22 — content unchanged): when the agent
+    encounters an `error_type` it doesn't recognise, or a structured field
+    whose value is surprising, the §INV-A005 section MUST authorize calling
+    additional diagnostic tools (`genomeclaw_status`, retry, fetch logs) —
+    rather than paraphrase from prior context or guess from memory notes.
+
+    User's stated architecture preference (2026-05-28): *"rely on the OpenClaw
+    agent to receive raw returns and evaluate multi-turn on a loop, calling
+    more tools as it needs more info."*
+    """
+    section_lower = _extract_invA005_section(_read_prompt()).lower()
+
+    # The rule must authorize multi-turn investigation, expressed in any of
+    # these forms.
+    investigation_markers = (
+        "multi-turn",
+        "multi turn",
+        "call another tool",
+        "call additional",
+        "investigate",
+        "retry",
+    )
+    matched = [m for m in investigation_markers if m in section_lower]
+    assert len(matched) >= 2, (
+        f"INV-A005 v1.23: §INV-A005 must authorize multi-turn investigation "
+        f"under unfamiliar failure shapes (must mention at least 2 of "
+        f"{investigation_markers} in §INV-A005). Found: {matched}"
     )
 
 

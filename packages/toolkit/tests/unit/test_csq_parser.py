@@ -171,6 +171,75 @@ def test_pick_canonical_returns_none_for_empty_input() -> None:
 
 
 # ---------------------------------------------------------------------------
+# vep-mane-plus-clinical Phase 1 — MANE Plus Clinical tier in pick rank
+# ---------------------------------------------------------------------------
+
+
+def test_pick_canonical_prefers_mane_select_over_mane_plus_clinical() -> None:
+    """MANE Select still wins over MANE Plus Clinical when both are present.
+
+    Per vep-mane-plus-clinical Phase 1: the rank is now
+    1. MANE_SELECT
+    2. MANE_PLUS_CLINICAL (NEW tier)
+    3. CANONICAL=YES
+    4. first entry.
+
+    A variant in one of the 73 MANE Plus Clinical genes that ALSO has a
+    MANE Select transcript still goes to the Select transcript — the
+    new tier is for the case where Select is absent on this variant.
+    """
+    fields = ("MANE_SELECT", "MANE_PLUS_CLINICAL", "CANONICAL", "SYMBOL")
+    entries = split_csq(
+        "|NM_alt.1|NO|plus_clinical_only,NM_main.1||NO|select_winner",
+        fields,
+    )
+    chosen = pick_canonical_entry(entries)
+    assert chosen is not None
+    assert chosen.by_name["SYMBOL"] == "select_winner"
+
+
+def test_pick_canonical_falls_back_to_mane_plus_clinical_when_no_select() -> None:
+    """MANE_PLUS_CLINICAL is preferred over CANONICAL=YES when MANE_SELECT is absent.
+
+    The 73 MANE Plus Clinical genes (TCF3, SLC25A3, REEP6, etc. per
+    Pozo et al. 2022) carry pathogenic variants in alternative
+    transcripts that the previous Select-only rank silently routed to
+    a non-MANE canonical entry. The new tier promotes Plus Clinical
+    above the generic CANONICAL flag.
+    """
+    fields = ("MANE_SELECT", "MANE_PLUS_CLINICAL", "CANONICAL", "SYMBOL")
+    entries = split_csq(
+        "||YES|canonical_fallback,|NM_plus.1|NO|plus_clinical_winner",
+        fields,
+    )
+    chosen = pick_canonical_entry(entries)
+    assert chosen is not None
+    assert chosen.by_name["SYMBOL"] == "plus_clinical_winner"
+
+
+def test_pick_canonical_falls_back_to_canonical_when_no_mane_at_all() -> None:
+    """CANONICAL=YES wins when neither MANE_SELECT nor MANE_PLUS_CLINICAL present."""
+    fields = ("MANE_SELECT", "MANE_PLUS_CLINICAL", "CANONICAL", "SYMBOL")
+    entries = split_csq("||YES|canonical,||NO|other", fields)
+    chosen = pick_canonical_entry(entries)
+    assert chosen is not None
+    assert chosen.by_name["SYMBOL"] == "canonical"
+
+
+def test_direct_field_map_includes_mane_plus_clinical() -> None:
+    """`_DIRECT_FIELD_MAP` carries the MANE_PLUS_CLINICAL → mane_plus_clinical_transcript pair."""
+    from genomeclaw_toolkit.prep._csq import _DIRECT_FIELD_MAP
+
+    assert any(csq == "MANE_PLUS_CLINICAL" for csq, _ in _DIRECT_FIELD_MAP), (
+        f"MANE_PLUS_CLINICAL not in _DIRECT_FIELD_MAP; got {_DIRECT_FIELD_MAP!r}"
+    )
+    column_for_plus_clinical = next(
+        col for csq, col in _DIRECT_FIELD_MAP if csq == "MANE_PLUS_CLINICAL"
+    )
+    assert column_for_plus_clinical == "mane_plus_clinical_transcript"
+
+
+# ---------------------------------------------------------------------------
 # csq_entry_to_columns
 # ---------------------------------------------------------------------------
 

@@ -106,13 +106,20 @@ def split_csq(value: str, fields: tuple[str, ...]) -> tuple[CsqEntry, ...]:
 def pick_canonical_entry(entries: tuple[CsqEntry, ...]) -> CsqEntry | None:
     """Pick the canonical consequence per variant.
 
-    Order of preference:
+    Order of preference (vep-mane-plus-clinical Phase 1):
 
-    1. The entry with a non-empty ``MANE_SELECT`` field (the
-       transcript Phase 4D explicitly pins via ``--mane_select``).
-    2. The entry flagged ``CANONICAL`` == ``YES`` (VEP's "this is the
+    1. The entry with a non-empty ``MANE_SELECT`` field (the canonical
+       MANE Select transcript; activated by ``--mane``).
+    2. The entry with a non-empty ``MANE_PLUS_CLINICAL`` field (the 73
+       genes per MANE v1.5 where MANE Plus Clinical carries pathogenic
+       variants in alternative transcripts beyond Select; activated by
+       ``--mane`` — was silently dropped under the prior ``--mane_select``
+       flag). Promoted above ``CANONICAL`` so variants in these 73
+       genes route to the MANE Plus Clinical transcript, not the
+       generic VEP-canonical transcript.
+    3. The entry flagged ``CANONICAL`` == ``YES`` (VEP's "this is the
        canonical transcript" boolean).
-    3. The first entry (VEP's ``--pick`` output is already ranked by
+    4. The first entry (VEP's ``--pick`` output is already ranked by
        impact severity).
 
     Returns ``None`` when ``entries`` is empty.
@@ -121,6 +128,9 @@ def pick_canonical_entry(entries: tuple[CsqEntry, ...]) -> CsqEntry | None:
         return None
     for entry in entries:
         if entry.by_name.get("MANE_SELECT"):
+            return entry
+    for entry in entries:
+        if entry.by_name.get("MANE_PLUS_CLINICAL"):
             return entry
     for entry in entries:
         if entry.by_name.get("CANONICAL") == "YES":
@@ -137,6 +147,11 @@ def pick_canonical_entry(entries: tuple[CsqEntry, ...]) -> CsqEntry | None:
 _DIRECT_FIELD_MAP: tuple[tuple[str, str], ...] = (
     ("SYMBOL", "gene_symbol"),
     ("MANE_SELECT", "mane_select_transcript"),
+    # vep-mane-plus-clinical Phase 1: capture the MANE Plus Clinical
+    # transcript ID for the 73 MANE v1.5 genes where MANE Plus Clinical
+    # adds pathogenic-variant coverage beyond Select. Activated by VEP's
+    # `--mane` flag (was empty under the prior `--mane_select`).
+    ("MANE_PLUS_CLINICAL", "mane_plus_clinical_transcript"),
     ("HGVSc", "hgvsc"),
     ("HGVSp", "hgvsp"),
     ("Consequence", "consequence"),

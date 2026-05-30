@@ -113,7 +113,13 @@ def _extract_vep_columns(
     When ``csq_value`` or ``csq_fields`` is None, returns an empty dict
     (the materialize CSV writer interprets missing nullable columns as
     NULL). When both are present, picks the canonical consequence
-    (MANE Select → CANONICAL=YES → first) and extracts the columns.
+    (MANE Select → MANE Plus Clinical → CANONICAL=YES → first) and
+    extracts the columns.
+
+    Retained for backwards compatibility. The production path now uses
+    :func:`_extract_dual_vep_rows`, which yields 1 or 2 rows per variant
+    (the dual-row case is the 73-gene MANE Plus Clinical set with
+    differing consequence severity). See vep-mane-plus-clinical Phase 2.
     """
     if csq_value is None or csq_fields is None:
         return {}
@@ -122,6 +128,109 @@ def _extract_vep_columns(
     if canonical is None:
         return {}
     return csq_entry_to_columns(canonical)
+
+
+# vep-mane-plus-clinical Phase 2: dual-row emit helpers.
+# `_consequence_tier` maps VEP IMPACT to a coarse integer (HIGH=3 …
+# MODIFIER=0). When MANE Select and MANE Plus Clinical entries disagree
+# on tier for the same variant site, we emit BOTH rows so a downstream
+# consumer can see the disagreement without losing information.
+
+_IMPACT_TIER: dict[str | None, int] = {
+    "HIGH": 3,
+    "MODERATE": 2,
+    "LOW": 1,
+    "MODIFIER": 0,
+    None: 0,
+    "": 0,
+}
+
+
+def _consequence_tier(impact: str | None) -> int:
+    """Map a VEP IMPACT string (HIGH/MODERATE/LOW/MODIFIER) to a tier int.
+
+    Unknown / empty / None → 0 (lowest tier). This is intentional: a
+    transcript with no IMPACT annotation cannot outrank one with a
+    known tier.
+    """
+    return _IMPACT_TIER.get(impact, 0)
+
+
+def _extract_dual_vep_rows(
+    entries: tuple[Any, ...], csq_fields: tuple[str, ...] | None
+) -> Iterator[dict[str, Any]]:
+    """Yield 1 or 2 column dicts from CSQ entries for one variant site.
+
+    Yields two rows when a MANE Select entry and a MANE Plus Clinical
+    entry are both present AND differ in their consequence IMPACT tier;
+    yields one row otherwise. The single-row path preserves the
+    pre-existing canonical-pick behaviour
+    (MANE_SELECT → MANE_PLUS_CLINICAL → CANONICAL → first).
+
+    On the dual-row pair:
+
+    - Row A is derived from the MANE Select entry, with
+      ``transcript_discordant=False``.
+    - Row B is derived from the MANE Plus Clinical entry, with
+      ``transcript_discordant=True``.
+
+    Both rows are written to the variants table with the same provenance
+    columns by ``write_variants``. Consumers that want one row per
+    variant can filter `WHERE transcript_discordant IS NULL OR
+    transcript_discordant = false`; consumers that want to see the
+    discordance see both rows.
+
+    INV-E001: each emitted row carries the CSQ-derived transcript ID
+    (``mane_select_transcript`` on Row A; ``mane_plus_clinical_transcript``
+    on Row B) as its evidence anchor.
+
+    INV-R001: ``transcript_discordant`` is NULL on every single-row
+    emit; False/True on the two rows of a dual-row pair — preserving
+    the per-row provenance contract.
+    """
+    if not entries:
+        return
+
+    select_entry = next(
+        (e for e in entries if e.by_name.get("MANE_SELECT")), None
+    )
+    plus_entry = next(
+        (e for e in entries if e.by_name.get("MANE_PLUS_CLINICAL")), None
+    )
+
+    # Single-row paths: 0 or 1 MANE entries, OR same-tier disagreement.
+    if select_entry is None or plus_entry is None:
+        canonical = pick_canonical_entry(entries)
+        if canonical is None:
+            return
+        cols = csq_entry_to_columns(canonical)
+        cols["transcript_discordant"] = None
+        yield cols
+        return
+
+    select_tier = _consequence_tier(select_entry.by_name.get("IMPACT"))
+    plus_tier = _consequence_tier(plus_entry.by_name.get("IMPACT"))
+    if select_tier == plus_tier:
+        # Both MANE entries agree on tier; preserve the Select row only
+        # (the materialize pre-Phase-2 contract). MANE Plus Clinical
+        # transcript field on the Select row is intentionally empty —
+        # it belongs to a different CSQ entry.
+        cols = csq_entry_to_columns(select_entry)
+        cols["transcript_discordant"] = None
+        yield cols
+        return
+
+    # Dual-row emit: tiers differ. Emit Row A (Select) + Row B (Plus Clinical),
+    # each carrying its own gene_symbol / transcript / consequence /
+    # IMPACT-derived fields; both share the variant's provenance via
+    # ``write_variants``.
+    row_a = csq_entry_to_columns(select_entry)
+    row_a["transcript_discordant"] = False
+    yield row_a
+
+    row_b = csq_entry_to_columns(plus_entry)
+    row_b["transcript_discordant"] = True
+    yield row_b
 
 
 def _reset_variants_table(store_path: Path) -> None:
@@ -309,12 +418,28 @@ def materialize(
 
     def _row_stream() -> Iterator[dict[str, Any]]:
         for row in iter_variant_rows(materialize_input, info_fields=info_fields):
-            # Convert CSQ → 10 typed columns when present; otherwise
-            # leave the column keys absent (write_variants treats
-            # missing nullable columns as None / NULL).
+            # vep-mane-plus-clinical Phase 2: convert CSQ → 1 or 2 rows
+            # via `_extract_dual_vep_rows`. The dual-row case fires when
+            # both a MANE Select and a MANE Plus Clinical entry are
+            # present for the same variant AND their consequence IMPACT
+            # tiers differ — preserves both annotations rather than
+            # silently dropping one. Single-row emits (the common path)
+            # carry `transcript_discordant=None`.
             csq_value = row.pop("CSQ", None) if "CSQ" in row else None
-            vep_columns = _extract_vep_columns(csq_value, csq_fields)
-            yield {**row, "sample_id": sample_id, **vep_columns}
+            base_row = {**row, "sample_id": sample_id}
+            if csq_value is None or csq_fields is None:
+                yield {**base_row, "transcript_discordant": None}
+                continue
+            entries = split_csq(csq_value, csq_fields)
+            emitted = False
+            for vep_cols in _extract_dual_vep_rows(entries, csq_fields):
+                emitted = True
+                yield {**base_row, **vep_cols}
+            if not emitted:
+                # Empty CSQ string parses to zero entries; preserve the
+                # variant row so the variants table still has the call,
+                # just without VEP-derived columns.
+                yield {**base_row, "transcript_discordant": None}
 
     # CSV-staging + DuckDB temp_directory live on the **ephemeral** scratch
     # base (container-local; off virtiofs) per Phase A of the

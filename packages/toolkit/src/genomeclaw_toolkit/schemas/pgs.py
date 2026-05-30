@@ -31,6 +31,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from genomeclaw_toolkit.prep._pgs_qc import CalibrationStatus, DeclineReason
+
 # Status enum for the compute-task lifecycle. Per the v2 slice plan:
 # - `queued`: enqueued, orchestrator hasn't picked it up yet.
 # - `running`: orchestrator is in-flight with this compute.
@@ -59,6 +61,14 @@ class PgsRowResponse(BaseModel):
     source_pgs_id: str = Field(min_length=1)
     study_population: str = Field(min_length=1)
     calibration_warning: str | None
+    calibration_status: CalibrationStatus | None
+    """Per `INV-C001` v1.7 + `INV-A004`: machine-readable classifier outcome.
+    `None` on pre-Phase-3a rows that predate the calibration classifier."""
+
+    decline_reason: DeclineReason | None
+    """Per `INV-C001` v1.7 + `INV-A004`: structural decline reason when
+    `calibration_status == "decline"`; `None` otherwise."""
+
     agent_choice_rationale: str = Field(min_length=1)
     """Per `INV-A003`: agent's reasoning for picking this PGS + alternatives considered."""
 
@@ -84,6 +94,8 @@ class PgsListRow(BaseModel):
     trait_label: str = Field(min_length=1)
     percentile_in_user_ancestry: float | None
     calibration_warning: str | None
+    calibration_status: CalibrationStatus | None
+    decline_reason: DeclineReason | None
     superseded_by: str | None
 
 
@@ -115,8 +127,62 @@ class PgsComputeRequest(BaseModel):
     requested_for_question: str = Field(min_length=1)
 
 
+class ToolDiagnosticTrace(BaseModel):
+    """Rich diagnostic context for a failed (or in-flight) tool invocation.
+
+    Phase 2 of agent-synthesis-over-rich-tool-data — extends the agent's
+    visibility into compute-path failures so it can give the user a real
+    explanation + actionable next step, not just a short error code.
+
+    The diagnostic is derived at response-build time from the persisted
+    structured error code (see
+    :func:`genomeclaw_toolkit.service.pgs_compute_orchestrator.derive_diagnostic_from_error_code`).
+    No SQLite schema migration required — backward-compatible with rows
+    written before the diagnostic existed.
+
+    All fields are optional. The worker may not have captured every facet
+    of every failure mode; the agent treats absent fields as "no additional
+    context available" and is expected to synthesize honestly from what's
+    present, not invent missing detail.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: str | None = None
+    """Pipeline stage at which the failure occurred. Examples: ``config_load``,
+    ``scorefile_staging``, ``pgsc_calc_invocation``, ``match_rate_parse``,
+    ``calibration_check``, ``compute_gate``, ``worker_loop``,
+    ``docker_out_of_docker_setup``."""
+
+    upstream_cause: str | None = None
+    """The higher-level cause class. Mirrors the structured-error code prefix
+    (e.g., ``"scorefile_missing"``, ``"prs_compute_config_missing"``,
+    ``"pgsc_calc_failed"``) so the agent can branch reasoning on the class
+    without parsing the full error string."""
+
+    suggested_fix: str | None = None
+    """User-actionable next step in plain language. For ``scorefile_missing``:
+    ``"run `genomeclaw refs fetch --source pgs_scorefile --pgs-id <pgs_id>`"``.
+    None for unknown errors (the agent acknowledges honestly rather than
+    inventing a fix)."""
+
+    related_paths: list[str] = []
+    """Filesystem paths or PGS IDs mentioned in the failure context.
+    Lets the agent name specific artifacts the user can inspect."""
+
+    partial_log_tail: str | None = None
+    """Last ~2 KB of worker stderr / stdout if the worker captured it.
+    Currently sparse; reserved for future enrichment without a schema change."""
+
+
 class PgsComputeTaskResponse(BaseModel):
-    """Response body for `POST /v1/pgs/compute` + `GET /v1/pgs/compute/{task_id}`."""
+    """Response body for `POST /v1/pgs/compute` + `GET /v1/pgs/compute/{task_id}`.
+
+    Phase 2 (2026-05-28) extends this with the optional ``diagnostic`` field
+    populated on ``status="failed"`` paths. The derivation is pure-functional
+    over the persisted ``error`` code (see
+    :func:`derive_diagnostic_from_error_code` in the orchestrator module).
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -124,6 +190,9 @@ class PgsComputeTaskResponse(BaseModel):
     pgs_id: str = Field(min_length=1)
     status: PgsComputeStatus
     error: str | None = None
+    diagnostic: ToolDiagnosticTrace | None = None
+    """Rich failure context for the agent. Populated on ``status="failed"``;
+    None for queued / running / done."""
 
 
 class PgsErrorResponse(BaseModel):
@@ -142,4 +211,5 @@ __all__ = [
     "PgsListResponse",
     "PgsListRow",
     "PgsRowResponse",
+    "ToolDiagnosticTrace",
 ]

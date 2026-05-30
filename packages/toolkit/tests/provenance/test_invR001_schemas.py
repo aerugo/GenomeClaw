@@ -22,11 +22,17 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def test_schema_version_constant_is_v0_2() -> None:
-    """Phase 4A bumps schema to v0.2 (adds ClinVar annotation columns)."""
+def test_schema_version_constant_is_v0_4() -> None:
+    """`prs-calibration-phase3b` Phase 2 bumps schema to v0.4.
+
+    Adds `effect_weight_match_rate` + `fraposa_min_mahalanobis_distance`
+    + `fraposa_nearest_superpop` to `pgs_scores`. All nullable; pre-v0.4
+    rows carry NULLs. The three columns mirror the three classifier
+    axes the Phase 3b extensions consult.
+    """
     from genomeclaw_toolkit.schemas import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == "v0.2"
+    assert SCHEMA_VERSION == "v0.4"
 
 
 def test_provenance_columns_are_the_canonical_seven() -> None:

@@ -405,3 +405,58 @@ def test_run_pharmcat_accepts_no_outside_call(tmp_path: Path) -> None:
     jar_argv = stubs.calls[1]
     assert "-po" not in jar_argv
     assert isinstance(findings, list)
+
+
+def test_write_outside_call_tsv_uses_explicit_utf8_encoding(tmp_path: Path) -> None:
+    """`_write_outside_call_tsv` writes the file with explicit UTF-8 encoding.
+
+    PharmCAT activity scores include the `≥` character (U+2265); Cyrius
+    tandem-hybrid allele names include `+` (ASCII, safe). Without an explicit
+    `encoding="utf-8"` arg, `Path.write_text` falls back to the system
+    locale, which on cp1252/Latin-1 systems would `UnicodeEncodeError` on
+    `≥` and silently corrupt other non-ASCII fields. This test pins the
+    UTF-8 round-trip AND asserts the explicit `encoding="utf-8"` kwarg
+    via a mock-call inspection so the test fails under any host locale.
+    Per bioreview-small-fixes Fix 3.
+    """
+    from genomeclaw_toolkit.prep._pharmcat_conventions import PharmCATConventions
+    from genomeclaw_toolkit.prep.pharmcat import _write_outside_call_tsv
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    diplotype_with_unicode = "*1/*1 (≥2 normal function alleles)"
+    cyp2d6_json = _write_cyp2d6_diplotype_json(run_dir, diplotype=diplotype_with_unicode)
+    output = run_dir / "pharmcat_outside_calls.tsv"
+
+    # Wrap Path.write_text so we can assert how it was called. The wrapper
+    # under test must pass `encoding="utf-8"` explicitly — otherwise the
+    # behaviour silently depends on the host locale.
+    captured: list[dict] = []
+    original_write_text = Path.write_text
+
+    def _spy_write_text(self, data, **kwargs):
+        captured.append({"path": self, "kwargs": kwargs})
+        return original_write_text(self, data, **kwargs)
+
+    with patch.object(Path, "write_text", _spy_write_text):
+        _write_outside_call_tsv(
+            cyp2d6_json,
+            output_path=output,
+            conventions=PharmCATConventions(),
+        )
+
+    # Find the write to the outside-call TSV (other writes may happen during
+    # the call; the TSV is the one we care about).
+    tsv_writes = [c for c in captured if c["path"] == output]
+    assert tsv_writes, f"no write to {output!s}; captured: {captured!r}"
+    assert tsv_writes[0]["kwargs"].get("encoding") == "utf-8", (
+        f"`_write_outside_call_tsv` must pass `encoding='utf-8'` explicitly to "
+        f"`Path.write_text` so behaviour is locale-independent; got "
+        f"kwargs={tsv_writes[0]['kwargs']!r}"
+    )
+
+    # Round-trip the `≥` to confirm content correctness (passes on UTF-8 hosts;
+    # would fail on cp1252/Latin-1 hosts under the pre-fix code).
+    content = output.read_text(encoding="utf-8")
+    assert diplotype_with_unicode in content
+    output.read_bytes().decode("utf-8")  # no UnicodeDecodeError

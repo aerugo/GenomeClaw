@@ -113,7 +113,14 @@ class RefsListPayload(BaseModel):
 
 
 class RefsVerifyPayload(BaseModel):
-    """``refs verify`` — bgzip-EOF integrity sweep result."""
+    """``refs verify`` — bgzip-EOF integrity sweep result.
+
+    Per `bioreview-small-fixes` Fix 2 the payload also carries cross-dataset
+    alignment warnings (currently AlphaMissense ↔ VEP-cache Ensembl release).
+    Warnings are informational — they do NOT cause non-zero exit — so a
+    user with a legitimately-mismatched pre-existing install can still pass
+    the integrity sweep while seeing the diagnostic.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -121,6 +128,7 @@ class RefsVerifyPayload(BaseModel):
     reference_root: str
     files_checked: int
     failures: tuple[IntegrityFailure, ...]
+    alignment_warnings: tuple[str, ...] = ()
 
 
 class RefsInfoPayload(BaseModel):
@@ -760,11 +768,23 @@ def refs_verify(
         if any(f.endswith(suf) for suf in bgzip_suffixes)
     )
 
+    # Cross-dataset alignment warnings (bioreview-small-fixes Fix 2):
+    # currently AlphaMissense ↔ VEP-cache Ensembl release mismatch.
+    # Informational; does not affect exit code.
+    from genomeclaw_toolkit.prep._vep_conventions import (
+        check_alphamissense_vep_release_alignment,
+    )
+
+    alignment_warnings = tuple(
+        check_alphamissense_vep_release_alignment(reference_root)
+    )
+
     payload = RefsVerifyPayload(
         release_set=rs_name,
         reference_root=str(reference_root),
         files_checked=files_checked,
         failures=tuple(failures),
+        alignment_warnings=alignment_warnings,
     )
     emit(
         ctx=ctx,

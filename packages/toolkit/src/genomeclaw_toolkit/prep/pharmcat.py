@@ -77,7 +77,11 @@ def _write_outside_call_tsv(
         )
     row_values = {"gene": "CYP2D6", "diplotype": diplotype}
     row = "\t".join(row_values.get(col, "") for col in conventions.outside_call_tsv_columns)
-    output_path.write_text(f"{row}\n")
+    # Explicit UTF-8 encoding (bioreview-small-fixes Fix 3): PharmCAT
+    # activity scores include `≥` (U+2265); without an explicit encoding
+    # Path.write_text falls back to the system locale, which silently
+    # corrupts on cp1252/Latin-1 hosts.
+    output_path.write_text(f"{row}\n", encoding="utf-8")
     return output_path
 
 

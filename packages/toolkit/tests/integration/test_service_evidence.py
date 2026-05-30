@@ -155,14 +155,21 @@ def test_evidence_returns_400_for_retired_topic_kind(tmp_path: Path) -> None:
     assert "topic" in body["detail"]
 
 
-def test_supported_evidence_kinds_pinned_to_variant_keyed_only(tmp_path: Path) -> None:
-    """``_SUPPORTED_EVIDENCE_KINDS`` is exactly the three variant-keyed kinds.
+def test_supported_evidence_kinds_pinned(tmp_path: Path) -> None:
+    """``_SUPPORTED_EVIDENCE_KINDS`` is pinned to the documented kind set.
 
-    Pins the contract so a future regression that re-adds `gene_note:` or
-    `topic:` surfaces here. Adding a new variant-keyed kind (e.g.
-    `pubmed:<pmid>` for a literature lookup) extends this set explicitly.
+    Pins the contract so a future regression that re-adds retired kinds
+    (`gene_note:` / `topic:`) surfaces here. Adding a new kind extends this
+    set explicitly.
+
+    Kinds:
+    - Variant-keyed via DB lookup: `clinvar`, `pgs_catalog`, `pharmgkb`.
+    - Local-artefact-keyed via file read: `cyrius_no_call` (the indeterminate
+      CYP2D6 sentinel — added by cyp2d6-no-call-finding Phase 2).
     """
-    assert _SUPPORTED_EVIDENCE_KINDS == frozenset({"clinvar", "pgs_catalog", "pharmgkb"})
+    assert _SUPPORTED_EVIDENCE_KINDS == frozenset(
+        {"clinvar", "pgs_catalog", "pharmgkb", "cyrius_no_call"}
+    )
 
 
 # ---------------------------------------------------------------------------

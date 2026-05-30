@@ -164,7 +164,9 @@ def test_extract_pgs_sites_skips_blank_and_comment_lines(tmp_path: Path) -> None
     """Robust to PGS Catalog comment + blank lines + a trailing newline."""
     from genomeclaw_toolkit.prep.coverage_fill import _extract_pgs_sites_from_scorefile
 
-    scorefile = tmp_path / "tiny.txt.gz"
+    # Filename uses the hmPOS_GRCh38 pattern per bioreview-small-fixes Fix 1
+    # (the parser enforces this filename guard).
+    scorefile = tmp_path / "PGS000999_hmPOS_GRCh38.txt.gz"
     with gzip.open(scorefile, "wt") as fh:
         fh.write(
             "###header comment\n"
@@ -175,6 +177,49 @@ def test_extract_pgs_sites_skips_blank_and_comment_lines(tmp_path: Path) -> None
             "1\t100\tG\tA\t0.1\n"
             "\n"
         )
+
+    rows = _extract_pgs_sites_from_scorefile(scorefile)
+    assert rows == [("chr1", 100, "A", "G")]
+
+
+def test_extract_pgs_sites_rejects_non_hmpos_filename(tmp_path: Path) -> None:
+    """`_extract_pgs_sites_from_scorefile` raises ValueError on non-hmPOS files.
+
+    The PGS Catalog harmonised filename convention is `<PGS_ID>_hmPOS_GRCh38.txt[.gz]`;
+    the `_hmPOS_GRCh38` suffix is the PGS Catalog signal that the file has
+    been lifted to GRCh38 harmonised coordinates. A user who downloads a
+    non-harmonised file and hand-renames the columns to `hm_chr` / `hm_pos`
+    would pass the column-name check silently — but the genomic coordinates
+    would be wrong, producing silently-incorrect Tier 2 force-genotyping.
+    Per bioreview-small-fixes Fix 1: reject by filename pattern.
+    """
+    import pytest
+
+    from genomeclaw_toolkit.prep.coverage_fill import _extract_pgs_sites_from_scorefile
+
+    # Construct a syntactically-valid scoring file under a non-harmonised name.
+    scorefile = tmp_path / "PGS000018.txt.gz"
+    with gzip.open(scorefile, "wt") as fh:
+        fh.write(
+            "#pgs_id=PGS000018\n"
+            "hm_chr\thm_pos\teffect_allele\tother_allele\teffect_weight\n"
+            "1\t100\tG\tA\t0.1\n"
+        )
+
+    with pytest.raises(ValueError, match=r"_hmPOS_GRCh38"):
+        _extract_pgs_sites_from_scorefile(scorefile)
+
+
+def test_extract_pgs_sites_accepts_hmpos_grch38_txt_uncompressed(tmp_path: Path) -> None:
+    """The `.txt` (uncompressed) hmPOS_GRCh38 filename pattern is also accepted."""
+    from genomeclaw_toolkit.prep.coverage_fill import _extract_pgs_sites_from_scorefile
+
+    scorefile = tmp_path / "PGS000123_hmPOS_GRCh38.txt"
+    scorefile.write_text(
+        "#pgs_id=PGS000123\n"
+        "hm_chr\thm_pos\teffect_allele\tother_allele\teffect_weight\n"
+        "1\t100\tG\tA\t0.1\n"
+    )
 
     rows = _extract_pgs_sites_from_scorefile(scorefile)
     assert rows == [("chr1", 100, "A", "G")]
@@ -611,7 +656,6 @@ def test_prepare_coverage_tier2_sorts_oriented_rows_before_force_genotype(
     ``bcftools index --tbi`` then fails with
     ``[E::hts_idx_push] Unsorted positions on sequence #N``. Phase-7
     smoke v20 (2026-05-20) regression guard."""
-    import json as _json
 
     from genomeclaw_toolkit.prep.coverage_fill import prepare_coverage_tier2
 

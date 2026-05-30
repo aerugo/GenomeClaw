@@ -28,6 +28,15 @@ class CoverageRow:
     low_coverage_exons: list[str]
     """Reserved for Phase 4. Empty for gene-level Phase-2 BEDs."""
 
+    region_class: str = "standard"
+    """Per coverage-panel-v2: the gene's coverage-reliability class
+    (`"standard"` / `"difficult_pseudogene"` / `"difficult_segdup"` /
+    `"requires_dedicated_caller"` / `"mitochondrial"`). Read from BED
+    column 5 of the panel BED at parse time (mosdepth doesn't forward
+    additional BED columns through its regions output). Defaults to
+    `"standard"` when no panel BED is supplied or when the panel is a
+    BED4 (pre-v2)."""
+
 
 @dataclass(frozen=True)
 class MosdepthResult:
@@ -45,10 +54,36 @@ class MosdepthParseError(ValueError):
     """``mosdepth``'s ``regions.bed.gz`` had a malformed row."""
 
 
+def _load_panel_region_classes(panel_bed: Path) -> dict[str, str]:
+    """Read a BED panel's column 5 (`region_class`) into a `{name: class}` lookup.
+
+    BED4 panels (no col 5) → empty dict (every gene defaults to
+    `"standard"` in the consumer). Per coverage-panel-v2 Phase 1: this
+    is how the panel-derived class signal reaches `CoverageRow`, since
+    mosdepth's regions output only echoes cols 1–4 of the input BED.
+    """
+    opener = gzip.open if panel_bed.suffix == ".gz" else open
+    lookup: dict[str, str] = {}
+    with opener(panel_bed, "rt", encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) < 5:
+                continue  # BED4 row: no class column
+            name = parts[3]
+            region_class = parts[4].strip()
+            if name and region_class:
+                lookup[name] = region_class
+    return lookup
+
+
 def parse_regions_bed(
     regions_bed: Path,
     *,
     low_coverage_threshold: float = 20.0,
+    panel_bed: Path | None = None,
 ) -> list[CoverageRow]:
     """Parse ``mosdepth``'s ``<prefix>.regions.bed.gz`` into per-gene ``CoverageRow``s.
 
@@ -69,12 +104,37 @@ def parse_regions_bed(
     Mixed-shape BEDs (some rows per-gene, others per-exon for the same
     gene) are not supported — pick one convention per BED file.
 
+    Per coverage-panel-v2 Phase 1: when ``panel_bed`` is provided, the
+    parser also reads BED column 5 (`region_class`) from that panel and
+    sets each ``CoverageRow.region_class`` to the first non-``standard``
+    value across the gene's exons. mosdepth does NOT forward additional
+    BED columns through its regions output, so the class info must
+    come from the panel BED directly.
+
+    Args:
+        regions_bed: mosdepth's `<prefix>.regions.bed.gz` output.
+        low_coverage_threshold: per-exon depth floor (default 20×).
+        panel_bed: the panel BED that was passed to ``mosdepth --by``.
+            When provided, BED5 column 5 supplies the `region_class`
+            for each name. Optional; absent → every row defaults to
+            `region_class="standard"`.
+
     Raises:
         MosdepthParseError: any row has fewer than 5 tab-separated columns.
     """
+    panel_classes: dict[str, str] = (
+        _load_panel_region_classes(panel_bed) if panel_bed is not None else {}
+    )
+
     # Map gene symbol -> list of (exon_label, mean_depth). For per-gene
     # BEDs the exon_label is empty and the list has length 1.
     by_gene: dict[str, list[tuple[str, float]]] = {}
+    # Map gene symbol -> ordered list of region_class values from the panel
+    # (across the gene's exons, in panel order). Used to surface the first
+    # non-standard class — a class-uniform gene resolves cleanly; a
+    # mixed-class gene preserves the non-standard signal rather than
+    # averaging it away.
+    by_gene_classes: dict[str, list[str]] = {}
     with gzip.open(regions_bed, "rt", encoding="utf-8") as fh:
         for raw in fh:
             line = raw.rstrip("\n")
@@ -93,6 +153,8 @@ def parse_regions_bed(
                 gene = name
                 exon_label = ""
             by_gene.setdefault(gene, []).append((exon_label, float(mean_depth)))
+            class_value = panel_classes.get(name, "standard")
+            by_gene_classes.setdefault(gene, []).append(class_value)
 
     rows: list[CoverageRow] = []
     for gene in sorted(by_gene):
@@ -102,11 +164,21 @@ def parse_regions_bed(
             label for label, depth in exons
             if label and depth < low_coverage_threshold
         )
+        # Take the first non-standard class across the gene's exons (in
+        # panel order). Class-uniform genes (the common case) resolve
+        # to that class; mixed-class genes (a panel-documentation gap)
+        # preserve the non-standard signal rather than averaging it.
+        classes = by_gene_classes.get(gene, [])
+        region_class = next(
+            (c for c in classes if c != "standard"),
+            "standard",
+        )
         rows.append(
             CoverageRow(
                 gene=gene,
                 mean_depth=mean,
                 low_coverage_exons=low_exons,
+                region_class=region_class,
             )
         )
     return rows

@@ -200,8 +200,19 @@ def call_cyp2d6(
     threads: int | None = None,
     reference_fasta: Path | None = None,
     conventions: CyriusConventions | None = None,
-) -> CyriusDiplotypeRow:
-    """Invoke Cyrius against ``bam``; return the parsed diplotype.
+) -> CyriusDiplotypeRow | None:
+    """Invoke Cyrius against ``bam``; return the parsed diplotype or ``None`` on no-call.
+
+    Two return paths:
+
+    - **Successful call**: returns :class:`CyriusDiplotypeRow`; writes
+      ``cyp2d6_diplotype.json`` to ``run_dir`` with ``cyp2d6_status='called'``.
+    - **No-call** (Cyrius emitted an empty Genotype — typically low coverage at
+      the CYP2D6/CYP2D7 locus or structural variants interfering): returns
+      ``None``; writes ``cyp2d6_no_call_envelope.json`` to ``run_dir`` with
+      ``cyp2d6_status='no_call'``. The CLI handler reads the sentinel and
+      inserts an indeterminate ``findings`` row so the agent surface never
+      lacks a CYP2D6 signal (per the cyp2d6-no-call-finding plan).
 
     Args:
         bam: source BAM/CRAM (read-only; Cyrius opens it host-side; no
@@ -223,15 +234,17 @@ def call_cyp2d6(
             stub via :func:`dataclasses.replace`.
 
     Returns:
-        A :class:`CyriusDiplotypeRow` with the parsed diplotype.
+        :class:`CyriusDiplotypeRow` on a successful call, ``None`` on a no-call.
 
     Raises:
         ValueError: when ``genome_build`` is not in
             ``_SUPPORTED_GENOME_BUILDS`` OR when ``bam.suffix == '.cram'``
             but ``reference_fasta`` is None.
         RuntimeError: when Cyrius's ``subprocess.run`` exits non-zero.
-        CyriusNoGenotypeError: when Cyrius emits no entry for
-            ``sample_id``.
+        CyriusNoGenotypeError: when Cyrius emits no entry for ``sample_id``
+            on a **multi-sample** manifest (the wrapper's contract is
+            one-BAM-per-invocation; this is a programmer-error path, not
+            the empty-Genotype no-call path which now returns ``None``).
     """
     if genome_build not in _SUPPORTED_GENOME_BUILDS:
         raise ValueError(
@@ -286,9 +299,49 @@ def call_cyp2d6(
         )
 
     cyrius_output = run_dir / conv.output_filename_template.format(prefix=output_prefix)
-    diplotype, filter_status, raw = _parse_cyrius_json(
-        cyrius_output, sample_id=sample_id, conventions=conv
-    )
+    params = {
+        "genome_build": genome_build,
+        "threads": threads,
+        "reference_fasta": str(reference_fasta) if reference_fasta is not None else None,
+    }
+    try:
+        diplotype, filter_status, raw = _parse_cyrius_json(
+            cyrius_output, sample_id=sample_id, conventions=conv
+        )
+    except CyriusNoGenotypeError:
+        # The empty-Genotype no-call path. Cyrius ran successfully but
+        # could not call CYP2D6 — typically low coverage at the
+        # CYP2D6/CYP2D7 locus or a structural variant. We don't want to
+        # halt the pipeline (the user still needs the rest of their
+        # findings); instead, write a sentinel envelope so the CLI
+        # handler can INSERT an indeterminate `findings` row. Returning
+        # `None` is the contract that lets the caller branch on the
+        # no-call vs. success path.
+        #
+        # The multi-sample-manifest path also raises CyriusNoGenotypeError
+        # but with a different message; distinguish by inspecting the
+        # raw cyrius JSON. If the file has exactly one sample block with
+        # an empty/missing Genotype field, treat it as no-call. Otherwise
+        # re-raise (the multi-sample case is a programmer error, not a
+        # data outcome).
+        raw_payload = json.loads(cyrius_output.read_text())
+        if len(raw_payload) == 1:
+            sample_block = next(iter(raw_payload.values()))
+            filter_value = sample_block.get(conv.output_filter_key)
+            if isinstance(filter_value, list):
+                filter_status_str = filter_value[0] if filter_value else "NO_CALL"
+            else:
+                filter_status_str = filter_value or "NO_CALL"
+            _write_no_call_envelope(
+                run_dir=run_dir,
+                bam=bam,
+                sample_id=sample_id,
+                filter_status=filter_status_str,
+                raw_cyrius_output=raw_payload,
+                params=params,
+            )
+            return None
+        raise
 
     row = CyriusDiplotypeRow(
         sample_id=sample_id,
@@ -306,14 +359,25 @@ def call_cyp2d6(
         run_dir=run_dir,
         bam=bam,
         row=row,
-        params={
-            "genome_build": genome_build,
-            "threads": threads,
-            "reference_fasta": str(reference_fasta) if reference_fasta is not None else None,
-        },
+        params=params,
     )
 
     return row
+
+
+def _build_provenance_block(bam: Path, params: dict[str, Any]) -> dict[str, str]:
+    """Build the seven-field INV-R001 provenance block shared by both envelopes."""
+    from genomeclaw_toolkit.prep._versions import PGX_RUNTIME_VERSIONS
+
+    return {
+        "source_path": str(bam),
+        "source_sha256": _sha256_of(bam) if bam.exists() else "",
+        "tool": "cyrius",
+        "tool_version": PGX_RUNTIME_VERSIONS["cyrius"],
+        "params_json": json.dumps(params, sort_keys=True),
+        "schema_version": SCHEMA_VERSION,
+        "created_at": datetime.now(tz=UTC).isoformat(),
+    }
 
 
 def _write_diplotype_envelope(
@@ -331,25 +395,50 @@ def _write_diplotype_envelope(
     time; the wrapper calls it inline so a direct
     :func:`call_cyp2d6` invocation (outside the CLI) still produces the
     envelope downstream consumers expect.
-    """
-    from genomeclaw_toolkit.prep._versions import PGX_RUNTIME_VERSIONS
 
+    Includes ``cyp2d6_status='called'`` so downstream consumers can
+    distinguish a successful diplotype from the no-call sentinel emitted
+    by :func:`_write_no_call_envelope`.
+    """
     envelope = {
+        "cyp2d6_status": "called",
         "sample_id": row.sample_id,
         "diplotype": row.diplotype,
         "filter_status": row.filter_status,
         "raw_cyrius_output": row.raw_cyrius_output,
-        "provenance": {
-            "source_path": str(bam),
-            "source_sha256": _sha256_of(bam) if bam.exists() else "",
-            "tool": "cyrius",
-            "tool_version": PGX_RUNTIME_VERSIONS["cyrius"],
-            "params_json": json.dumps(params, sort_keys=True),
-            "schema_version": SCHEMA_VERSION,
-            "created_at": datetime.now(tz=UTC).isoformat(),
-        },
+        "provenance": _build_provenance_block(bam, params),
     }
     envelope_path = run_dir / "cyp2d6_diplotype.json"
+    envelope_path.write_text(json.dumps(envelope, indent=2, sort_keys=True))
+    return envelope_path
+
+
+def _write_no_call_envelope(
+    *,
+    run_dir: Path,
+    bam: Path,
+    sample_id: str,
+    filter_status: str,
+    raw_cyrius_output: dict[str, Any],
+    params: dict[str, Any],
+) -> Path:
+    """Write the ``cyp2d6_no_call_envelope.json`` sentinel for the no-call path.
+
+    Structurally identical to :func:`_write_diplotype_envelope` but uses a
+    distinct filename + ``cyp2d6_status='no_call'`` + ``diplotype=None``
+    so downstream consumers (the CLI handler, the PharmCAT skip-detect,
+    the agent's findings reader) can distinguish the two states. The raw
+    Cyrius output is preserved verbatim — it IS the evidence per INV-E001.
+    """
+    envelope = {
+        "cyp2d6_status": "no_call",
+        "sample_id": sample_id,
+        "diplotype": None,
+        "filter_status": filter_status,
+        "raw_cyrius_output": raw_cyrius_output,
+        "provenance": _build_provenance_block(bam, params),
+    }
+    envelope_path = run_dir / "cyp2d6_no_call_envelope.json"
     envelope_path.write_text(json.dumps(envelope, indent=2, sort_keys=True))
     return envelope_path
 

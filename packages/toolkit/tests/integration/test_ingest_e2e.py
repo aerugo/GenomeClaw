@@ -169,6 +169,55 @@ def test_ingest_e2e_produces_manifest_provenance_and_variants_store(
 
 
 @pytest.mark.needs_bio
+def test_ingest_honors_GENOMECLAW_SCRATCH_DIR_when_set(
+    tiny_vcf_gz: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: host-form ``--derived-root`` ingest must honor ``GENOMECLAW_SCRATCH_DIR``.
+
+    Scenario reproducer (real-data smoke 2026-05-25): the shim runs in DooD
+    mode and the user invokes ``pipeline run --derived-root
+    /Volumes/Genome_Work/genomeclaw/derived``. The canonical host scratch is
+    ``/Volumes/Genome_Work/genomeclaw/_scratch`` (underscore prefix marks it
+    as ephemeral per ``genomeclaw host setup``). Pre-fix, ``ingest`` computed
+    ``derived_root.parent / "scratch"`` (NO underscore), which:
+
+    1. doesn't exist on the host (the real dir is ``_scratch``), and
+    2. lives under a parent that's RO-mounted via the DooD identical-path
+       overlay — so the mkdir surfaces as ``Read-only file system``.
+
+    The fix: when ``GENOMECLAW_SCRATCH_DIR`` is set (the shim publishes it
+    in DooD mode), ingest uses that path verbatim instead of guessing from
+    ``derived_root.parent``.
+    """
+    from genomeclaw_toolkit.prep.ingest import ingest
+
+    host_root = tmp_path / "host_root"
+    derived = host_root / "derived"
+    real_scratch = host_root / "_scratch"
+    reference = host_root / "reference"
+    for d in (derived, real_scratch, reference):
+        d.mkdir(parents=True)
+
+    monkeypatch.setenv("GENOMECLAW_SCRATCH_DIR", str(real_scratch))
+
+    run_dir = ingest(
+        vcf=tiny_vcf_gz,
+        reference_dir=reference,
+        derived_root=derived,
+        sample_id="test-host-form",
+    )
+
+    assert run_dir.exists()
+    # The naive sibling path (no underscore) MUST NOT have been created.
+    assert not (host_root / "scratch").exists(), (
+        "ingest fell back to derived_root.parent/'scratch' despite "
+        "GENOMECLAW_SCRATCH_DIR being set — regression!"
+    )
+
+
+@pytest.mark.needs_bio
 def test_invD001_ingest_does_not_mutate_source_vcf(
     tiny_vcf_gz: Path, genomeclaw_layout: dict[str, Path]
 ) -> None:

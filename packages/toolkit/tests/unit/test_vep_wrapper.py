@@ -96,12 +96,16 @@ def test_build_vep_flags_includes_phase_4d_required_flags() -> None:
     These are the flags that drive the v0.2 schema columns: MANE Select
     transcript, HGVSc / HGVSp, consequence terms, gene symbol. Dropping
     any would silently break a downstream column — pin them.
+
+    Per vep-mane-plus-clinical: `--mane_select` → `--mane` (activates
+    both MANE_SELECT and MANE_PLUS_CLINICAL CSQ fields). `--mane_select`
+    must NOT appear in the argv after the switch.
     """
     flags = build_vep_flags(_minimal_config())
     for required in (
         "--cache",
         "--offline",
-        "--mane_select",
+        "--mane",
         "--hgvs",
         "--symbol",
         "--canonical",
@@ -109,8 +113,29 @@ def test_build_vep_flags_includes_phase_4d_required_flags() -> None:
         "--no_stats",
     ):
         assert required in flags, f"missing required Phase 4D flag {required!r}"
+    assert "--mane_select" not in flags, (
+        "`--mane_select` must be replaced by `--mane`; the Select-only flag "
+        "silently drops MANE Plus Clinical entries"
+    )
     # Output is bgzip-compressed VCF; downstream concat / tabix expect this.
     assert flags[flags.index("--compress_output") + 1] == "bgzip"
+
+
+def test_build_vep_flags_emits_pick_order_with_standard_value() -> None:
+    """`--pick_order` is emitted with the pVACtools/GDC standard ranking.
+
+    Even though we don't currently pass `--pick`, declaring `--pick_order`
+    makes the flag set self-documenting and prepares for any future
+    `--pick` adoption. The standard value puts `mane_plus_clinical`
+    right after `mane_select`, so any future picker breaks ties in the
+    same order as our materialize-side `pick_canonical_entry`.
+    """
+    flags = build_vep_flags(_minimal_config())
+    assert "--pick_order" in flags, "missing `--pick_order` flag"
+    pick_order_value = flags[flags.index("--pick_order") + 1]
+    assert pick_order_value == (
+        "rank,mane_select,mane_plus_clinical,canonical,appris,tsl,biotype,ccds,length"
+    ), f"unexpected `--pick_order` value: {pick_order_value!r}"
 
 
 def test_build_vep_flags_input_and_output_paths_threaded() -> None:

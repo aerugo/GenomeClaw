@@ -119,10 +119,26 @@ def render_refs_list(payload: RefsListPayload) -> None:
 
 
 def render_refs_verify(payload: RefsVerifyPayload) -> None:
-    """Render the bgzip-EOF integrity sweep result."""
+    """Render the bgzip-EOF integrity sweep result + cross-dataset warnings."""
     console = get_console()
     title = f"Bgzip integrity sweep (release set '{payload.release_set}')"
-    if not payload.failures:
+    if payload.failures:
+        n_failures = len(payload.failures)
+        table = Table(
+            title=f"{title} — {n_failures} failure(s) of {payload.files_checked} checked",
+            title_style="bold",
+            title_justify="left",
+            show_header=True,
+            header_style="bold",
+            expand=False,
+        )
+        table.add_column("Source")
+        table.add_column("File", overflow="fold")
+        table.add_column("Reason")
+        for f in payload.failures:
+            table.add_row(f.source, f.relpath, Text(f.reason, style="red"))
+        console.print(table)
+    else:
         console.print(
             Panel(
                 Text(f"All {payload.files_checked} bgzipped files intact.", style="green"),
@@ -130,21 +146,18 @@ def render_refs_verify(payload: RefsVerifyPayload) -> None:
                 title_align="left",
             )
         )
-        return
-    table = Table(
-        title=f"{title} — {len(payload.failures)} failure(s) of {payload.files_checked} checked",
-        title_style="bold",
-        title_justify="left",
-        show_header=True,
-        header_style="bold",
-        expand=False,
-    )
-    table.add_column("Source")
-    table.add_column("File", overflow="fold")
-    table.add_column("Reason")
-    for f in payload.failures:
-        table.add_row(f.source, f.relpath, Text(f.reason, style="red"))
-    console.print(table)
+
+    # Cross-dataset alignment warnings (bioreview-small-fixes Fix 2).
+    # Informational only — they do not affect exit code.
+    if payload.alignment_warnings:
+        for warning in payload.alignment_warnings:
+            console.print(
+                Panel(
+                    Text(warning, style="yellow"),
+                    title="Cross-dataset alignment warning",
+                    title_align="left",
+                )
+            )
 
 
 def render_refs_info(payload: RefsInfoPayload) -> None:

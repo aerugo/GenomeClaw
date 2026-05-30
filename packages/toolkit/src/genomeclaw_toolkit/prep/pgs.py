@@ -58,6 +58,11 @@ class PgsRow:
     requested_for_question: str
     calibration_status: str | None = None  # "clean" | "warning" | "decline" | None
     decline_reason: str | None = None  # DeclineReason.value when status == "decline"
+    # `prs-calibration-phase3b` Phase 1 — effect-weight-weighted overlap axis.
+    effect_weight_match_rate: float | None = None
+    # `prs-calibration-phase3b` Phase 2 — FRAPOSA continuous-ancestry calibration.
+    fraposa_min_mahalanobis_distance: float | None = None
+    fraposa_nearest_superpop: str | None = None
 
 
 def apply_calibration_decision(row: "PgsRow", decision: object) -> "PgsRow":
@@ -794,9 +799,12 @@ def stamp_pgs_row(
                 study_population, calibration_warning,
                 agent_choice_rationale, requested_for_question,
                 calibration_status, decline_reason, superseded_by,
+                effect_weight_match_rate,
+                fraposa_min_mahalanobis_distance, fraposa_nearest_superpop,
                 source_path, source_sha256, tool, tool_version,
                 params_json, schema_version, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+                      ?, ?, ?,
                       ?, '', 'pgsc_calc', 'agent-driven',
                       ?, ?, ?)
             """,
@@ -811,6 +819,9 @@ def stamp_pgs_row(
                 row.requested_for_question,
                 row.calibration_status,
                 row.decline_reason,
+                row.effect_weight_match_rate,
+                row.fraposa_min_mahalanobis_distance,
+                row.fraposa_nearest_superpop,
                 str(vcf),
                 params,
                 SCHEMA_VERSION,

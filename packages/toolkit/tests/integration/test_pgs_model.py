@@ -41,6 +41,8 @@ def test_pgs_row_response_model_pinned_shape() -> None:
         source_pgs_id="PGS000018",
         study_population="European-ancestry meta-analysis (UK Biobank + CARDIoGRAMplusC4D)",
         calibration_warning=None,
+        calibration_status=None,
+        decline_reason=None,
         agent_choice_rationale=(
             "Canonical CARDIoGRAMplusC4D + UK Biobank CAD PRS with the most mature "
             "cross-ancestry calibration. Considered PGS004696 (better Eu discrimination, "
@@ -61,6 +63,8 @@ def test_pgs_row_response_model_pinned_shape() -> None:
             source_pgs_id="PGS000018",
             study_population="European-ancestry meta-analysis",
             calibration_warning=None,
+            calibration_status=None,
+            decline_reason=None,
             agent_choice_rationale="x" * 60,
             requested_for_question="why?",
             superseded_by=None,

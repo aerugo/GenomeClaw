@@ -112,6 +112,39 @@ def test_call_cyp2d6_writes_diplotype_json(tmp_path: Path) -> None:
     assert envelope["filter_status"] == "PASS"
 
 
+def test_call_cyp2d6_successful_call_stamps_cyp2d6_status_called(tmp_path: Path) -> None:
+    """Successful diplotype envelopes carry `cyp2d6_status='called'`.
+
+    Pairs with the no-call sentinel's `cyp2d6_status='no_call'` so
+    downstream consumers (the CLI handler, the PharmCAT skip-detect, the
+    `findings` table inspector) can distinguish the two states from a
+    single field rather than inferring from file presence.
+
+    Added by cyp2d6-no-call-finding Phase 1; regression guard for the
+    success path.
+    """
+    from genomeclaw_toolkit.prep.cyrius import call_cyp2d6
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    bam = tmp_path / "sample.bam"
+    bam.write_bytes(b"fake bam")
+
+    with patch.object(
+        subprocess, "run", side_effect=_stub_subprocess_run_factory(run_dir, "sample")
+    ):
+        row = call_cyp2d6(
+            bam=bam, genome_build="GRCh38", run_dir=run_dir, sample_id="sample"
+        )
+
+    assert row is not None, "successful call must return a CyriusDiplotypeRow, not None"
+    envelope = json.loads((run_dir / "cyp2d6_diplotype.json").read_text())
+    assert envelope["cyp2d6_status"] == "called", (
+        f"successful diplotype envelope must carry cyp2d6_status='called'; "
+        f"got envelope={envelope!r}"
+    )
+
+
 def test_call_cyp2d6_parses_genotype_from_cyrius_json(tmp_path: Path) -> None:
     """The wrapper returns a typed ``CyriusDiplotypeRow`` with the parsed values."""
     from genomeclaw_toolkit.prep.cyrius import CyriusDiplotypeRow, call_cyp2d6

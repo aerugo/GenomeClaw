@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -74,10 +75,19 @@ log = logging.getLogger(__name__)
 # Default coverage-QC panel (AC2 — auto-engage when bam given, no bed).
 # ---------------------------------------------------------------------------
 
-_DEFAULT_PANEL_BED_NAME = "coverage_panel_default_v1.bed.gz"
-"""Filename of the bundled default gene-panel BED (shipped inside the package)."""
+_DEFAULT_PANEL_BED_NAME = "coverage_panel_default_v2.bed.gz"
+"""Filename of the bundled default gene-panel BED (shipped inside the package).
 
-_DEFAULT_PANEL_VERSION = "v1"
+Per coverage-panel-v2 Phase 2 (2026-05-25): bumped to v2 (BED5 with
+`region_class` column; ACMG SF v3.3 additions; lifestyle anchors;
+MT contig; difficult-region annotations for PMS2, SMN1, HBA1/HBA2,
+CYP21A2, GBA1, STRC, NCF1, NEB, HLA-A/B/C/DRB1, CYP2D6).
+
+The v1 BED stays on disk for reference; operators / tests that want
+the old behaviour can pass `--bed` explicitly to override the default.
+"""
+
+_DEFAULT_PANEL_VERSION = "v2"
 """Version token recorded in coverage_qc.params_json (INV-R001)."""
 
 _DEFAULT_LOW_COVERAGE_THRESHOLD = "20x"
@@ -174,6 +184,8 @@ def ingest(
     reference_fasta: Path | None = None,
     started_at: datetime | None = None,
     progress_callback: Callable[[_ProgressEvent], None] | None = None,
+    reference_root: Path | None = None,
+    scratch_root: Path | None = None,
 ) -> Path:
     """Run the Phase-2 ingest. Returns the derived run dir.
 
@@ -207,6 +219,18 @@ def ingest(
         started_at: optional fixed UTC timestamp; defaults to
             ``datetime.now(tz=UTC)``. Tests pass a fixed value to drive
             the determinism scaffold (case 8).
+        reference_root: optional host-form path to the ``reference/``
+            root directory (e.g. ``/Volumes/Genome_Work/genomeclaw/reference``).
+            When given alongside ``bam`` (i.e. a CRAM is available),
+            ``prs_compute_config.json`` is written into the new run dir so
+            the host-service PRS compute worker can start immediately
+            without operator manual configuration.  Silently skipped when
+            ``bam`` is None (no CRAM → no PRS compute possible).
+        scratch_root: optional host-form path to the scratch directory.
+            Required alongside ``reference_root`` to compute
+            ``work_dir_root`` in the sidecar.  Defaults to
+            ``derived_root.parent / "_scratch"`` when ``reference_root`` is
+            given but ``scratch_root`` is not.
     """
     preflight.assert_raw_readonly()
     preflight.assert_reference_readonly()
@@ -321,11 +345,26 @@ def ingest(
         created_at=started_at,
     )
 
-    # Scratch lives as a sibling of derived_root. In production this
-    # resolves to /mnt/genomeclaw/scratch (the canonical post-Phase-2
-    # scratch tier on virtiofs+APFS); in tests, to <tmp>/scratch (set
-    # up by the ``genomeclaw_layout`` fixture).
-    scratch_dir = derived_root.parent / "scratch"
+    # Scratch lives as a sibling of derived_root. In container-form
+    # ingest this resolves to /mnt/genomeclaw/scratch (the canonical
+    # post-Phase-2 scratch tier on virtiofs+APFS); in tests, to
+    # <tmp>/scratch (set up by the ``genomeclaw_layout`` fixture).
+    #
+    # When the shim runs in DooD mode and the caller passes host-form
+    # ``--derived-root``, the naive ``derived_root.parent / "scratch"``
+    # computes ``$root/scratch`` which collides with the canonical host
+    # layout where scratch lives at ``$root/_scratch`` (the underscore
+    # prefix marks it as ephemeral per `genomeclaw host setup`). The
+    # parent directory is also RO-mounted via the DooD identical-path
+    # overlay, so the mkdir surfaces as ``Read-only file system``. Honor
+    # ``GENOMECLAW_SCRATCH_DIR`` (the shim's authoritative host-form
+    # scratch path) when it's set so host-form ingest resolves to the
+    # real ``_scratch`` directory.
+    _scratch_env = os.environ.get("GENOMECLAW_SCRATCH_DIR")
+    if _scratch_env:
+        scratch_dir = Path(_scratch_env)
+    else:
+        scratch_dir = derived_root.parent / "scratch"
     scratch_dir.mkdir(parents=True, exist_ok=True)
 
     def _row_stream() -> Iterator[dict[str, Any]]:
@@ -432,6 +471,11 @@ def ingest(
         coverage_rows = parse_regions_bed(
             mosdepth_result.regions_bed,
             low_coverage_threshold=threshold_float,
+            # coverage-panel-v2 Phase 1: read BED col 5 (`region_class`) from
+            # the panel BED at parse time. mosdepth's regions output doesn't
+            # forward col 5+; the parser reads the panel directly to merge
+            # the class signal in.
+            panel_bed=bed,
         )
 
         # INV-R001: params_json records the panel BED path + version + threshold.
@@ -477,6 +521,7 @@ def ingest(
                     "gene": r.gene,
                     "mean_depth": r.mean_depth,
                     "low_coverage_exons": r.low_coverage_exons,
+                    "region_class": r.region_class,
                 }
                 for r in coverage_rows
             ),
@@ -536,6 +581,38 @@ def ingest(
     (run_dir / "provenance.json").write_text(
         json.dumps(provenance_payload, indent=2, default=_serialise_for_json) + "\n"
     )
+
+    # prs_compute_config.json sidecar — written when the caller supplies a
+    # reference_root AND the ingest included a BAM/CRAM (without CRAM, the
+    # PRS compute worker can't run anyway so writing the sidecar is moot).
+    # INV-D001: written only under run_dir (derived/), never touching raw/.
+    # INV-R001: the sidecar is derived from manifest_payload which was just
+    # written, so derivation is deterministic and reproducible.
+    if reference_root is not None and bam_path is not None:
+        _effective_scratch = (
+            scratch_root if scratch_root is not None else derived_root.parent / "_scratch"
+        )
+        try:
+            from genomeclaw_toolkit.service.pgs_compute_config import write_prs_compute_config
+
+            write_prs_compute_config(
+                run_dir,
+                manifest_payload,
+                reference_root=reference_root,
+                scratch_root=_effective_scratch,
+            )
+            log.info("prs_compute_config.json written for run_id=%s", run_id)
+        except Exception as exc:  # noqa: BLE001
+            # Non-fatal: PRS compute is a secondary capability. Log + continue
+            # so that a sidecar derivation error doesn't abort the ingest of a
+            # 30×WGS VCF that took hours to produce.
+            log.warning(
+                "prs_compute_config.json write failed for run_id=%s: %s; "
+                "run `genomeclaw pipeline pgs-config-write --run-dir %s` to repair",
+                run_id,
+                exc,
+                run_dir,
+            )
 
     # Atomic CURRENT swing.
     update_current_symlink(derived_root, run_id)

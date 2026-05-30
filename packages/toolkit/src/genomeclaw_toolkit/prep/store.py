@@ -86,6 +86,14 @@ _VARIANT_DOMAIN_COLUMNS: tuple[tuple[str, str, bool], ...] = (
     # NULL on every row until that integration is wired.
     ("gene_symbol", "TEXT", True),
     ("mane_select_transcript", "TEXT", True),
+    # vep-mane-plus-clinical Phase 2: MANE Plus Clinical transcript ID
+    # for the 73 MANE v1.5 genes where Plus Clinical carries pathogenic
+    # variants in alternative transcripts beyond MANE Select.
+    # `transcript_discordant` is non-NULL on the two rows of a dual-row
+    # emit (False on the Select row, True on the Plus Clinical row);
+    # NULL on every single-row emit (which is the common path).
+    ("mane_plus_clinical_transcript", "TEXT", True),
+    ("transcript_discordant", "BOOLEAN", True),
     ("hgvsc", "TEXT", True),
     ("hgvsp", "TEXT", True),
     ("consequence", "TEXT", True),
@@ -129,8 +137,13 @@ CREATE TABLE variants (
     -- VEP-derived columns (Phase 4D). Extracted from the CSQ INFO
     -- field on the canonical / MANE Select transcript. Each nullable
     -- so pre-VEP runs land with NULLs and the schema stays uniform.
-    gene_symbol             TEXT,
-    mane_select_transcript  TEXT,
+    gene_symbol                    TEXT,
+    mane_select_transcript         TEXT,
+    -- vep-mane-plus-clinical Phase 2: the 73-gene MANE Plus Clinical set
+    -- + the dual-row flag (False on Select row, True on Plus Clinical row,
+    -- NULL on single-row emits).
+    mane_plus_clinical_transcript  TEXT,
+    transcript_discordant          BOOLEAN,
     hgvsc                   TEXT,
     hgvsp                   TEXT,
     consequence             TEXT,
@@ -220,6 +233,17 @@ CREATE TABLE pgs_scores (
     decline_reason                  TEXT,
     -- Supersession audit trail (mirrors INV-A001's prior-note-stays-on-disk pattern).
     superseded_by                   TEXT,
+    -- prs-calibration-phase3b Phase 1: effect-weight-weighted overlap axis.
+    -- ``Σ|β|_matched / Σ|β|_total`` after uncallable-site exclusion (INV-C002).
+    -- NULL when the scoring file has no `effect_weight` column.
+    effect_weight_match_rate            DOUBLE,
+    -- prs-calibration-phase3b Phase 2: FRAPOSA continuous-ancestry calibration.
+    -- ``fraposa_min_mahalanobis_distance`` is the minimum top-10-PC Mahalanobis
+    -- distance from the user's PC vector to any 1kGP+HGDP superpopulation
+    -- centroid. ``fraposa_nearest_superpop`` is the label of that minimum.
+    -- Both NULL when FRAPOSA output is unavailable (no `--run_ancestry`).
+    fraposa_min_mahalanobis_distance    DOUBLE,
+    fraposa_nearest_superpop            TEXT,
     -- Provenance (the canonical seven; INV-R001)
     source_path     TEXT NOT NULL,
     source_sha256   TEXT NOT NULL,
@@ -452,10 +476,10 @@ def write_coverage_qc(
 
     sql = (
         "INSERT INTO coverage_qc ("
-        "gene, mean_depth, low_coverage_exons, "
+        "gene, mean_depth, low_coverage_exons, region_class, "
         "source_path, source_sha256, tool, tool_version, params_json, "
         "schema_version, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     params: list[tuple[Any, ...]] = []
     for row in rows_list:
@@ -466,6 +490,7 @@ def write_coverage_qc(
                 row["gene"],
                 row["mean_depth"],
                 row.get("low_coverage_exons", []),
+                row.get("region_class"),  # NULL when absent (pre-v2 panel)
                 *provenance_values,
             )
         )

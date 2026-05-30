@@ -794,7 +794,30 @@ def _extract_pgs_sites_from_scorefile(
 
     REF/ALT orientation: PGS Catalog convention is that ``other_allele``
     matches the reference. So REF=other_allele, ALT=effect_allele.
+
+    Raises:
+        ValueError: if the filename does not match the PGS Catalog
+            ``*_hmPOS_GRCh38.txt[.gz]`` harmonised convention. The
+            ``_hmPOS_GRCh38`` suffix is the catalogue's signal that
+            coordinates have been lifted to GRCh38; a non-harmonised
+            file with hand-renamed columns would silently produce
+            incorrect Tier 2 force-genotyping (bioreview-small-fixes
+            Fix 1).
     """
+    # Strip the `.gz` (if present) then the `.txt` to get the stem.
+    name = scorefile_path.name
+    stem = name[:-3] if name.endswith(".gz") else name
+    if stem.endswith(".txt"):
+        stem = stem[:-4]
+    if not stem.endswith("_hmPOS_GRCh38"):
+        raise ValueError(
+            f"scoring file {scorefile_path!s} does not match the PGS Catalog "
+            "harmonised filename convention `<PGS_ID>_hmPOS_GRCh38.txt[.gz]`. "
+            "Only harmonised files are supported — non-harmonised files have "
+            "different genomic coordinates and would produce silently-incorrect "
+            "Tier 2 force-genotyping results. Download the harmonised version "
+            "from https://ftp.ebi.ac.uk/pub/databases/spot/pgs/scores/."
+        )
     opener = gzip.open if str(scorefile_path).endswith(".gz") else open
     rows: list[tuple[str, int, str, str]] = []
     chrom_col: int | None = None

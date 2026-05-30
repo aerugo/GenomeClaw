@@ -260,6 +260,8 @@ def pipeline_ingest(
                 no_coverage_qc=no_coverage_qc,
                 reference_fasta=reference_fasta,
                 progress_callback=callback,
+                reference_root=reference_root,
+                scratch_root=None,
             )
         except FileNotFoundError as exc:
             _emit_phase_failed(
@@ -507,6 +509,8 @@ def pipeline_run(
                 no_coverage_qc=no_coverage_qc,
                 reference_fasta=reference_fasta,
                 progress_callback=callback,
+                reference_root=reference_root,
+                scratch_root=None,
             )
         except FileNotFoundError as exc:
             _emit_phase_failed(
@@ -1330,6 +1334,25 @@ def pipeline_pharmcat(
     ctx: AppContext = typer_ctx.obj
     resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
 
+    # cyp2d6-no-call-finding Phase 1: when `cyp2d6-call` produced a no-call,
+    # it writes `cyp2d6_no_call_envelope.json` + inserts an indeterminate
+    # CYP2D6 findings row already. PharmCAT must not also be given a
+    # CYP2D6 outside-call (there is no diplotype to pass), and the operator
+    # should see the skip explicitly rather than wondering why no CYP2D6 row
+    # appeared in the PharmCAT output. Auto-detect the sentinel + warn.
+    if cyp2d6_diplotype_json is None:
+        no_call_sentinel = resolved_dir / "cyp2d6_no_call_envelope.json"
+        if no_call_sentinel.exists():
+            get_console().print(
+                "Warning: CYP2D6 no-call sentinel detected "
+                f"({no_call_sentinel.name}); skipping CYP2D6 outside-call "
+                "for PharmCAT. The indeterminate finding was already "
+                "inserted by `pipeline cyp2d6-call`.",
+                markup=False,
+            )
+            # Leave cyp2d6_diplotype_json=None — run_pharmcat already
+            # handles this by passing no -po flag to the JAR.
+
     findings = run_pharmcat(
         vcf=vcf,
         run_dir=resolved_dir,
@@ -1363,13 +1386,142 @@ def pipeline_pharmcat(
 # ---------------------------------------------------------------------------
 
 
+_CYP2D6_NO_CALL_SUMMARY = (
+    "CYP2D6 could not be called from this sample's coverage at the "
+    "CYP2D6/CYP2D7 locus. Do not interpret as Normal Metabolizer. "
+    "Confirm status with your provider before any codeine, tramadol, "
+    "or other CYP2D6-substrate medication decisions."
+)
+
+# CPIC Strong / Moderate-recommendation CYP2D6 substrates (v1.3 + PharmCAT
+# v3.2 as of 2026-05-25). Embedded into the indeterminate finding so the
+# agent's findings reader has the drug-list context without resolving the
+# sentinel. Full CPIC substrate set adds nortriptyline, amitriptyline,
+# clomipramine, desipramine, imipramine, trimipramine, fluvoxamine,
+# aripiprazole — those carry conditional / supplementary guidance and
+# are deferred to a follow-up (per spec.md `Out of Scope`).
+_CYP2D6_NO_CALL_DRUGS: tuple[str, ...] = (
+    "codeine",
+    "tramadol",
+    "oxycodone",
+    "tamoxifen",
+    "fluoxetine",
+    "paroxetine",
+    "venlafaxine",
+    "atomoxetine",
+)
+
+
+def _insert_cyp2d6_indeterminate_finding(
+    *,
+    run_dir: Path,
+    bam: Path,
+    sentinel_path: Path,
+    filter_status: str,
+    genome_build: str,
+    threads: int | None,
+    reference_fasta: Path | None,
+) -> str:
+    """INSERT the CYP2D6 indeterminate finding (no-call path).
+
+    The finding row is `clinical-actionable` per `INV-C001` v1.7 — a
+    no-call MUST surface as "indeterminate; confirm with provider" rather
+    than be silently absent (which the user would read as Normal Metabolizer).
+
+    The id is deterministic (`fnd-cyp2d6-no-call-<bam_sha256[:8]>`) so
+    re-runs are idempotent: the same BAM produces the same indeterminate
+    row id, not a UUID-suffixed proliferation.
+
+    Returns the finding id.
+    """
+    import hashlib
+    import json as _json
+    from datetime import UTC, datetime
+
+    import duckdb
+
+    from genomeclaw_toolkit.prep._versions import PGX_RUNTIME_VERSIONS
+    from genomeclaw_toolkit.prep.store import create_store
+
+    store_path = run_dir / "variants.duckdb"
+    if not store_path.exists():
+        create_store(store_path)
+    now = datetime.now(tz=UTC)
+
+    # Hash the BAM once; the indeterminate row's id derives from it.
+    digest = hashlib.sha256()
+    with bam.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    bam_sha256 = digest.hexdigest()
+
+    params = _json.dumps(
+        {
+            "bam": str(bam),
+            "genome_build": genome_build,
+            "threads": threads,
+            "reference_fasta": str(reference_fasta) if reference_fasta is not None else None,
+            "filter_status": filter_status,
+        },
+        sort_keys=True,
+    )
+
+    finding_id = f"fnd-cyp2d6-no-call-{bam_sha256[:8]}"
+    title = "CYP2D6 — indeterminate (no-call)"
+    evidence_ref = f"cyrius_no_call:{sentinel_path}"
+
+    conn = duckdb.connect(str(store_path))
+    try:
+        # Idempotent re-runs: DELETE any prior row with this deterministic
+        # id (matches the spec's "overwrite silently" resolution for Q1).
+        conn.execute("DELETE FROM findings WHERE id = ?", [finding_id])
+        conn.execute(
+            """
+            INSERT INTO findings (
+                id, category, title, summary,
+                evidence_ref, evidence_quality,
+                gene_symbols, drugs, clinical_escalation,
+                source_path, source_sha256, tool, tool_version,
+                params_json, schema_version, created_at
+            ) VALUES (?, 'clinical-actionable', ?, ?, ?, 'low',
+                      ?, ?, 'confirm_with_provider',
+                      ?, ?, 'cyrius', ?,
+                      ?, ?, ?)
+            """,
+            [
+                finding_id,
+                title,
+                _CYP2D6_NO_CALL_SUMMARY,
+                evidence_ref,
+                ["CYP2D6"],
+                list(_CYP2D6_NO_CALL_DRUGS),
+                str(bam),
+                bam_sha256,
+                PGX_RUNTIME_VERSIONS["cyrius"],
+                params,
+                SCHEMA_VERSION,
+                now,
+            ],
+        )
+    finally:
+        conn.close()
+    return finding_id
+
+
 class _Cyp2d6CallPayload(BaseModel):
-    """`--json` payload for `pipeline cyp2d6-call` per INV-C002."""
+    """`--json` payload for `pipeline cyp2d6-call` per INV-C002.
+
+    The `cyp2d6_status` field distinguishes the success path
+    (``"called"`` + populated ``diplotype``) from the no-call path
+    (``"no_call"`` + ``diplotype=None`` + indeterminate `findings` row
+    inserted by the CLI handler per the cyp2d6-no-call-finding plan).
+    """
 
     model_config = ConfigDict(extra="forbid")
     run_dir: str
     sample_id: str
-    diplotype: str
+    cyp2d6_status: str
+    diplotype: str | None
     filter_status: str
 
 
@@ -1444,9 +1596,44 @@ def pipeline_cyp2d6_call(
         reference_fasta=reference_fasta,
     )
 
+    if row is None:
+        # No-call path: emit the indeterminate finding so the agent
+        # never sees a silent absence (per cyp2d6-no-call-finding plan).
+        sentinel_path = resolved_dir / "cyp2d6_no_call_envelope.json"
+        sentinel_body = json.loads(sentinel_path.read_text())
+        filter_status = sentinel_body.get("filter_status") or "NO_CALL"
+        _insert_cyp2d6_indeterminate_finding(
+            run_dir=resolved_dir,
+            bam=bam,
+            sentinel_path=sentinel_path,
+            filter_status=filter_status,
+            genome_build=genome_build,
+            threads=threads,
+            reference_fasta=reference_fasta,
+        )
+        payload = _Cyp2d6CallPayload(
+            run_dir=str(resolved_dir),
+            sample_id=sample_id,
+            cyp2d6_status="no_call",
+            diplotype=None,
+            filter_status=filter_status,
+        )
+        emit(
+            ctx=ctx,
+            command="pipeline.cyp2d6-call",
+            payload=payload,
+            rich_renderer=lambda p: get_console().print(
+                f"CYP2D6 no-call for {p.sample_id} (filter={p.filter_status}); "
+                "inserted indeterminate finding — do not interpret as Normal Metabolizer.",
+                markup=False,
+            ),
+        )
+        return
+
     payload = _Cyp2d6CallPayload(
         run_dir=str(resolved_dir),
         sample_id=row.sample_id,
+        cyp2d6_status="called",
         diplotype=row.diplotype,
         filter_status=row.filter_status,
     )
@@ -1456,6 +1643,170 @@ def pipeline_cyp2d6_call(
         payload=payload,
         rich_renderer=lambda p: get_console().print(
             f"CYP2D6 diplotype for {p.sample_id}: {p.diplotype} ({p.filter_status})",
+            markup=False,
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# investigate-prs-compute-config-missing Step D
+# `pgs-config-write` — repair subcommand for pre-existing run dirs.
+#
+# Runs that pre-date the ingest hook (Step C) don't have a sidecar; this
+# subcommand derives + writes it from the run's manifest.json.  It is
+# also the operator escape hatch for any future case where the sidecar is
+# absent (e.g. ingest was run without --bam so the automatic write was
+# skipped, then a CRAM became available later).
+#
+# INV-D001: writes only under <run-dir>/ (derived/), never under raw/.
+# INV-R001: derivation is deterministic — same manifest + same reference_root
+#           + same scratch_root → same sidecar.
+# INV-R002: does NOT bypass the structured-failure guard; it repairs the
+#           underlying state so the guard has nothing to surface.
+# ---------------------------------------------------------------------------
+
+
+class _PgsConfigWritePayload(BaseModel):
+    """`--json` payload for `pipeline pgs-config-write` per INV-C002."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_dir: str
+    sidecar_path: str
+    sample_id: str
+
+
+@app.command("pgs-config-write")
+def pipeline_pgs_config_write(
+    typer_ctx: typer.Context,
+    run_dir: Annotated[
+        str | None,
+        typer.Option(
+            "--run-dir",
+            help="Derived run dir (or CURRENT autodetect). "
+            "The sidecar is written here; the run's manifest.json is the source.",
+        ),
+    ] = None,
+    derived_root: Annotated[
+        Path,
+        typer.Option("--derived-root", help="Derived root for CURRENT autodetect."),
+    ] = Path("/mnt/genomeclaw/derived"),
+    reference_root: Annotated[
+        Path,
+        typer.Option(
+            "--reference-root",
+            help=(
+                "Host-form reference root (e.g. /Volumes/Genome_Work/genomeclaw/reference). "
+                "Used to derive sites_tsv, alleles_tsv, scorefile_root, and reference_root "
+                "fields in the sidecar."
+            ),
+        ),
+    ] = Path("/mnt/genomeclaw/reference"),
+    scratch_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--scratch-root",
+            help=(
+                "Host-form scratch directory root. Defaults to "
+                "<derived-root>/../_scratch when omitted."
+            ),
+        ),
+    ] = None,
+    panel_version: Annotated[
+        str,
+        typer.Option(
+            "--panel-version",
+            help="PCA ancestry panel version tag (default: v1).",
+        ),
+    ] = "v1",
+) -> None:
+    """Derive + write ``prs_compute_config.json`` for an existing run dir.
+
+    Repair subcommand for run dirs that pre-date the ingest hook (Step C of
+    investigate-prs-compute-config-missing) or where the automatic write was
+    skipped because ``--bam`` was not supplied at ingest time.
+
+    Reads ``<run-dir>/manifest.json`` and derives every field of the sidecar
+    from it + the supplied reference/scratch roots.  Writing is idempotent:
+    a second invocation overwrites the previous sidecar cleanly.
+
+    Invariants:
+        INV-D001: writes only under ``<run-dir>/`` (derived/), never raw/.
+        INV-R001: derivation is deterministic — same inputs → same sidecar.
+        INV-R002: does not bypass the structured-failure guard; it repairs
+            the underlying state that the guard is reporting on.
+    """
+    import json as _json
+
+    from genomeclaw_toolkit.service.pgs_compute_config import (
+        PrsComputeConfigMalformedError,
+        write_prs_compute_config,
+    )
+
+    ctx: AppContext = typer_ctx.obj
+    resolved_dir = resolve_run_dir(run_dir=run_dir, derived_root=derived_root)
+
+    manifest_path = resolved_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise PreconditionError(
+            f"manifest.json not found at {manifest_path}; "
+            "is this a valid run dir produced by `pipeline ingest`?"
+        )
+
+    try:
+        manifest = _json.loads(manifest_path.read_text())
+    except _json.JSONDecodeError as exc:
+        raise PreconditionError(f"manifest.json at {manifest_path} is not valid JSON: {exc}") from exc
+
+    # Derive scratch_root from derived_root when not explicitly supplied.
+    effective_scratch = scratch_root if scratch_root is not None else derived_root.parent / "_scratch"
+
+    # INV-D006 host-form guard: every path in the sidecar must be host-form
+    # because pgsc_calc's DooD sibling containers bind-mount them against the
+    # host filesystem. Container-local paths under /mnt/... produce silently-
+    # wrong sidecars whose worker fails downstream with dood_path_error. The
+    # `derive_*` function already validates reference_path; this guard catches
+    # the path the operator supplies via --scratch-root / --derived-root.
+    for label, candidate in (("reference_root", reference_root), ("scratch_root", effective_scratch)):
+        if str(candidate).startswith("/mnt/"):
+            raise PreconditionError(
+                f"--{label.replace('_', '-')} looks container-local ({candidate!r}); "
+                "pass the host-form path (e.g. /Volumes/Genome_Work/genomeclaw/...) so "
+                "pgsc_calc's DooD sibling containers can bind-mount it (INV-D006)."
+            )
+
+    try:
+        sidecar_path = write_prs_compute_config(
+            resolved_dir,
+            manifest,
+            reference_root=reference_root,
+            scratch_root=effective_scratch,
+            panel_version=panel_version,
+        )
+    except KeyError as exc:
+        raise PreconditionError(
+            f"manifest.json is missing required field {exc}; "
+            "the run may have been produced without --bam (no CRAM path recorded). "
+            "Supply --bam when re-ingesting, or edit manifest.json to add "
+            f"input.bam_path before retrying."
+        ) from exc
+    except PrsComputeConfigMalformedError as exc:
+        raise PreconditionError(str(exc)) from exc
+    except ValueError as exc:
+        raise PreconditionError(str(exc)) from exc
+
+    sample_id = str(manifest.get("sample_id", "unknown"))
+    payload = _PgsConfigWritePayload(
+        run_dir=str(resolved_dir),
+        sidecar_path=str(sidecar_path),
+        sample_id=sample_id,
+    )
+    emit(
+        ctx=ctx,
+        command="pipeline.pgs-config-write",
+        payload=payload,
+        rich_renderer=lambda p: get_console().print(
+            f"wrote {p.sidecar_path} (sample_id={p.sample_id})",
             markup=False,
         ),
     )

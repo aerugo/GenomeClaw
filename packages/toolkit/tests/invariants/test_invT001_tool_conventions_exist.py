@@ -26,6 +26,7 @@ _STRICT_TOOLS: list[str] = [
     "pgsc_calc",  # path-crossing-discipline Phase 2 — first conventions dataclass
     "cyrius",  # MVP Phase 6 Slice D — Cyrius CYP2D6 caller
     "pharmcat",  # MVP Phase 6 Slice D' — PharmCAT PGx pipeline
+    "vep",  # bioreview-small-fixes Fix 2 — VEP plugin conventions
 ]
 
 _WARN_TOOLS: list[str] = [
@@ -35,7 +36,6 @@ _WARN_TOOLS: list[str] = [
     "bgzip",
     "mosdepth",
     "vcfanno",
-    "vep",
 ]
 
 

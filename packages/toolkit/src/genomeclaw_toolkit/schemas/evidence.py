@@ -37,12 +37,18 @@ EvidenceKind = Literal[
     "clinvar",
     "pgs_catalog",
     "pharmgkb",
+    "cyrius_no_call",
 ]
-"""The three variant-keyed evidence kinds the host service resolves.
+"""The evidence kinds the host service resolves.
 
-All resolve via database lookups against the active run's `variants.duckdb`
-+ (Phase 6 Slice E) `pgs_scores` + (Phase 6 Slice D) PharmCAT outside-call
-output.
+Variant-keyed kinds resolve via database lookups against the active run's
+`variants.duckdb` + (Phase 6 Slice E) `pgs_scores` + (Phase 6 Slice D)
+PharmCAT outside-call output.
+
+The `cyrius_no_call` kind (added by cyp2d6-no-call-finding Phase 2)
+resolves via a local-file read against the `cyp2d6_no_call_envelope.json`
+sentinel written by `prep/cyrius.py` on the no-call path; the id is the
+absolute path to the sentinel.
 
 A future expansion (e.g. `pubmed:<pmid>` for a literature lookup) extends
 this enum + the resolver dispatch table.

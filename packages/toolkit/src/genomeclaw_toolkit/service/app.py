@@ -38,7 +38,11 @@ from genomeclaw_toolkit.schemas.finding import (
     FindingErrorResponse,
     FindingsListResponse,
 )
-from genomeclaw_toolkit.schemas.gene import GeneErrorResponse, GeneResponse
+from genomeclaw_toolkit.schemas.gene import (
+    GeneErrorResponse,
+    GeneResponse,
+    _region_class_caveat,
+)
 from genomeclaw_toolkit.schemas.health import HealthErrorResponse, HealthResponse
 from genomeclaw_toolkit.schemas.pgs import (
     PgsComputeRequest,
@@ -65,6 +69,7 @@ from genomeclaw_toolkit.service.pgs_compute_orchestrator import (
     _resolve_compute_enabled,
     cleanup_stale_running_tasks,
     create_pgs_compute_tasks_db_if_missing,
+    derive_diagnostic_from_error_code,
     enqueue_pgs_compute_task,
     pgs_compute_worker_lifespan,
     query_pgs_compute_task_status,
@@ -277,7 +282,7 @@ def build_app(*, derived_root: Path) -> FastAPI:
 
     app = FastAPI(
         title="genomeclaw-service",
-        version="v0.2",
+        version="v0.4",
         docs_url=None,  # No interactive docs surface — INV-P002 minimal-sufficient.
         redoc_url=None,
         lifespan=_lifespan,
@@ -479,12 +484,19 @@ def build_app(*, derived_root: Path) -> FastAPI:
                     detail=f"no rows match gene symbol {symbol!r} in the active run"
                 ).model_dump(),
             )
+        # coverage-panel-v2 Phase 3: surface `region_class` from the
+        # coverage_qc row + a derived caveat string for non-standard
+        # regions. The caveat is the agent-facing mitigation against
+        # false reassurance from a clean mosdepth depth number over a
+        # difficult region (PMS2, SMN1, HBA1, etc.).
         payload = GeneResponse(
             gene=aggregate.canonical_symbol,
             n_variants_in_gene=aggregate.n_variants_in_gene,
             mean_depth=aggregate.mean_depth,
             low_coverage_exons=aggregate.low_coverage_exons,
             schema_version=active.schema_version,
+            region_class=aggregate.region_class,
+            caveat=_region_class_caveat(aggregate.region_class),
         )
         return JSONResponse(status_code=200, content=payload.model_dump())
 
@@ -538,6 +550,7 @@ def build_app(*, derived_root: Path) -> FastAPI:
             pgs_id=task.pgs_id,
             status=task.status,
             error=task.error,
+            diagnostic=derive_diagnostic_from_error_code(task.error),
         )
         return JSONResponse(status_code=202, content=payload.model_dump())
 
@@ -561,6 +574,7 @@ def build_app(*, derived_root: Path) -> FastAPI:
             pgs_id=task.pgs_id,
             status=task.status,
             error=task.error,
+            diagnostic=derive_diagnostic_from_error_code(task.error),
         )
         return JSONResponse(status_code=200, content=payload.model_dump())
 

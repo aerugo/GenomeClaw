@@ -387,6 +387,199 @@ def _is_degenerate(row: PgsRow) -> bool:
     return row.percentile_in_user_ancestry is None and row.raw_score is None
 
 
+def derive_diagnostic_from_error_code(error: str | None) -> "ToolDiagnosticTrace | None":
+    """Map a persisted structured error code to a :class:`ToolDiagnosticTrace`.
+
+    Phase 2 of agent-synthesis-over-rich-tool-data. Called at response-build
+    time in [packages/toolkit/src/genomeclaw_toolkit/service/app.py]'s PGS
+    compute routes; no SQLite schema migration needed.
+
+    The mapping covers the documented error-code shapes emitted by
+    :func:`_structured_error`. Unknown / empty codes return ``None`` (queued
+    / running / done tasks) or a minimal-diagnostic fallback (unknown failed
+    codes still surface ``stage="worker_loop"`` so the agent has *something*
+    to anchor on).
+
+    Pure-functional; no side effects.
+    """
+    # Local import to avoid the module-load circular: schemas/pgs.py is
+    # imported by app.py which imports this module — the local import
+    # defers resolution to call-time.
+    from genomeclaw_toolkit.schemas.pgs import ToolDiagnosticTrace
+
+    if not error:
+        return None
+
+    # Each branch maps a documented error-code prefix to the structured
+    # diagnostic the agent reads. The error codes themselves are the
+    # contract from `_structured_error`; this is its inverse.
+
+    if error == "prs_compute_config_missing":
+        return ToolDiagnosticTrace(
+            stage="config_load",
+            upstream_cause="prs_compute_config_missing",
+            suggested_fix=(
+                "Stage a `prs_compute_config.json` sidecar in the active run directory. "
+                "See `genomeclaw pipeline run` docs for the expected fields."
+            ),
+            related_paths=["prs_compute_config.json"],
+        )
+
+    if error.startswith("prs_compute_config_malformed:"):
+        detail = error[len("prs_compute_config_malformed:") :]
+        return ToolDiagnosticTrace(
+            stage="config_load",
+            upstream_cause="prs_compute_config_malformed",
+            suggested_fix=(
+                "Inspect `prs_compute_config.json` for the format error. "
+                f"Detail: {detail}"
+            ),
+            related_paths=["prs_compute_config.json"],
+        )
+
+    if error.startswith("scorefile_missing:"):
+        pgs_id = error[len("scorefile_missing:") :]
+        return ToolDiagnosticTrace(
+            stage="scorefile_staging",
+            upstream_cause="scorefile_missing",
+            suggested_fix=(
+                f"Run `genomeclaw refs fetch --source pgs_scorefile --pgs-id {pgs_id}` "
+                f"to fetch and stage the missing scorefile."
+            ),
+            related_paths=[f"{pgs_id}/{pgs_id}_hmPOS_GRCh38.txt.gz"],
+        )
+
+    if error.startswith("scorefile_unfetchable:"):
+        # Format: "scorefile_unfetchable:<pgs_id>:<reason>"
+        body = error[len("scorefile_unfetchable:") :]
+        parts = body.split(":", 1)
+        pgs_id = parts[0] if parts else ""
+        reason = parts[1] if len(parts) > 1 else ""
+        return ToolDiagnosticTrace(
+            stage="scorefile_staging",
+            upstream_cause="scorefile_unfetchable",
+            suggested_fix=(
+                f"Auto-fetch of the {pgs_id} scorefile failed: {reason}. "
+                f"Manually stage the scorefile or check network/PGS Catalog availability."
+            ),
+            related_paths=[pgs_id] if pgs_id else [],
+        )
+
+    if error.startswith("pgsc_calc_failed:"):
+        # Format: "pgsc_calc_failed:rc=<n>" — keep upstream_cause at the class
+        # level + push the returncode into partial_log_tail so the agent has
+        # consistent class-level branching plus the rc when it needs it.
+        rc_part = error[len("pgsc_calc_failed:") :]
+        return ToolDiagnosticTrace(
+            stage="pgsc_calc_invocation",
+            upstream_cause="pgsc_calc_failed",
+            suggested_fix=(
+                "Inspect the nextflow trace + pgsc_calc work directory for the "
+                "failed process. Re-running with the same inputs may succeed if "
+                "the failure was transient (resource exhaustion, etc.)."
+            ),
+            related_paths=[],
+            partial_log_tail=f"pgsc_calc exit code: {rc_part}",
+        )
+
+    if error.startswith("dood_path_error:"):
+        detail = error[len("dood_path_error:") :]
+        return ToolDiagnosticTrace(
+            stage="docker_out_of_docker_setup",
+            upstream_cause="dood_path_error",
+            suggested_fix=(
+                "Check that host-mounted paths use the sibling-mount convention "
+                "(`as_sibling_mountable`) — see INV-D006. "
+                f"Detail: {detail}"
+            ),
+            related_paths=[],
+        )
+
+    if error.startswith("prs_decline:"):
+        reason = error[len("prs_decline:") :]
+        return ToolDiagnosticTrace(
+            stage="calibration_check",
+            upstream_cause="prs_decline",
+            suggested_fix=(
+                f"PRS computation declined due to calibration check: {reason}. "
+                "This is a deliberate refusal per INV-C001 v1.7; the calibration "
+                "evidence isn't strong enough to report a reliable percentile."
+            ),
+            related_paths=[],
+        )
+
+    if error.startswith("degenerate_result:"):
+        detail = error[len("degenerate_result:") :]
+        return ToolDiagnosticTrace(
+            stage="match_rate_parse",
+            upstream_cause="degenerate_result",
+            suggested_fix=(
+                "The PRS produced no usable signal (no matched variants / no "
+                "percentile). Per INV-R002 the worker refuses to cache this "
+                f"row. Detail: {detail}"
+            ),
+            related_paths=[],
+        )
+
+    if error.startswith("pgs_reference_missing:"):
+        detail = error[len("pgs_reference_missing:") :]
+        return ToolDiagnosticTrace(
+            stage="scorefile_staging",
+            upstream_cause="pgs_reference_missing",
+            suggested_fix=(
+                f"Missing PGS Catalog reference data: {detail}. "
+                "Run `genomeclaw refs fetch --source pgs_catalog_ancestry` "
+                "to stage the ancestry reference bundle."
+            ),
+            related_paths=[],
+        )
+
+    if error == "compute_path_disabled":
+        return ToolDiagnosticTrace(
+            stage="compute_gate",
+            upstream_cause="compute_path_disabled",
+            suggested_fix=(
+                "The PRS compute path is disabled via the kill-switch. "
+                "Set `GENOMECLAW_PGS_COMPUTE_ENABLED=true` and restart the "
+                "host service to re-enable."
+            ),
+            related_paths=[],
+        )
+
+    if error.startswith("worker_restart:"):
+        detail = error[len("worker_restart:") :]
+        return ToolDiagnosticTrace(
+            stage="worker_loop",
+            upstream_cause="worker_restart",
+            suggested_fix=(
+                "The worker restarted mid-flight (likely after an unclean shutdown). "
+                f"Re-submit the compute request to retry. Detail: {detail}"
+            ),
+            related_paths=[],
+        )
+
+    if error.startswith("worker_unexpected_error:"):
+        exc_class = error[len("worker_unexpected_error:") :]
+        return ToolDiagnosticTrace(
+            stage="worker_loop",
+            upstream_cause="worker_unexpected_error",
+            suggested_fix=None,  # Unknown — agent acknowledges honestly
+            related_paths=[],
+            partial_log_tail=f"Caught exception class: {exc_class}",
+        )
+
+    # Catch-all: unknown error code shape. Return a minimal diagnostic
+    # anchored at worker_loop so the agent sees *something*; suggested_fix
+    # is None to signal "I don't know how to fix this."
+    return ToolDiagnosticTrace(
+        stage="worker_loop",
+        upstream_cause="unrecognized_error_code",
+        suggested_fix=None,
+        related_paths=[],
+        partial_log_tail=f"Raw error code: {error}",
+    )
+
+
 def _structured_error(exc: Exception) -> str:
     """Map a compute exception to the ``failed:<class>:<detail>`` shape.
 

@@ -913,7 +913,18 @@ def annotate_vcfanno(
     #   concurrent-FD-pressure targets that surfaced EBADF on virtiofs
     #   in the 2026-05-14 smoke — keeping them off the bind-mount fixes
     #   the issue.
-    persistent_scratch = run_dir.parent.parent / "scratch"
+    #
+    # Honor ``GENOMECLAW_SCRATCH_DIR`` when the shim publishes it (DooD
+    # mode with host-form ``--derived-root``). Without this, the naive
+    # ``run_dir.parent.parent / "scratch"`` computes ``$root/scratch`` which
+    # collides with the canonical host layout's ``_scratch`` and lands
+    # inside an RO-mounted parent via the DooD identical-path overlay —
+    # surfaces as ``Read-only file system`` mid-annotate.
+    _scratch_env = os.environ.get("GENOMECLAW_SCRATCH_DIR")
+    if _scratch_env:
+        persistent_scratch = Path(_scratch_env)
+    else:
+        persistent_scratch = run_dir.parent.parent / "scratch"
     ephemeral_scratch = ephemeral_scratch_base()
     hash_cache_dir = persistent_scratch / _PERSISTENT_CACHE_SUBDIR / "sha256"
     worker_count = _resolve_worker_count()

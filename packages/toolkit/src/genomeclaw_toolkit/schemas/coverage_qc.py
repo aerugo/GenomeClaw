@@ -22,6 +22,12 @@ class CoverageQCRow(BaseModel):
     gene: str
     mean_depth: float = Field(ge=0)
     low_coverage_exons: list[str] = Field(default_factory=list)
+    region_class: str | None = None
+    """Per coverage-panel-v2: the gene's coverage-reliability class
+    (`"standard"` / `"difficult_pseudogene"` / `"difficult_segdup"` /
+    `"requires_dedicated_caller"` / `"mitochondrial"`). Nullable so
+    pre-v2 rows (written before the panel BED carried column 5) decode
+    as NULL — the service layer treats NULL as `"standard"`."""
 
     # Canonical provenance columns (the seven; INV-R001).
     source_path: str
@@ -38,6 +44,10 @@ COVERAGE_QC_COLUMNS: tuple[tuple[str, str], ...] = (
     ("gene", "TEXT NOT NULL"),
     ("mean_depth", "REAL NOT NULL"),
     ("low_coverage_exons", "TEXT[]"),
+    # coverage-panel-v2 Phase 1: per-gene coverage-reliability class.
+    # Nullable so pre-v2 rows (written before the panel BED carried
+    # column 5) decode as NULL → service layer treats NULL as `"standard"`.
+    ("region_class", "TEXT"),
     # Provenance (the seven; INV-R001)
     ("source_path", "TEXT NOT NULL"),
     ("source_sha256", "TEXT NOT NULL"),

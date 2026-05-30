@@ -168,6 +168,8 @@ _DETAIL_EXTRA_COLUMNS: tuple[str, ...] = (
     "clinvar_review_status",
     "dbsnp_rsid",
     "mane_select_transcript",
+    "mane_plus_clinical_transcript",
+    "transcript_discordant",
     "hgvsc",
     "hgvsp",
     "loftee_lof",
@@ -226,6 +228,17 @@ def query_variant_by_key(*, run_dir: Path, key: str) -> dict[str, Any] | None:
 
     Returns ``None`` when no row matches. Raises
     :class:`InvalidVariantKeyError` when ``key`` doesn't parse.
+
+    When multiple rows share the same ``(chrom, pos, ref, alt)`` — the
+    Plan-4 dual-row case where MANE Select and MANE Plus Clinical
+    disagreed on IMPACT tier — the discordant sibling wins via
+    ``ORDER BY transcript_discordant DESC NULLS LAST``. The discordant
+    row is the rarer + more clinically interesting view; the canonical
+    row's MANE Select transcript is still reachable on the discordant
+    row's ``mane_select_transcript`` field. Without this ordering the
+    LIMIT 1 returned whichever row DuckDB scanned first (empirically the
+    canonical row), hiding the discordance flag the agent system prompt
+    asks the agent to consult.
     """
     chrom, pos, ref, alt = parse_variant_key(key)
     store_path = run_dir / "variants.duckdb"
@@ -235,7 +248,8 @@ def query_variant_by_key(*, run_dir: Path, key: str) -> dict[str, Any] | None:
         cols_sql = ", ".join(cols)
         row = conn.execute(
             f"SELECT {cols_sql} FROM variants "  # noqa: S608 — cols are constants
-            "WHERE chrom = ? AND pos = ? AND ref = ? AND alt = ? LIMIT 1",
+            "WHERE chrom = ? AND pos = ? AND ref = ? AND alt = ? "
+            "ORDER BY transcript_discordant DESC NULLS LAST LIMIT 1",
             [chrom, pos, ref, alt],
         ).fetchone()
     finally:
@@ -255,6 +269,12 @@ class GeneAggregate:
     n_variants_in_gene: int
     mean_depth: float | None
     low_coverage_exons: list[str]
+    region_class: str | None = None
+    """Per coverage-panel-v2: the gene's coverage-reliability class,
+    sourced from `coverage_qc.region_class`. None when no `coverage_qc`
+    row exists for this gene OR when the row's class is NULL (pre-v2
+    rows). The agent surface (Phase 3) maps non-NULL non-`"standard"`
+    values to a human-readable caveat string."""
 
 
 def query_gene(*, run_dir: Path, symbol: str) -> GeneAggregate | None:
@@ -295,7 +315,8 @@ def query_gene(*, run_dir: Path, symbol: str) -> GeneAggregate | None:
         ).fetchone()
 
         cov_row = conn.execute(
-            "SELECT mean_depth, low_coverage_exons FROM coverage_qc WHERE gene = ?",
+            "SELECT mean_depth, low_coverage_exons, region_class "
+            "FROM coverage_qc WHERE gene = ?",
             [canonical_symbol],
         ).fetchone()
     finally:
@@ -304,15 +325,18 @@ def query_gene(*, run_dir: Path, symbol: str) -> GeneAggregate | None:
     if cov_row is None:
         mean_depth: float | None = None
         low_coverage_exons: list[str] = []
+        region_class: str | None = None
     else:
         mean_depth = float(cov_row[0]) if cov_row[0] is not None else None
         low_coverage_exons = list(cov_row[1]) if cov_row[1] is not None else []
+        region_class = str(cov_row[2]) if cov_row[2] is not None else None
 
     return GeneAggregate(
         canonical_symbol=canonical_symbol,
         n_variants_in_gene=int(n_variants),
         mean_depth=mean_depth,
         low_coverage_exons=low_coverage_exons,
+        region_class=region_class,
     )
 
 
@@ -413,7 +437,9 @@ class UnknownEvidenceKindError(ValueError):
 # INVARIANTS revision (gene_note + topic retired; lifestyle calibration
 # moved to the agent's research-and-synthesis pattern). Kept in sync with
 # :data:`genomeclaw_toolkit.schemas.evidence.EvidenceKind`.
-_SUPPORTED_EVIDENCE_KINDS: frozenset[str] = frozenset({"clinvar", "pgs_catalog", "pharmgkb"})
+_SUPPORTED_EVIDENCE_KINDS: frozenset[str] = frozenset(
+    {"clinvar", "pgs_catalog", "pharmgkb", "cyrius_no_call"}
+)
 
 
 def parse_evidence_ref(ref: str) -> tuple[str, str]:
@@ -497,10 +523,60 @@ def resolve_evidence(*, run_dir: Path, ref: str) -> dict[str, Any] | None:
         )
     if kind == "clinvar":
         return _resolve_clinvar(run_dir, ident)
+    if kind == "cyrius_no_call":
+        return _resolve_cyrius_no_call(ident)
     # pgs_catalog + pharmgkb resolvers land in Phase 6 Slices D + E. Until
     # then they return None (= 404) — the agent learns the kind exists but
     # no record is available in this build.
     return None
+
+
+def _resolve_cyrius_no_call(sentinel_path: str) -> dict[str, Any] | None:
+    """Resolve a `cyrius_no_call:<absolute_path>` ref by reading the sentinel.
+
+    Per cyp2d6-no-call-finding Phase 2 + INV-A004 (decline taxonomy must
+    traverse every layer): the indeterminate CYP2D6 finding's `evidence_ref`
+    points at the `cyp2d6_no_call_envelope.json` sentinel that the Cyrius
+    wrapper wrote on the no-call path. This resolver reads the sentinel
+    and returns a summary-class body the agent can render verbatim.
+
+    Per INV-P002 (minimal-sufficient outputs): the response body names the
+    indeterminate state + the binding "do not interpret as Normal
+    Metabolizer" rule + the audit details (sample_id, filter_status, tool
+    version) — but does NOT echo the raw Cyrius output back. The raw block
+    lives on disk for audit.
+
+    Returns ``None`` when the sentinel file doesn't exist (route handler
+    turns this into a 404).
+    """
+    import json
+    from pathlib import Path as _Path
+
+    sentinel = _Path(sentinel_path)
+    if not sentinel.exists():
+        return None
+
+    body_data = json.loads(sentinel.read_text())
+    sample_id = body_data.get("sample_id", "unknown")
+    filter_status = body_data.get("filter_status", "NO_CALL")
+    provenance = body_data.get("provenance", {})
+    tool_version = provenance.get("tool_version", "unknown")
+
+    body = (
+        f"CYP2D6 indeterminate (no-call) for sample {sample_id}. "
+        f"Cyrius v{tool_version} could not resolve a diplotype at the "
+        f"CYP2D6/CYP2D7 locus (filter_status={filter_status}). "
+        "Do not interpret as Normal Metabolizer — the metaboliser phenotype "
+        "is unknown. Recommend the user confirm CYP2D6 status with their "
+        "provider before any codeine, tramadol, oxycodone, tamoxifen, "
+        "fluoxetine, or other CYP2D6-substrate medication decisions."
+    )
+    return {
+        "kind": "cyrius_no_call",
+        "id": sentinel_path,
+        "body": body,
+        "source": str(sentinel),
+    }
 
 
 def query_finding_by_id(*, run_dir: Path, finding_id: str) -> dict[str, Any] | None:
@@ -526,6 +602,8 @@ _PGS_SCORES_LIST_COLUMNS: tuple[str, ...] = (
     "trait_label",
     "percentile_in_user_ancestry",
     "calibration_warning",
+    "calibration_status",
+    "decline_reason",
     "superseded_by",
 )
 
@@ -536,6 +614,8 @@ _PGS_SCORES_GET_COLUMNS: tuple[str, ...] = (
     "raw_score",
     "study_population",
     "calibration_warning",
+    "calibration_status",
+    "decline_reason",
     "agent_choice_rationale",
     "requested_for_question",
     "superseded_by",

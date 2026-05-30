@@ -68,6 +68,15 @@ _PERCENTILE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"above[- ]average", re.IGNORECASE),
 )
 
+# INV-V001-backstop: regression pin for the worker's structured-error vocabulary.
+# The first half of this tuple matches the host service's machine-readable error
+# codes (`scorefile_missing`, `pgsc_calc_failed`, etc.); the second half attempts
+# to enumerate the agent's natural-language rephrasings — the latter is exactly
+# the phrase-enumeration class INV-V001 forbids as primary verification. Real
+# load-bearing correctness lives in INV-A005 v1.22's structural walker, which
+# checks the agent quoted `error_type` literally. TODO(inv-a005-structural-
+# faithfulness post-merge): remove the plain-language patterns; the structured
+# walker subsumes them.
 # Structured-failure markers the worker emits via _structured_error.
 # Each maps to a clean operator-actionable next step in the agent reply.
 _STRUCTURED_FAILURE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -200,6 +209,11 @@ def test_live_agent_amd_question_reaches_terminal_state(tmp_path: Path) -> None:
     reply = payloads[0].get("text", "")
     assert reply, "agent's first payload has empty text"
 
+    # INV-V001-backstop: regression pin for the prs-input-coverage-fill Phase 2
+    # 422 validation fix. The substring check guards against a specific bug
+    # being reintroduced (HTTP 422 with `string_too_short` from a too-short
+    # rationale arg). Load-bearing correctness for agent reply faithfulness
+    # lives elsewhere (INV-A005 v1.22 structural walker).
     # 2. HTTP 422 guard — the Phase 2 fix must hold.
     trace_blob = json.dumps(trace)
     assert "HTTP 422" not in reply, (

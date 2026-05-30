@@ -208,7 +208,15 @@ def _resolve_plugins(reference_dir: Path) -> tuple[VepPluginConfig, ...]:
     if am_release is not None:
         am_file = am_release / "AlphaMissense" / "AlphaMissense_hg38.tsv.gz"
         if am_file.exists():
-            enabled.append(VepPluginConfig(name="AlphaMissense", args=(f"file={am_file}",)))
+            # Per `bioreview-small-fixes` Fix 2: include
+            # `transcript_match=1` so AlphaMissense aligns scores to the
+            # user's transcript when MANE Select is active. Without it
+            # the plugin falls back to gene-level aggregation. The full
+            # canonical AM arg set is pinned in `VepConventions`.
+            from genomeclaw_toolkit.prep._vep_conventions import VepConventions
+
+            am_args = (f"file={am_file}", *VepConventions().alphamissense_plugin_args)
+            enabled.append(VepPluginConfig(name="AlphaMissense", args=am_args))
 
     return tuple(enabled)
 

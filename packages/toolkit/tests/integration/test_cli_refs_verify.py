@@ -111,3 +111,63 @@ def test_refs_verify_schema_version_present(
     _stage_clean_bgzip(ref, "clinvar", "2026-01")
     result = invoke_cli(["--json", "refs", "verify", "--reference-root", str(ref)])
     assert json.loads(result.stdout)["cli_output_schema_version"] == "1.0"
+
+
+def test_refs_verify_surfaces_alphamissense_vep_release_mismatch(
+    invoke_cli, tmp_path: Path, synthetic_release_set: ReleaseSet
+) -> None:
+    """`refs verify` reports the AM/VEP-cache Ensembl-release mismatch as a warning.
+
+    Per `bioreview-small-fixes` Fix 2: a mismatched release silently drops
+    AlphaMissense scores for transcripts that changed between releases.
+    The `refs verify` payload's `alignment_warnings` field carries the
+    diagnostic; the exit code is still 0 (informational, not fatal) so
+    users with legitimately-mismatched pre-existing installs are not
+    blocked.
+    """
+    import gzip
+
+    ref = tmp_path / "reference"
+    _stage_clean_bgzip(ref, "clinvar", "2026-01")
+
+    # Stage AM at Ensembl 111 + VEP cache at Ensembl 114.
+    am_dir = ref / "alphamissense" / "2024-10-01" / "AlphaMissense"
+    am_dir.mkdir(parents=True)
+    am_file = am_dir / "AlphaMissense_hg38.tsv.gz"
+    with gzip.open(am_file, "wt") as fh:
+        fh.write("#ensembl_release=111\n")
+    vep_dir = ref / "vep_cache" / "release-114" / "homo_sapiens" / "114_GRCh38"
+    vep_dir.mkdir(parents=True)
+    (vep_dir / "info.txt").write_text("release\t114\nassembly\tGRCh38\n")
+
+    result = invoke_cli(["--json", "refs", "verify", "--reference-root", str(ref)])
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.stdout)["payload"]
+    warnings = payload["alignment_warnings"]
+    assert len(warnings) == 1
+    assert "111" in warnings[0] and "114" in warnings[0]
+    assert "AlphaMissense" in warnings[0]
+
+
+def test_refs_verify_no_alignment_warning_when_releases_match(
+    invoke_cli, tmp_path: Path, synthetic_release_set: ReleaseSet
+) -> None:
+    """Matched AM + VEP-cache releases → no alignment warning."""
+    import gzip
+
+    ref = tmp_path / "reference"
+    _stage_clean_bgzip(ref, "clinvar", "2026-01")
+
+    am_dir = ref / "alphamissense" / "2024-10-01" / "AlphaMissense"
+    am_dir.mkdir(parents=True)
+    am_file = am_dir / "AlphaMissense_hg38.tsv.gz"
+    with gzip.open(am_file, "wt") as fh:
+        fh.write("#ensembl_release=111\n")
+    vep_dir = ref / "vep_cache" / "release-111" / "homo_sapiens" / "111_GRCh38"
+    vep_dir.mkdir(parents=True)
+    (vep_dir / "info.txt").write_text("release\t111\nassembly\tGRCh38\n")
+
+    result = invoke_cli(["--json", "refs", "verify", "--reference-root", str(ref)])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)["payload"]
+    assert payload["alignment_warnings"] == []

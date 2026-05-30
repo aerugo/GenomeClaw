@@ -40,6 +40,18 @@ dependencies = [
     # avoids holding the multi-GB tarball in memory and avoids needing a
     # ``zstd`` system binary in the toolkit image.
     "zstandard>=0.22",
+    # numpy for the FRAPOSA Mahalanobis-distance calculation in
+    # ``prep/_pgs_fraposa.py`` (per `prs-calibration-phase3b` Phase 2 —
+    # ANCESTRY_CALIBRATION_UNCERTAIN classifier branch). Used for matrix
+    # operations on the top-10-PC reference panel: column-mean centroids,
+    # sample covariance matrices, and the explicit Σ⁻¹ inversion behind
+    # the Mahalanobis quadratic form.
+    "numpy>=2.0,<3",
+    # scipy is reserved for the same module's expansion path (e.g.
+    # robust covariance estimators or scipy.spatial.distance.mahalanobis).
+    # The current implementation runs in pure numpy; the dep is declared
+    # here so a future change can land without a parallel deps PR.
+    "scipy>=1.13,<2",
 ]
 
 [project.scripts]

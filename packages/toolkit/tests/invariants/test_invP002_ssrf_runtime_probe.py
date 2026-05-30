@@ -165,13 +165,14 @@ def test_invP002_runtime_probe_sweep(tmp_path: Path) -> None:
             # load plugins not owned by sandbox UID or root.
             cp = subprocess.run(
                 ["docker", "cp", str(PLUGIN_DIST),
-                 f"{container_name}:/opt/genomeclaw/dist/index.js"],
+                 f"{container_name}:/sandbox/build/genomeclaw/dist/index.js"],
                 capture_output=True, text=True, check=False,
             )
             assert cp.returncode == 0, f"docker cp failed: {cp.stderr!r}"
             chown = subprocess.run(
                 ["docker", "exec", "-u", "0", container_name,
-                 "chown", "root:root", "/opt/genomeclaw/dist/index.js"],
+                 "chown", "root:root",
+                 "/sandbox/build/genomeclaw/dist/index.js"],
                 capture_output=True, text=True, check=False,
             )
             assert chown.returncode == 0, f"chown failed: {chown.stderr!r}"

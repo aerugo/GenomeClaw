@@ -194,10 +194,15 @@ def test_pgs_get_returns_404_for_unknown_id(tmp_path: Path) -> None:
 
 
 def test_pgs_get_response_excludes_bulk_fields_invP002(tmp_path: Path) -> None:
-    """`GET /v1/pgs/computed/{pgs_id}` body has exactly the 10 documented fields.
+    """`GET /v1/pgs/computed/{pgs_id}` body has exactly the 12 documented fields.
 
     The raw PGS variant list (potentially thousands of weighted variants for
     this user) MUST NOT surface. `INV-P002` floor.
+
+    The 12 fields include `calibration_status` and `decline_reason` since
+    agent-decline-taxonomy-exposure Phase 1 (`INV-A004`): the agent needs
+    the machine-readable decline signal alongside the free-text
+    `calibration_warning`.
     """
     derived_root = tmp_path / "derived"
     derived_root.mkdir()
@@ -217,6 +222,8 @@ def test_pgs_get_response_excludes_bulk_fields_invP002(tmp_path: Path) -> None:
         "source_pgs_id",
         "study_population",
         "calibration_warning",
+        "calibration_status",
+        "decline_reason",
         "agent_choice_rationale",
         "requested_for_question",
         "superseded_by",

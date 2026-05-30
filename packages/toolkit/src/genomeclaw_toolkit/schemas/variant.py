@@ -52,8 +52,9 @@ class VariantDetail(VariantSummary):
 
     Extends :class:`VariantSummary` with the per-variant context fields
     that matter for a single-variant deep-dive: sample's genotype, the
-    full VEP consequence picture (MANE Select transcript + HGVS), the
-    LOFTEE filter reason when ``loftee_lof == 'LC'``, the AlphaMissense
+    full VEP consequence picture (MANE Select + MANE Plus Clinical
+    transcripts + HGVS), the transcript-discordance flag, the LOFTEE
+    filter reason when ``loftee_lof == 'LC'``, the AlphaMissense
     interpretation class, and the gene-level LOEUF for haploinsufficiency
     triage. The 7 provenance columns are deliberately absent.
     """
@@ -66,6 +67,8 @@ class VariantDetail(VariantSummary):
     clinvar_review_status: str | None
     dbsnp_rsid: str | None
     mane_select_transcript: str | None
+    mane_plus_clinical_transcript: str | None
+    transcript_discordant: bool | None
     hgvsc: str | None
     hgvsp: str | None
     loftee_lof: str | None
