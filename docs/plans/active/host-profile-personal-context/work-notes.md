@@ -357,6 +357,67 @@ profile.
 
 ---
 
+### 2026-05-31 (Phase 3) — plugin tool + policy preset + cross-language mirror
+
+Implemented Phase 3 (TypeScript plugin + YAML preset + Python invariant
+tests). Verified against real `bun run test` / `tsc` / `pytest` / `ruff`.
+
+**RED**: wrote `tests/host_profile_tool.test.ts` (9 vitest cases),
+`test_invA004_host_profile_enums_traverse.py` (enum + section mirror), and
+extended `test_invP002_policy_preset_shape.py`. Confirmed RED — tool
+unregistered (9 TS fails), unions/sections/paths absent (3 Python fails).
+
+**GREEN**:
+- `packages/nemoclaw-plugin/src/index.ts` — 7 named TypeBox enum unions
+  (`HostProfile*Union`) mirroring the real Python enums, composed into a
+  documentation-grade `HostProfileResponseSchema` (so they're not dead
+  code); a `HOST_PROFILE_SECTIONS` mirror of Python
+  `KNOWN_HOST_PROFILE_SECTIONS`; `HostProfileParams` (optional `sections`);
+  and the `genomeclaw_host_profile` tool (`outputClass: "summary"`) with a
+  section guard that rejects placeholders + unknown sections (new
+  `unknown_section` failure-envelope arm carrying `known_sections`) before
+  the HTTP call, then `safeCall("/v1/host/profile", {sections})`.
+- `policy-preset.yaml` — added the two read-only GET paths.
+- `test_invP002_policy_preset_shape.py` — extended `_ALLOWED_V0_PATHS`,
+  added 2 host-profile path tests; **fixed the pre-existing stale
+  `8643`→`8645` port assertion** (the preset + its own doc block already
+  said 8645; the assertion was left behind in the 2026-05-24 coexistence
+  change — it was one of the 8 pre-existing suite failures).
+- `openclaw.plugin.json` — declared `genomeclaw_host_profile` in
+  `contracts.tools` (caught by `test_plugin_manifest_tool_contract`).
+- `tests/index.test.ts` — bumped the registration assertion 9 → 10 tools.
+
+**Verified state**: vitest 42 passed (9 host-profile + 33 index); `tsc`
+clean + `bun run build` clean; Python enum/section mirror + 8 policy-preset
+cases pass; `test_plugin_manifest_tool_contract` passes. Full toolkit suite
+**1237 passed, 7 failed** — down from 8 (the `8643` fix), and the 7 are the
+remaining pre-existing failures (4× `test_prs_compute_config_write`,
+`test_host_service_toolkit_image`, 2× `test_invP001_plugin_default_egress`).
+Confirmed the 2 plugin-egress failures are pre-existing (their 2nd `fetch(`
+site is the test-only ssrf-probe tool at line ~1195, not my tool — mine
+uses `safeCall`). **Zero new regressions; one pre-existing failure fixed.**
+
+**Divergences (recorded):** mirrored the 7 real enums, not the plan's stale
+`ConditionStatus`/`RelationshipClass`/`GoalTag`/`AncestryCode`. Added a
+plugin-side section guard + cross-language section-diff test (beyond the
+plan) — gives the agent the known-sections recovery surface the host's 400
+body can't provide (`callHostService` drops non-2xx bodies).
+
+**Phase-1 Issue-6 follow-up status**: partially addressed — the tool
+defaults to `output_class: "summary"` and supports `sections` scoping, so
+the agent fetches minimal-sufficient subsets. The host response itself is
+still the full validated profile when no `sections` filter is passed;
+true per-field minimal-sufficient shaping for sensitive fields remains a
+Phase 4 (prompt) + possible future-hardening concern.
+
+**Next Steps**: Phase 4 — agent system prompt § Step 1.5 (call-before-
+genome-interpretation), `FAMILY_MEMBER_NARRATIVE_PATHS` discipline, and the
+behavioural live-LLM gates. Then Phase 5 — promote INV-C004 + docs.
+
+**Blockers / Issues**: None.
+
+---
+
 ## Phase Progress
 
 ### Phase 1: Schema + host-side storage + service endpoints
@@ -400,7 +461,16 @@ gate) each have ≥1 passing test. `questionary>=2.0` added as a dependency.
 ---
 
 ### Phase 3: Plugin tool + policy preset + cross-language enum mirror
-**Status**: Pending
+**Status**: Complete (19 tests green; full suite 1237 passed, 7 pre-existing failures)
+**Started**: 2026-05-31
+**Completed**: 2026-05-31
+
+#### Results
+`genomeclaw_host_profile` tool (summary class, `sections` scoping, placeholder
++ unknown-section guard, INV-A005 missing-signal pass-through); two read-only
+GET paths in the OpenShell policy preset; 7 TypeBox enum unions + a
+`HOST_PROFILE_SECTIONS` mirror with cross-language diff tests (INV-A004
+pattern). Declared in `openclaw.plugin.json`. INV-P002/A004/A005 each covered.
 
 ---
 

@@ -96,6 +96,13 @@ network_policies:
           - allow: { method: GET, path: "/v1/pgs/compute/*" }
           # Capability manifest (what this host service exposes)
           - allow: { method: GET, path: "/v1/capabilities" }
+          # Host personal-context profile (host-profile-personal-context
+          # Phase 3). Read-only, self-reported identity / biometrics /
+          # lifestyle / medical + family history. The agent retrieves this
+          # before genome-informable turns; `/completeness` is the section
+          # map without the full payload. Both GET — no write surface added.
+          - allow: { method: GET, path: "/v1/host/profile" }
+          - allow: { method: GET, path: "/v1/host/profile/completeness" }
     binaries:
       # OpenClaw runtime — legitimate caller for plugin-driven egress.
       - { path: /usr/local/bin/openclaw }

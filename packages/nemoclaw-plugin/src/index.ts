@@ -251,6 +251,18 @@ type ToolFailureEnvelope =
       http_status: number;
       raw_error: string;
       advisory: string;
+    }
+  | {
+      // host-profile-personal-context Phase 3: a `sections` argument named a
+      // section the schema doesn't define. The plugin rejects it before the
+      // HTTP call and returns the known-sections list so the agent can
+      // re-emit with a valid section (the host's 400 body isn't forwarded).
+      status: "failed";
+      error_type: "unknown_section";
+      tool_name: string;
+      section: string;
+      known_sections: readonly string[];
+      advisory: string;
     };
 
 /**
@@ -664,6 +676,144 @@ const PgsComputeStatusParams = Type.Object(
 );
 
 // ---------------------------------------------------------------------------
+// host-profile-personal-context Phase 3 — `genomeclaw_host_profile`
+// ---------------------------------------------------------------------------
+//
+// The named unions below mirror the Python `schemas/host_profile.py` enums.
+// They are the cross-language anchor for INV-A004 (pattern reuse): the
+// Python test `test_invA004_host_profile_enums_traverse.py` greps these
+// `const HostProfile*Union = Type.Union([...])` blocks by name and asserts
+// set-equality against the Python enum values. A value added on one side
+// but not the other fails that test. They are composed into the
+// documentation-grade `HostProfileResponseSchema` below so they describe
+// the host service's response contract in TypeScript terms.
+
+const HostProfileSexAssignedAtBirthUnion = Type.Union([
+  Type.Literal("female"),
+  Type.Literal("male"),
+  Type.Literal("intersex"),
+  Type.Literal("prefer_not_to_say"),
+]);
+
+const HostProfileSmokingStatusUnion = Type.Union([
+  Type.Literal("never"),
+  Type.Literal("former"),
+  Type.Literal("current"),
+  Type.Literal("prefer_not_to_say"),
+]);
+
+const HostProfileAlcoholUseUnion = Type.Union([
+  Type.Literal("none"),
+  Type.Literal("rarely"),
+  Type.Literal("weekly"),
+  Type.Literal("daily"),
+  Type.Literal("prefer_not_to_say"),
+]);
+
+const HostProfileExerciseFrequencyUnion = Type.Union([
+  Type.Literal("sedentary"),
+  Type.Literal("light"),
+  Type.Literal("moderate"),
+  Type.Literal("vigorous"),
+  Type.Literal("prefer_not_to_say"),
+]);
+
+const HostProfileBloodTypeUnion = Type.Union([
+  Type.Literal("A+"),
+  Type.Literal("A-"),
+  Type.Literal("B+"),
+  Type.Literal("B-"),
+  Type.Literal("AB+"),
+  Type.Literal("AB-"),
+  Type.Literal("O+"),
+  Type.Literal("O-"),
+  Type.Literal("unknown"),
+]);
+
+const HostProfileAncestryGroupUnion = Type.Union([
+  Type.Literal("european"),
+  Type.Literal("african"),
+  Type.Literal("east_asian"),
+  Type.Literal("south_asian"),
+  Type.Literal("american_indigenous_latino"),
+  Type.Literal("middle_eastern_north_african"),
+  Type.Literal("oceanian"),
+  Type.Literal("mixed_or_unsure"),
+  Type.Literal("prefer_not_to_say"),
+]);
+
+const HostProfilePop1000GUnion = Type.Union([
+  Type.Literal("EUR"),
+  Type.Literal("AFR"),
+  Type.Literal("EAS"),
+  Type.Literal("SAS"),
+  Type.Literal("AMR"),
+  Type.Literal("MID"),
+  Type.Literal("OCE"),
+  Type.Literal("ADM"),
+]);
+
+// Documentation-grade response contract — uses every union above so they
+// are not dead code and so the agent-facing response shape is declared in
+// TypeScript (forwarded verbatim via jsonResult; not re-validated).
+const HostProfileResponseSchema = Type.Object({
+  identity: Type.Optional(
+    Type.Object({
+      sex_assigned_at_birth: HostProfileSexAssignedAtBirthUnion,
+      ancestry: Type.Optional(
+        Type.Object({
+          groups: Type.Array(HostProfileAncestryGroupUnion),
+          population_codes: Type.Array(HostProfilePop1000GUnion),
+        }),
+      ),
+    }),
+  ),
+  biometrics: Type.Optional(
+    Type.Object({ blood_type: Type.Union([HostProfileBloodTypeUnion, Type.Null()]) }),
+  ),
+  lifestyle: Type.Optional(
+    Type.Object({
+      smoking_status: HostProfileSmokingStatusUnion,
+      alcohol_use: HostProfileAlcoholUseUnion,
+      exercise_frequency: HostProfileExerciseFrequencyUnion,
+    }),
+  ),
+});
+export type HostProfileResponse = Static<typeof HostProfileResponseSchema>;
+
+// Section allowlist — mirrors Python `KNOWN_HOST_PROFILE_SECTIONS`
+// (service/store.py). The cross-language diff is enforced by
+// `test_invA004_host_profile_sections_python_typescript_diff`. The plugin
+// validates `sections` against this list BEFORE the HTTP call so the agent
+// gets a structured recovery surface (the host's 400 body, which carries
+// the known-sections list, is not forwarded by callHostService).
+const HOST_PROFILE_SECTIONS: readonly string[] = [
+  "identity",
+  "identity.ancestry",
+  "biometrics",
+  "lifestyle",
+  "medical_history",
+  "medical_history.conditions",
+  "medical_history.medications",
+  "medical_history.allergies",
+  "medical_history.procedures",
+  "family_history",
+];
+
+const HostProfileParams = Type.Object(
+  {
+    sections: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 80 }), {
+        description:
+          "Optional dotted-path section names (e.g. ['medical_history.medications', " +
+          "'family_history']). Omit to fetch the full profile.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+// ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
@@ -885,6 +1035,56 @@ export default function register(api: OpenClawPluginApi): void {
     },
   });
 
+  // ── genomeclaw_host_profile ────────────────────────────────────────
+  //
+  // host-profile-personal-context Phase 3. Retrieves the host owner's
+  // self-reported personal-context profile from the read-only host
+  // service. Defaults to the full profile; `sections` scopes the fetch
+  // (minimal-sufficient, INV-P002). A 200 + `missing: true` body is a
+  // structured no-profile signal, NOT a tool failure (INV-A005) — it
+  // passes through as `jsonResult`, not a failure envelope.
+  api.registerTool({
+    name: "genomeclaw_host_profile",
+    description:
+      "Retrieve the host owner's self-reported personal profile (identity, biometrics, " +
+      "lifestyle, medical history, family history). Call this BEFORE any reply that " +
+      "interprets the user's genome. When sections relevant to the current question are " +
+      "empty or missing, surface the gap and recommend the returned envelope's " +
+      "`init_command`. Pass `sections: ['<dotted.path>', ...]` to fetch a scoped subset " +
+      "(e.g. ['medical_history.medications'] for a PGx question). A 200 response with " +
+      "`missing: true` is a structured no-profile signal, NOT a tool failure.",
+    parameters: HostProfileParams,
+    outputClass: "summary",
+    execute: async (args: Static<typeof HostProfileParams>, _ctx: AgentToolContext) => {
+      const sections = args.sections;
+      if (sections && sections.length > 0) {
+        for (const s of sections) {
+          const reject = rejectIfPlaceholder({ section: s }, "section", {
+            toolName: "genomeclaw_host_profile",
+            argName: "sections[]",
+            hint: "Pass a dotted section path, e.g. 'medical_history.medications'.",
+          });
+          if (reject) return reject;
+          if (!HOST_PROFILE_SECTIONS.includes(s)) {
+            return failureEnvelopeResult({
+              status: "failed",
+              error_type: "unknown_section",
+              tool_name: "genomeclaw_host_profile",
+              section: s,
+              known_sections: HOST_PROFILE_SECTIONS,
+              advisory:
+                `genomeclaw_host_profile: '${s}' is not a known profile section. ` +
+                `Re-emit with one of the known sections (see known_sections), or omit ` +
+                `\`sections\` to fetch the full profile.`,
+            });
+          }
+        }
+        return safeCall(host, "/v1/host/profile", { sections: sections.join(",") });
+      }
+      return safeCall(host, "/v1/host/profile");
+    },
+  });
+
   // Per [spec.md Q3](../../../docs/plans/active/mvp/spec.md) `genomeclaw_report`
   // is deliberately absent — the agent composes report-shaped responses
   // from `genomeclaw_status` + `genomeclaw_findings` + framing knowledge.
@@ -894,7 +1094,7 @@ export default function register(api: OpenClawPluginApi): void {
   // Per [docs/plans/active/ssrf-runtime-probe/](../../../docs/plans/active/ssrf-runtime-probe/)
   // Phase 1b Path Y. Registers ONLY when `GENOMECLAW_ENABLE_SSRF_PROBE=1`.
   // Production builds (without the env var) carry no test tool — the
-  // production tool count stays at 9; this tool only exists when the
+  // production tool count stays at 10; this tool only exists when the
   // operator explicitly opts in for a probe sweep.
   //
   // Why this tool exists: the OpenShell L7 policy only fires on requests

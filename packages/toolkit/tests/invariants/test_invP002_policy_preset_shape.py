@@ -58,6 +58,11 @@ _ALLOWED_V0_PATHS: frozenset[str] = frozenset(
         "/v1/pgs/compute",
         "/v1/pgs/compute/*",
         "/v1/capabilities",
+        # host-profile-personal-context Phase 3 — read-only host-profile
+        # endpoints. Both GET; the agent retrieves the self-reported
+        # personal-context profile before genome-informable turns.
+        "/v1/host/profile",
+        "/v1/host/profile/completeness",
     }
 )
 
@@ -89,15 +94,19 @@ def _genomeclaw_endpoint(policy_preset: dict[str, Any]) -> dict[str, Any]:
 def test_invP002_policy_preset_targets_host_openshell_internal(
     policy_preset: dict[str, Any],
 ) -> None:
-    """The single endpoint targets `host.openshell.internal:8643` only.
+    """The single endpoint targets `host.openshell.internal:8645` only.
 
     Any other host or port would let the plugin reach destinations the
     architecture doesn't sanction. ``INV-P001`` extends this: outside of
     the agent endpoint + host service, the plugin reaches nothing.
+
+    Port is 8645 (GenomeClaw-canonical; DevRelClaw uses 8643) per the
+    2026-05-24 coexistence change — the preset + this assertion track it
+    together.
     """
     ep = _genomeclaw_endpoint(policy_preset)
     assert ep["host"] == "host.openshell.internal"
-    assert ep["port"] == 8643
+    assert ep["port"] == 8645
     assert ep["enforcement"] == "enforce"
 
 
@@ -206,3 +215,35 @@ def test_invP002_policy_preset_binaries_restricted_to_runtime(
     assert any("node" in p for p in binary_paths), (
         f"INV-P002: node runtime missing from binaries allowlist: {binary_paths}"
     )
+
+
+def test_invP002_policy_preset_allows_host_profile_paths(
+    policy_preset: dict[str, Any],
+) -> None:
+    """The two read-only host-profile GET paths are in the allowlist (Phase 3).
+
+    Defends against shipping the host-profile endpoints server-side
+    without extending the policy preset — the plugin tool would then fail
+    at runtime with an OpenShell L7 deny.
+    """
+    ep = _genomeclaw_endpoint(policy_preset)
+    rule_paths = {rule["allow"]["path"] for rule in ep["rules"]}
+    for path in ("/v1/host/profile", "/v1/host/profile/completeness"):
+        assert path in rule_paths, (
+            f"INV-P002: policy preset is missing the {path!r} allow rule "
+            "(host-profile-personal-context Phase 3 shipped the route)."
+        )
+
+
+def test_invP002_policy_preset_host_profile_paths_are_get_only(
+    policy_preset: dict[str, Any],
+) -> None:
+    """The host-profile paths are GET-only — no write surface added (INV-P002)."""
+    ep = _genomeclaw_endpoint(policy_preset)
+    for rule in ep["rules"]:
+        allow = rule["allow"]
+        if allow["path"] in ("/v1/host/profile", "/v1/host/profile/completeness"):
+            assert allow["method"] == "GET", (
+                f"INV-P002: host-profile path {allow['path']!r} must be GET-only; "
+                f"got {allow['method']!r}"
+            )
