@@ -1,8 +1,8 @@
 # Phase 4: Agent System Prompt + Behavioural Enforcement
 
-**Status**: Pending
-**Started**: —
-**Completed**: —
+**Status**: Implementation complete (offline gates green + privacy review done); live_llm gate + demo-battery re-run deferred (need sandbox rebuild + paid gpt-5.5)
+**Started**: 2026-05-31
+**Completed**: 2026-05-31 (offline portion)
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
@@ -206,9 +206,11 @@ uv run --project packages/toolkit pytest -m live_llm \
 
 ## Completion Criteria
 
-- [ ] All 10 listed test cases pass.
-- [ ] System prompt diff approved by the privacy-safety-reviewer agent (output filed under `privacy-review.md`).
-- [ ] At least one demo-battery trace recorded under `docs/reports/` after the prompt change — confirms the trace-walk gate sees real data.
-- [ ] The `live_llm` gate passes against a controlled fixture profile.
-- [ ] `work-notes.md` updated with prompt-diff rationale + privacy-review summary.
-- [ ] Phase 4 status updated in `development-plan.md`.
+- [x] Offline test cases pass: 8 prompt-content gates + 2 review-driven gates (Changes A/B) + the trace-walk gate (vacuous over historical traces) + the step-order fix. The `live_llm` behavioural gate (test 10) is written + collected + auto-skipped without the sandbox.
+- [x] System prompt diff approved by the privacy-safety-reviewer agent — verdict accept-with-changes; 3 required changes applied; output filed under [`privacy-review.md`](../privacy-review.md).
+- [ ] **DEFERRED** — at least one demo-battery trace recorded under `docs/reports/` after the prompt change. Needs the sandbox image rebuilt with the new prompt baked in + the canonical demo battery re-run (paid `gpt-5.5`). The trace-walk gate is forward-looking (land date 2026-06-01) and engages once those traces land.
+- [ ] **DEFERRED** — the `live_llm` gate passes against a controlled fixture profile. Same prerequisite (sandbox + paid `gpt-5.5`).
+- [x] `work-notes.md` updated with prompt-diff rationale + privacy-review summary.
+- [x] Phase 4 status updated in `development-plan.md`.
+
+**Note on deferred items**: the two unchecked criteria require a sandbox rebuild (`./scripts/onboard-sandbox.sh`) + live `gpt-5.5` calls, which cost real money/time and are held for an explicit operator go-ahead. The prompt, the structural gates, and the privacy review are complete; the behavioural confirmation is the only remaining work and it is a live-pass concern.

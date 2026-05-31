@@ -729,12 +729,152 @@ def test_system_prompt_documents_research_and_synthesis_steps_in_order() -> None
     references like "see Step 6 below".
     """
     text = _read_prompt()
-    # Match `### Step N` at a heading anchor so forward-references in
-    # earlier section bodies don't trip the order check.
-    step_pattern = re.compile(r"^#+\s+Step\s+(\d+)\b", re.MULTILINE)
+    # Match `### Step N` (incl. the decimal `Step 1.5 — Host profile context`
+    # inserted by host-profile-personal-context Phase 4) at a heading anchor
+    # so forward-references in earlier section bodies don't trip the order
+    # check. Parse as float so the half-step sorts between 1 and 2.
+    step_pattern = re.compile(r"^#+\s+Step\s+(\d+(?:\.\d+)?)\b", re.MULTILINE)
     matches = list(step_pattern.finditer(text))
-    step_numbers_in_order = [int(m.group(1)) for m in matches]
-    assert step_numbers_in_order == [1, 2, 3, 4, 5, 6, 7], (
-        f"7-step protocol headings out of order or missing; found heading numbers "
-        f"{step_numbers_in_order}, expected [1, 2, 3, 4, 5, 6, 7]"
+    step_numbers_in_order = [float(m.group(1)) for m in matches]
+    assert step_numbers_in_order == [1, 1.5, 2, 3, 4, 5, 6, 7], (
+        f"research-and-synthesis protocol headings out of order or missing; found "
+        f"heading numbers {step_numbers_in_order}, expected [1, 1.5, 2, 3, 4, 5, 6, 7]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# host-profile-personal-context Phase 4 — INV-C004 prompt-content gates.
+#
+# These are prompt-content backstops (covered by the file-level
+# INV-V001-backstop annotation above): they assert the prompt *teaches* the
+# host-profile retrieval protocol. The load-bearing behavioural gate is the
+# live_llm smoke (test_host_profile_gap_framing.py) + the trace-walk gate
+# (test_invC004_trace_walk_host_profile_called.py).
+# ---------------------------------------------------------------------------
+
+
+def _slice_between(text: str, start: str, end: str) -> str:
+    """Return the prompt slice from heading ``start`` up to heading ``end``."""
+    i = text.index(start)
+    j = text.index(end, i + len(start))
+    return text[i:j]
+
+
+def _step_1_5_block(text: str) -> str:
+    """Return the § 4 Step 1.5 block (Host profile context)."""
+    return _slice_between(
+        text, "### Step 1.5 — Host profile context", "### Step 2 — User-specific data"
+    )
+
+
+def test_invC004_system_prompt_lists_host_profile_tool_in_section_1() -> None:
+    """INV-C004: § 1's GenomeClaw tool table names `genomeclaw_host_profile`."""
+    section_1 = _slice_between(
+        _read_prompt(), "### A. GenomeClaw plugin", "### B. Memory"
+    )
+    assert "genomeclaw_host_profile" in section_1, (
+        "INV-C004: § 1 tool table (A) must list genomeclaw_host_profile"
+    )
+
+
+def test_invC004_system_prompt_section_4_includes_step_1_5_host_profile_context() -> None:
+    """INV-C004: Step 1.5 is the structural anchor between Step 1 and Step 2."""
+    prompt = _read_prompt()
+    section_4 = _slice_between(
+        prompt, "## 4. The research-and-synthesis protocol", "## 5."
+    )
+    assert "### Step 1 — Memory check" in section_4
+    assert "### Step 1.5 — Host profile context" in section_4
+    assert "### Step 2 — User-specific data" in section_4
+    assert section_4.index("### Step 1.5") < section_4.index("### Step 2")
+    assert section_4.index("### Step 1 —") < section_4.index("### Step 1.5")
+
+
+def test_invC004_system_prompt_step_1_5_marks_call_mandatory() -> None:
+    """INV-C004: Step 1.5 uses binding language + names genome-informable turns."""
+    block = _step_1_5_block(_read_prompt())
+    assert "MUST" in block, "INV-C004: Step 1.5 must use the binding 'MUST'"
+    assert "genome-informable" in block, (
+        "INV-C004: Step 1.5 must name the genome-informable turn explicitly"
+    )
+
+
+def test_invC004_system_prompt_teaches_section_scoped_retrieval() -> None:
+    """INV-C004: Step 1.5 names the `sections` param + the PGx worked example."""
+    block = _step_1_5_block(_read_prompt())
+    assert "sections" in block
+    assert 'sections: ["medical_history.medications"]' in block, (
+        "INV-C004: Step 1.5 must show the canonical PGx section-scoped example"
+    )
+
+
+def test_invA005_system_prompt_teaches_missing_signal_is_not_failure() -> None:
+    """INV-A005: Step 1.5 carries the binding missing-signal sentence."""
+    block = _step_1_5_block(_read_prompt())
+    assert (
+        "a 200 response with missing: true is a structured signal, not a tool failure"
+        in block.lower()
+    ), "INV-A005: Step 1.5 must teach that 200 + missing:true is a signal, not a failure"
+
+
+def test_invC004_system_prompt_teaches_profile_gap_framing() -> None:
+    """INV-C004: § 9 teaches surfacing a profile gap + recommending the CLI command."""
+    section_9 = _slice_between(_read_prompt(), "## 9. When you are uncertain", "## 10.")
+    lowered = section_9.lower()
+    assert "profile gap" in lowered or "profile section" in lowered, (
+        "INV-C004: § 9 must add a profile-gap uncertainty pattern"
+    )
+    assert "genomeclaw host profile" in section_9, (
+        "INV-C004: § 9 profile-gap pattern must recommend the host profile CLI command"
+    )
+
+
+def test_invE001_system_prompt_lists_host_profile_evidence_kind() -> None:
+    """INV-E001: § 7 enumerates the `host_profile:<section>#<field>` citation form."""
+    section_7 = _slice_between(_read_prompt(), "## 7. Citations", "## 8.")
+    assert "host_profile:" in section_7, (
+        "INV-E001: § 7 must enumerate the host_profile: evidence kind"
+    )
+    assert "self-report" in section_7.lower(), (
+        "INV-E001: the host_profile citation must be marked as self-report (not clinical record)"
+    )
+
+
+def test_invA001_system_prompt_warns_against_verbatim_freetext_in_memory_notes() -> None:
+    """INV-A001: § 5 forbids copying verbatim profile free-text into memory notes."""
+    section_5 = _slice_between(_read_prompt(), "## 5. The memory-note schema", "## 6.")
+    lowered = section_5.lower()
+    assert "verbatim" in lowered and ("freetext" in lowered or "free-text" in lowered), (
+        "INV-A001: § 5 must forbid verbatim profile free-text in memory notes"
+    )
+    assert "family" in lowered, (
+        "INV-A001: § 5 must call out family-history narrative as especially sensitive"
+    )
+
+
+def test_invP002_system_prompt_carry_forward_excludes_web_search() -> None:
+    """INV-P002 (Phase-4 privacy review Change A): the § 4 carry-forward sentence
+    must scope profile content to GenomeClaw framing and exclude web_search."""
+    section_4 = _slice_between(
+        _read_prompt(), "## 4. The research-and-synthesis protocol", "## 5."
+    )
+    carry_idx = section_4.index("Carry the relevant sections forward")
+    window = section_4[carry_idx : carry_idx + 600]
+    assert "web_search" in window, (
+        "INV-P002: the carry-forward sentence must explicitly forbid carrying "
+        "profile content into web_search queries (Phase-4 review Change A)"
+    )
+
+
+def test_invC001_system_prompt_format_lead_marks_family_history_self_report() -> None:
+    """INV-C001 (Phase-4 privacy review Change B): § 10's lead bullet must not name
+    family history without a self-report / paraphrase qualifier."""
+    section_10 = _read_prompt()
+    section_10 = section_10[section_10.index("## 10. Format") :]
+    lead_idx = section_10.index("Lead with the user's specific finding")
+    lead = section_10[lead_idx : lead_idx + 500].lower()
+    assert "family history" in lead, "expected the § 10 lead bullet to reference family history"
+    assert "self-report" in lead or "paraphrase" in lead, (
+        "INV-C001: § 10 lead bullet names family history but lacks the self-report / "
+        "paraphrase qualifier (Phase-4 review Change B)"
     )

@@ -372,7 +372,7 @@ After implementation is complete:
 | Phase 1 | Complete | 2026-05-31 | 2026-05-31 | Schema + storage + endpoints — 30 tests green; privacy review done (2 blocking egress leaks fixed); INV-D002/P001/R001/C002 covered |
 | Phase 2 | Complete | 2026-05-31 | 2026-05-31 | CLI subgroup (show/set/review/init/edit) + setup chain — 25 tests green; INV-C002/D004 covered; questionary added |
 | Phase 3 | Complete | 2026-05-31 | 2026-05-31 | `genomeclaw_host_profile` tool + 2 policy GET paths + cross-language enum/section mirror — 19 tests green; INV-P002/A004/A005 covered |
-| Phase 4 | Pending | | | System prompt + behavioural gates |
+| Phase 4 | Impl complete (live gates deferred) | 2026-05-31 | 2026-05-31 | System prompt Step 1.5 + gates; 10 offline gates green; privacy review done (3 fixes); live_llm + demo-battery re-run deferred (sandbox + paid gpt-5.5) |
 | Phase 5 | Pending | | | INV-C004 promotion + docs + review |
 
 ---

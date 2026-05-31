@@ -418,6 +418,60 @@ behavioural live-LLM gates. Then Phase 5 — promote INV-C004 + docs.
 
 ---
 
+### 2026-05-31 (Phase 4) — agent system prompt + behavioural gates (offline portion)
+
+Implemented the prompt edits + offline gates + privacy review. The two
+live-confirmation criteria (demo-battery re-run, live_llm gate) are
+**deferred** — they need the sandbox rebuilt with the new prompt + paid
+`gpt-5.5` calls, held for an explicit operator go-ahead.
+
+**RED**: extended `test_agent_system_prompt_contract.py` with 8 INV-C004
+content gates + fixed `test_system_prompt_documents_research_and_synthesis_steps_in_order`
+(its `Step \d` regex matched "Step 1" inside the new "Step 1.5" heading —
+now parses decimals, expects `[1, 1.5, 2..7]`). Created the trace-walk gate
++ the live_llm gate file. Confirmed RED (9 fail), trace-walk vacuous-pass,
+live test collected+skipped.
+
+**GREEN — prompt edits** (`agent-system-prompt.md`): § 1 tool row; § 4 new
+`### Step 1.5 — Host profile context` (MUST-call, section-scoping table,
+missing-signal-is-not-failure, profile-gap framing, family-history
+paraphrase + opt-out handling, self-report framing) + topic-discovery
+carry-forward; § 5 profile-grounded memory-note rule; § 6 profile-section
+gating for clinical-actionable framing; § 7 `host_profile:<section>#<field>`
+self-report citation; § 8 profile-content-never-in-web_search; § 9
+uncertainty pattern 4; § 10 lead-bullet amendment. Used the **real** schema
+(free-text `family_history`, not the plan's stale `family_history.first_degree`).
+
+**Privacy-safety-reviewer pass** (blocking): verdict accept-with-changes;
+3 required fixes applied (filed in [privacy-review.md](privacy-review.md)):
+- **A (blocking)**: the § 4 carry-forward could leak profile content into
+  `web_search` query construction — scoped it to GenomeClaw framing +
+  inlined the topic-only exclusion. Gate: `test_invP002_system_prompt_carry_forward_excludes_web_search`.
+- **B**: § 10 lead bullet named family history without a self-report /
+  paraphrase qualifier — added it. Gate:
+  `test_invC001_system_prompt_format_lead_marks_family_history_self_report`.
+- **C**: § 5 used `family_history.notes` (a field, not a `sections` value)
+  as a section-key example — corrected to `family_history`.
+4 Phase-5 follow-ups recorded in privacy-review.md.
+
+**Verified state**: 32 prompt-contract + trace-walk gates green; full suite
+**1248 passed, 7 pre-existing failures** (unchanged set), 165 skipped (+1 =
+the new live_llm test). ruff clean on the Phase-4 test files.
+
+**Deferred (operator go-ahead needed)**: rebuild the sandbox image with the
+new prompt baked in (`./scripts/onboard-sandbox.sh`), re-run the canonical
+demo battery to populate post-2026-06-01 health-interpretation traces (the
+trace-walk gate engages on those), and run the `live_llm` gap-framing gate.
+INV-C004 promotion (Phase 5) waits on at least one stable demo-battery
+re-run per the plan.
+
+**Next Steps**: Phase 5 — promote INV-C004 to INVARIANTS.md (after a stable
+live pass), `docs/reference/` updates, final review, move plan to completed/.
+
+**Blockers / Issues**: None (deferred live work is gated on cost, not blocked).
+
+---
+
 ## Phase Progress
 
 ### Phase 1: Schema + host-side storage + service endpoints
@@ -475,7 +529,18 @@ pattern). Declared in `openclaw.plugin.json`. INV-P002/A004/A005 each covered.
 ---
 
 ### Phase 4: Agent system prompt + behavioural enforcement
-**Status**: Pending
+**Status**: Implementation complete (offline gates green + privacy review done); live_llm gate + demo-battery re-run deferred (sandbox rebuild + paid gpt-5.5)
+**Started**: 2026-05-31
+**Completed**: 2026-05-31 (offline portion)
+
+#### Results
+Prompt § 1/§4 Step 1.5/§5–§10 updates make host-profile retrieval mandatory
+before genome-informable replies, teach profile-gap framing, family-history
+paraphrase discipline, the `host_profile:` self-report citation, and the
+web_search exclusion. 8 INV-C004 content gates + 2 review-driven gates + a
+forward-looking trace-walk gate, all green. Privacy review (blocking) passed
+with 3 applied fixes. INV-A005/E001/A001 each covered. Live behavioural
+confirmation deferred.
 
 ---
 
