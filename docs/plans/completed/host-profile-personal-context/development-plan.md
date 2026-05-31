@@ -373,7 +373,7 @@ After implementation is complete:
 | Phase 2 | Complete | 2026-05-31 | 2026-05-31 | CLI subgroup (show/set/review/init/edit) + setup chain — 25 tests green; INV-C002/D004 covered; questionary added |
 | Phase 3 | Complete | 2026-05-31 | 2026-05-31 | `genomeclaw_host_profile` tool + 2 policy GET paths + cross-language enum/section mirror — 19 tests green; INV-P002/A004/A005 covered |
 | Phase 4 | Complete | 2026-05-31 | 2026-05-31 | System prompt Step 1.5 + gates; offline gates + privacy review (3 fixes) + LIVE gates green (sandbox rebuilt; live_llm PASSED; trace-walk engaged on a real post-prompt trace) |
-| Phase 5 | Pending | | | INV-C004 promotion + docs + review |
+| Phase 5 | Complete | 2026-05-31 | 2026-05-31 | INV-C004 promoted (INVARIANTS.md v1.26 + doc-shape gate); user-stories amended; cumulative privacy review (no blockers); plan reconciled + moved to completed/ |
 
 ---
 
@@ -384,3 +384,16 @@ After implementation is complete:
 - **PRS ancestry calibration consumption**: `identity.ancestry.population_codes` is captured in this plan but not yet *consumed* by `_pgsc_calc_match.py` for ancestry-calibration warnings. A follow-up plan (`prs-ancestry-calibration-from-profile`) wires the consumer.
 - **No FHIR / EHR import**: explicitly out of scope. A future plan covers structured medical-record imports.
 - **`host profile edit` field-removal UX**: removing a field from the profile is a destructive operation w.r.t. provenance — the audit log captures it but the agent's prior memory notes may still cite the removed field. A future plan covers memory-note re-validation against current profile state.
+
+### Follow-ups from the Phase-5 cumulative privacy review (non-blocking)
+
+- **DEBUG-log hardening (Phase-1 store)**: `read_profile`'s `ValidationError` DEBUG log is the one host-local path where a profile field value could surface under failure + operator-enabled DEBUG. Consider truncating / genericizing the logged exception in a future hardening pass. Non-blocking (DEBUG-only, host-local; the HTTP 500 body is already static).
+- **Step 1.5 "BEFORE continuing" wording (Phase-4 prompt)**: a literal model could read the missing-signal "recommend `init` BEFORE continuing the interpretation" as a hard turn-block rather than a prioritized step (it pairs with step 4's "proceed with what you DO have"). Optional small prompt clarification; would require a re-run of the live gate, so deferred to a future prompt-tuning pass.
+- **Formalizable tests (reviewer-suggested)**: a non-TTY skip-marker shape assertion, an audit `freetext_lengths`-is-`int` assertion, and a named test documenting the agent's HTTP-only profile path. None blocking; the existing suite covers the behaviour.
+
+### As-shipped reconciliation vs. the original plan
+
+- Schema dropped `goals` (Phase-2 owner review) and made `family_history` a single bounded free-text field, not a structured per-relative list. The enum set that shipped: `SexAssignedAtBirth`, `SmokingStatus`, `AlcoholUse`, `ExerciseFrequency`, `BloodType`, `AncestryGroup` (friendly) + derived `Pop1000G`. The plan's `ConditionStatus` / `RelationshipClass` / `GoalTag` / `AncestryCode` were superseded by these.
+- CLI envelope `command` uses the codebase's dotted convention (`host.profile.show`), not the plan-sketch space form. `host profile show --section` JSON-filtering was de-scoped (the endpoint already filters; no test depended on it). Added `questionary>=2.0` as a dependency.
+- Phase 3 added a plugin-side `HOST_PROFILE_SECTIONS` mirror + cross-language section-diff test beyond the plan (gives the agent a recovery surface the host's dropped 400 body can't), and incidentally fixed a pre-existing stale `8643→8645` policy-preset port assertion.
+- Phase-4 trace-walk gate uses a land-date boundary of 2026-06-01 to exclude the same-day pre-prompt traces.

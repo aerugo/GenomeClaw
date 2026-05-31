@@ -1,10 +1,12 @@
 # GenomeClaw Project Invariants
 
 **Status**: Living document
-**Version**: 1.25
-**Last Updated**: 2026-05-30
+**Version**: 1.26
+**Last Updated**: 2026-05-31
 
 This is the **canonical reference** for GenomeClaw's project invariants. Every implementation plan, phase plan, and substantive code review must reference applicable invariants by their canonical ID (e.g., `INV-D001`). The five top-level rules in the root [CLAUDE.md](../../CLAUDE.md) are formalized here.
+
+**v1.26 (2026-05-31)** — **adds `INV-C004`** (Host Profile Context Must Inform Genome-Informable Turns). Promoted from the [host-profile-personal-context](../plans/completed/host-profile-personal-context/) plan. A genome read without phenotype context produces generic, sanitized interpretation; the agent had no structural rule to retrieve the user's self-reported identity / biometrics / lifestyle / medical + family history before interpreting their genome. The plan landed a typed `HostProfile` schema + host-side JSON store + two read-only endpoints (Phase 1), a `host profile {show,set,review,init,edit}` CLI (Phase 2), the `genomeclaw_host_profile` plugin tool + policy-preset allowlist + cross-language enum/section mirror (Phase 3), and the agent system prompt's mandatory **Step 1.5 — Host profile context** + profile-gap framing + family-history paraphrase discipline (Phase 4). The invariant is promoted after the Phase-4 gates held green across the full offline suite + a live pass: the `live_llm` gap-framing gate PASSED against the rebuilt sandbox, and the trace-walk gate engaged on a real post-prompt health-interpretation trace. Two blocking privacy-safety-reviewer passes (Phase 1 store/egress, Phase 4 prompt) both landed accept-with-changes; all required fixes shipped.
 
 **v1.25 (2026-05-30)** — **adds `INV-D011`** (Plugin Install Path Follows NemoClaw's Canonical Landlock-RW Pattern). Promoted from the [nemoclaw-canonical-integration](../plans/active/nemoclaw-canonical-integration/) plan, which moved the GenomeClaw OpenClaw plugin off the Landlock-blocked `/opt/genomeclaw` (EACCES on every NemoClaw-managed surface) to `/sandbox/build/genomeclaw` inside the OpenShell Landlock RW baseline, pinned the sandbox base image by version tag, and fixed the gateway tool-catalog discovery. The provisional discovery test held green across Phases 2–5 (path-pin + cold-metadata tool contract), so the invariant is promoted. Note: the proposed id was `INV-D011` from the spec onward; `INV-D010` is intentionally an unused gap (the test + all plan docs use `D011`).
 
@@ -591,6 +593,39 @@ Other remote integrations (alternative annotators, telemetry, crash reporting) a
 
 ---
 
+## INV-C004: Host Profile Context Must Inform Genome-Informable Turns
+
+**Rule** *(v1.26; per [host-profile-personal-context](../plans/completed/host-profile-personal-context/))*: For any **genome-informable interpretation turn** (health, lifestyle, fitness, diet, sleep, recovery, behavior, performance — anything where the user's genome is being interpreted), the agent's trace MUST contain at least one `genomeclaw_host_profile` invocation in that turn. When the question hinges on a profile section that is empty or missing, the agent's reply MUST name the gap, explain why it matters for this question, and recommend the specific CLI command (`genomeclaw host profile set <dotted.path>` or `genomeclaw host profile init`) to fill it in. The agent MUST NOT paraphrase a 200 + `missing: true` host-profile response as a tool failure (`INV-A005` binds here).
+
+**Why this exists** — A genome read without phenotype context produces sanitized, generic interpretation. The agent has no basis to weight a CYP2C19 poor-metabolizer finding without medication context, no way to read APOE without family-history dementia signals, no way to calibrate lifestyle advice without smoking / alcohol / activity context. Without a structural retrieval rule the agent silently reasons in the absence of this context. INV-C004 closes the gap at the prompt + trace level. It is a peer to `INV-A001` / `INV-A004` / `INV-A005` in the agent-cognition discipline: it is about the agent's epistemic discipline w.r.t. self-reported context, not about biomedical evidence directly. The profile is the single most identifying host-side dataset after the raw genome, so its handling carries the same privacy floor (host-side only, minimal-sufficient egress, no verbatim free-text in memory notes or `web_search`).
+
+**Requirements**:
+- The agent system prompt's research-and-synthesis protocol contains a mandatory **Step 1.5 — Host profile context** executed after `memory_search` (Step 1) and before the gene/PRS phase (Step 2), using the `sections` parameter for minimal-sufficient retrieval.
+- The plugin tool `genomeclaw_host_profile` is registered with `output_class: "summary"` and a TypeBox `sections` param; the host returns a minimal-sufficient envelope.
+- The OpenShell policy preset allows `GET /v1/host/profile` and `GET /v1/host/profile/completeness` (no write paths).
+- Profile-grounded claims in agent replies cite the `host_profile:<section>#<field>` evidence form per `INV-E001`, framed as self-report ("you've recorded …", not "you have …").
+- Memory notes that ground in profile context record the tool-call + relevant section keys; verbatim free-text from profile fields (condition `notes`, family-history `notes`, ancestry `self_reported`) is NEVER copied into memory notes — paraphrase at relation-class + condition + age-class granularity (per `INV-A001`). Family history is especially sensitive because it carries narrative about people other than the user.
+- Profile content NEVER appears in a `web_search` query (topic-only rule, `INV-P001`/`INV-P002`).
+- `family_history.opted_out: true` is treated as a calibrated decline, not a missing-data gap.
+
+**Where it applies**:
+- Agent system prompt at [packages/nemoclaw-plugin/sandbox/agent-system-prompt.md](../../packages/nemoclaw-plugin/sandbox/agent-system-prompt.md) — Step 1.5 + the profile-gap framing pattern + § 5/§ 6/§ 7/§ 8/§ 9/§ 10 amendments.
+- Plugin tool registration in [packages/nemoclaw-plugin/src/index.ts](../../packages/nemoclaw-plugin/src/index.ts) — `genomeclaw_host_profile` tool + TypeBox enum unions + `HOST_PROFILE_SECTIONS` mirror.
+- Policy preset [packages/nemoclaw-plugin/policy-preset.yaml](../../packages/nemoclaw-plugin/policy-preset.yaml) — the two GET paths.
+- Host service routes in [packages/toolkit/src/genomeclaw_toolkit/service/app.py](../../packages/toolkit/src/genomeclaw_toolkit/service/app.py) — `/v1/host/profile` + `/completeness`.
+- Host-side store + schema in [packages/toolkit/src/genomeclaw_toolkit/host_profile/](../../packages/toolkit/src/genomeclaw_toolkit/host_profile/) + [schemas/host_profile.py](../../packages/toolkit/src/genomeclaw_toolkit/schemas/host_profile.py).
+- Profile-grounded agent replies in trace JSON (`*.trace.json` under `docs/reports/`).
+
+**How to verify**:
+- Prompt-content gates: `test_invC004_system_prompt_*` + the two privacy-review gates in [packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py](../../packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py) — assert the prompt contains Step 1.5, the section-scoped retrieval examples, the profile-gap framing, the missing-signal teaching, the family-history self-report framing, and the web_search exclusion.
+- Trace-walk gate: [packages/toolkit/tests/invariants/test_invC004_trace_walk_host_profile_called.py](../../packages/toolkit/tests/invariants/test_invC004_trace_walk_host_profile_called.py) — every health-interpretation trace dated ≥ the prompt-land date (2026-06-01) contains a `genomeclaw_host_profile` invocation. Engaged on a real post-prompt trace 2026-05-31.
+- `live_llm` behavioural gate: [packages/toolkit/tests/_live_smoke/test_host_profile_gap_framing.py](../../packages/toolkit/tests/_live_smoke/test_host_profile_gap_framing.py) — a PGx question against an empty medications section produces (a) a profile-tool call, (b) gap-naming language in the reply, (c) the canonical CLI recommendation, (d) no fabricated medication context. PASSED against the rebuilt sandbox.
+- Policy preset shape: extended `_ALLOWED_V0_PATHS` + host-profile path gates in [packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py](../../packages/toolkit/tests/invariants/test_invP002_policy_preset_shape.py).
+- Cross-language enum + section diff: [packages/toolkit/tests/invariants/test_invA004_host_profile_enums_traverse.py](../../packages/toolkit/tests/invariants/test_invA004_host_profile_enums_traverse.py).
+- Promotion doc-shape: [packages/toolkit/tests/invariants/test_invC004_promoted_in_invariants_md.py](../../packages/toolkit/tests/invariants/test_invC004_promoted_in_invariants_md.py).
+
+---
+
 ## INV-A001: Agent Memory Provenance
 
 **Rule** *(v1.8; per [agent-research-and-synthesis spec](../plans/active/agent-research-and-synthesis/spec.md))*: when the agent persists a research synthesis to its workspace memory, the note must record enough provenance for a future agent session (or the user inspecting the workspace) to understand *what was learned, from where, at what reasoning level, and with what freshness*.
@@ -898,6 +933,7 @@ If a proposed invariant is rejected, the plan records the rejection and rational
 | INV-C001 | Separate Clinical Advice from Lifestyle and Research Assistance | Clinical Boundary |
 | INV-C002 | CLI Output Contract Stability | Communication |
 | INV-C003 | Uncallable Sites Excluded from PGS Overlap | Clinical Boundary |
+| INV-C004 | Host Profile Context Must Inform Genome-Informable Turns | Clinical Boundary |
 | INV-A001 | Agent Memory Provenance | Agent Cognition |
 | INV-A002 | Synthesis Reasoning Floor | Agent Cognition |
 | INV-A003 | Agent-Curated Compute Provenance | Agent Cognition |

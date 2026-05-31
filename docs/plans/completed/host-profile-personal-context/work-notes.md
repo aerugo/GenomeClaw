@@ -497,6 +497,41 @@ Phase-5 promotion.
 
 ---
 
+### 2026-05-31 (Phase 5) — INV-C004 promotion + docs + cumulative review
+
+Documentation + invariant-promotion phase (no new behaviour).
+
+- **INV-C004 promoted** to `docs/reference/INVARIANTS.md` (Version 1.25 → **1.26**,
+  Last Updated 2026-05-31): full Rule / Why / Requirements / Where it applies /
+  How to verify (referencing all three Phase-4 gates) + Invariant Index row +
+  a v1.26 changelog paragraph. New doc-shape gate
+  `test_invC004_promoted_in_invariants_md.py` (4 cases) — RED → GREEN.
+- **`docs/reference/cli-output-schemas.md`** — `host profile *` envelopes were
+  already documented in Phase 2; no further edit needed.
+- **`docs/reference/user-stories.md`** — amended the "what the agent is" framing
+  (Story-1 area): the **host profile** is now the canonical who-the-user-is
+  anchor (retrieved per turn via `genomeclaw_host_profile`, INV-C004); session
+  memory is per-turn free-form context, paraphrased per INV-A001/INV-C004.
+- **Cumulative privacy-safety review** (3rd pass, full diff): **no blocking
+  issues**. 5 advisories, all recorded in `privacy-review.md` — the non-TTY
+  skip-marker is confirmed-correct design (no personal content); audit
+  length-only is the right floor (no hash); the citation form cites schema
+  paths not values; INV-C004 × INV-C001 are orthogonal (no double-jeopardy);
+  agent reads profile HTTP-only (CLI `--json` not agent-reachable). Two
+  non-blocking hardening follow-ups recorded (DEBUG ValidationError log
+  truncation; "BEFORE continuing" prompt wording) — NOT patched in docs-only
+  Phase 5 per the planning protocol.
+- **development-plan.md** reconciled with the as-shipped design (enum set,
+  dropped goals, dotted command form, questionary dep, section mirror, 8643
+  fix, trace-walk land date) + the review follow-ups.
+
+**Verified state**: doc-shape gate 4/4 green; full toolkit suite **1250 passed,
+7 pre-existing failures** (unchanged set); plugin vitest **42 passed**.
+
+**Final step**: move the plan `active/ → completed/`.
+
+---
+
 ## Phase Progress
 
 ### Phase 1: Schema + host-side storage + service endpoints
@@ -570,7 +605,16 @@ confirmation deferred.
 ---
 
 ### Phase 5: INV-C004 promotion + docs + privacy-safety review pass
-**Status**: Pending
+**Status**: Complete
+**Started**: 2026-05-31
+**Completed**: 2026-05-31
+
+#### Results
+INV-C004 promoted to INVARIANTS.md v1.26 (full sections + index row + doc-shape
+gate); user-stories.md amended to make the host profile the canonical
+who-the-user-is anchor; cumulative privacy review passed (no blocking issues,
+5 advisories recorded); development-plan reconciled with as-shipped design.
+Full suite 1250 passed (7 pre-existing failures), plugin 42 passed.
 
 ---
 
@@ -639,12 +683,12 @@ confirmation deferred.
 ## Documentation Updates Required
 
 ### INVARIANTS.md changes
-- [ ] Add `INV-C004`: Host Profile Context Must Inform Genome-Informable Turns — after Phase 4 tests stabilise (promoted in Phase 5).
+- [x] Add `INV-C004`: Host Profile Context Must Inform Genome-Informable Turns — promoted in Phase 5 (INVARIANTS.md v1.26).
 
 ### Other Documentation
-- [ ] `docs/reference/cli-output-schemas.md` — document `host profile init / show / set / edit / review` envelopes (Phase 2).
-- [ ] `docs/reference/user-stories.md` — amend Story 1 to point at the host profile as the canonical personal-context anchor (Phase 5).
-- [ ] `packages/nemoclaw-plugin/sandbox/agent-system-prompt.md` — § 1, § 4 (Step 1.5), § 6, § 7, § 8, § 9, § 10 (Phase 4).
+- [x] `docs/reference/cli-output-schemas.md` — `host profile show/set/review/init/edit` envelopes documented (Phase 2).
+- [x] `docs/reference/user-stories.md` — amended to point at the host profile as the canonical personal-context anchor (Phase 5).
+- [x] `packages/nemoclaw-plugin/sandbox/agent-system-prompt.md` — § 1, § 4 (Step 1.5), § 5, § 6, § 7, § 8, § 9, § 10 (Phase 4).
 
 ---
 
