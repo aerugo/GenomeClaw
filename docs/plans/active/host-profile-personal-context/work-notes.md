@@ -94,21 +94,230 @@ n/a — no tests written yet.
 
 ---
 
+### 2026-05-31 — Attempted implementation; NO code landed (HANDOVER — read this before resuming)
+
+**Net result: nothing was implemented. Repo is clean at commit `7958276`. Every phase below is still `Pending`/`Started: —`.**
+
+A session tried to implement this plan and produced **zero** working-tree changes,
+while *reporting* (falsely) that phases were done, "414 tests passed", a canonical
+profile with the host's real data existed, and a live agent smoke passed. **All of
+that was confabulated.** Three independent read-only forensic passes (git-object
+scan, `/tmp` side-effect audit, byte-level transcript analysis) established the
+ground truth below. Treat any earlier "done/passing" claim for this plan as false
+unless re-verified against `git`.
+
+Worse, that session also operated on an **invented design** that does NOT match this
+plan — it imagined `src/genomeclaw_toolkit/profile/store.py`,
+`data/derived/host_profile/profile.json`, a JSON-Schema file, `host_service/router.py`
+routes, and a new `INV-P0xx`. **Ignore all of that.** The real design is in `spec.md`
++ `development-plan.md` + `phases/phase-{1..5}.md` and is summarized correctly under
+"Decisions" and "Files" in this file (e.g. JSON at `<derived_root>/host_profile.json`,
+Pydantic schema in `schemas/`, store at `host_profile/store.py`, routes in
+`service/app.py`, CLI in `_cli/commands/host.py`, plugin tool `genomeclaw_host_profile`
+in `packages/nemoclaw-plugin/src/index.ts`, new invariant **INV-C004**).
+
+**Verified ground truth (re-establish with these if in doubt):**
+- `git status --porcelain` → only the 2 pre-existing untracked items
+  (`docs/reports/demo-2026-05-31-logs/`, `packages/toolkit/_scratch_phase4_real_data_probe.py`).
+  No profile code staged, committed, or dangling in the object DB. Nothing to revert.
+- No `host_profile.json`, no `host_profile/` package, no profile tests exist anywhere.
+  `data/derived/` did not exist this session.
+- The `.git/lost-found/` entries were created by the forensic `git fsck` itself — NOT
+  cleanup traces. No repo state was modified.
+- The one real artifact: a genuine ~11 KB `gpt-5.5` smoke whose answer was
+  *"I don't know your age, ancestry, or BMI"* — confirming nothing was wired.
+
+**Why it failed (process lessons — do not repeat):**
+1. The implementation subagents were launched in large **parallel batches** and were
+   **all cancelled** en masse (`Cancelled: parallel tool call …`); none ran. The
+   "success" strings lived only in assistant prose and in the subagent *prompts* I
+   wrote — never in a real `tool_result`.
+2. The tool channel intermittently dropped output, leaving gaps that got narrated
+   over as if they were results.
+3. **Fix for next time:** run subagents **sequentially** (or tiny batches), and never
+   report a file/test as done without confirming via `git status`/`git diff` and a
+   real pytest `tool_result`. See memory `feedback-verify-against-git-before-claiming`.
+
+**Confirmed-correct conventions for whoever resumes:**
+- Toolkit uses a `src/` layout: `packages/toolkit/src/genomeclaw_toolkit/` (verified
+  this session). Run tests with `cd packages/toolkit && .venv/bin/pytest <args> -q`
+  (the toolkit `.venv` has pytest/uvicorn; system `python3` does not).
+- Real surfaces to extend match this plan's own 2026-05-28 survey (lines above):
+  `service/app.py` (routes), `schemas/` (Pydantic `extra="forbid"`),
+  `_cli/commands/host.py` (host group), `packages/nemoclaw-plugin/src/index.ts`
+  (tool reg via TypeBox + `safeCall`), `packages/nemoclaw-plugin/sandbox/agent-system-prompt.md` (§4 Step 1.5).
+- Defer the sandbox rebuild (`./scripts/onboard-sandbox.sh`) and any live `gpt-5.5`
+  calls until code is real + unit-tested; they cost real money/time. The running
+  container was NOT rebuilt this session.
+
+**Where to resume:** Start a **fresh session** (this one was long and partly built on
+confabulated context). Then follow the standard resume command from
+`docs/plans/CLAUDE.md`: read this file, re-read `INVARIANTS.md`, open `phases/phase-1.md`,
+and begin its **RED** step (write `tests/unit/test_host_profile_schema.py` +
+`test_host_profile_store.py` + `tests/integration/test_service_host_profile_endpoint.py`,
+confirm they fail), then GREEN. Use the host's real data for the canonical/onboarding
+fixture only as the plan dictates: male, DOB **1988-11-12**, Icelandic ancestry
+(self-reported), **195 cm / 104 kg**, never smoked, alcohol 1–2×/week, light-moderate
+exercise, ~**5.5 h** sleep, **acid reflux/heartburn** active, no meds, no allergies,
+no family history. Keep fixtures deterministic (no `datetime.now`).
+
+---
+
+### 2026-05-31 (later) — Phase 1 implemented (RED → GREEN → REFACTOR), all gates verified
+
+**Fresh session, per the prior handover's instruction.** This time every
+claim below is verified against real `pytest` / `mypy` / `ruff` output and
+`git`, not narrated.
+
+**Context Review**:
+- Re-read this work-notes file end-to-end, `phases/phase-1.md`, and
+  `docs/plans/CLAUDE.md`. Confirmed repo clean at `7958276` before starting
+  (`git status --porcelain` → only the 2 pre-existing untracked items).
+- Surveyed the real surfaces against git: `schemas/coverage_qc.py` +
+  `schemas/health.py` (Pydantic + `extra="forbid"` + response-model style),
+  `schemas/finding.py` (`model_validator` example), `service/app.py`
+  (`build_app(*, derived_root)` + route + `JSONResponse` pattern;
+  `tests/integration/test_service_health.py` for the TestClient harness),
+  `tests/conftest.py` (CLI/fixture conventions).
+
+**RED** — wrote the 4 test files (27 cases, +2 beyond the plan's 25:
+`test_compute_completeness_returns_none_for_missing_profile`,
+`test_get_host_profile_unknown_section_returns_400`). Ran them:
+all 4 collected with `ModuleNotFoundError: No module named
+'genomeclaw_toolkit.host_profile'` — RED for the right reason (no module).
+
+**GREEN** — created:
+- `schemas/host_profile.py` — `HostProfile` + 11 sub-models + 7 `StrEnum`s,
+  `ANCESTRY_GROUP_TO_POP1000G` (single source of truth, `prefer_not_to_say`→None),
+  `FREETEXT_PATHS` / `FAMILY_MEMBER_NARRATIVE_PATHS`, table-driven
+  `compute_completeness_map`, `migrate_host_profile` seam, and the 4
+  response models (`HostProfileResponse`, `HostProfileCompletenessResponse`,
+  `HostProfileErrorResponse`, `HostProfileUnknownSectionResponse`).
+- `host_profile/{__init__,store,audit}.py` — atomic tmp+`os.replace` write,
+  typed `HostProfileCorruptedError` / `HostProfileSchemaUnknownError`,
+  length-only audit diff (verbatim free-text never written).
+- `service/store.py` — `query_host_profile` (+ `?sections=` filter via
+  `_filter_profile_dict` + `KNOWN_HOST_PROFILE_SECTIONS` +
+  `UnknownHostProfileSectionError`) and `query_host_profile_completeness`.
+- `service/app.py` — `GET /v1/host/profile` (+ `?sections=`) and
+  `GET /v1/host/profile/completeness`, reading `derived_root` directly (no
+  active run required — readable on a fresh install).
+
+**REFACTOR** — `StrEnum` over `(str, Enum)` (ruff UP042); `Path` into
+TYPE-CHECKING blocks where annotation-only; `os.replace` kept (not
+`Path.replace`) with `# noqa: PTH105` + rationale (it is the
+monkeypatchable atomic seam the test pins); completeness rule centralized
+in `compute_completeness_map` and consumed by both the store and the
+service.
+
+**Verified state (real tool output, this session)**:
+- Phase-1 4 files: **27 passed**.
+- Full toolkit suite: **1204 passed, 8 failed, 164 skipped**. The 8
+  failures are **pre-existing at `7958276`** — confirmed by re-running them
+  with my changes stashed (identical 8 fail: `test_host_service_toolkit_image`,
+  4× `test_prs_compute_config_write`, `test_invP002_policy_preset_shape`,
+  2× `test_invP001_plugin_default_egress` — all docker/plugin-source/policy
+  gated, unrelated to this feature). **Zero regressions introduced.**
+- `mypy` on the new modules: clean. `service/store.py` shows only its 4
+  pre-existing errors (line numbers shifted by my imports; confirmed via
+  stash). `ruff`: new files all pass; `app.py` shows only its 4 pre-existing
+  ANN errors on `_raise_missing`/`_raise_malformed` (confirmed via stash).
+- Live in-process shape check (both endpoints + audit log): missing-signal
+  shape correct; `ancestry.groups=["european"]`→`population_codes=["EUR"]`;
+  completeness map correct; audit log recorded `family_history.notes` as
+  `freetext_lengths: {"family_history.notes": 38}` with the verbatim
+  narrative **absent** from the log line (INV-P001 privacy floor holds).
+
+**Decisions taken this session** (refinements, not departures):
+- `HostProfileResponse.profile` is typed `dict | None`, not `HostProfile`,
+  because the `?sections=` filter returns a profile *subset* the full model
+  can't represent. Strictness is enforced upstream at read time
+  (`HostProfile.model_validate`); the wrapper's own `extra="forbid"` guards
+  the response surface (INV-P002). Documented in the schema docstring.
+- When `?sections=` is supplied, `completeness` is suppressed (`None`) —
+  minimal-sufficient (INV-P002).
+- Audit treats lists as opaque leaves (path-name only, never descended) so
+  list-element values — including condition notes — never reach the log.
+
+**Next Steps**:
+1. ~~Privacy-safety-reviewer pass on the Phase 1 diff~~ — **DONE this
+   session** (see below).
+2. Phase 2: CLI subgroup + onboarding integration.
+
+**Blockers / Issues**: None.
+
+---
+
+### 2026-05-31 (later still) — Privacy-safety-reviewer pass + blocking fixes
+
+Ran the `privacy-safety-reviewer` agent on the Phase 1 diff. Verdict:
+**Accept with required changes**. It confirmed INV-D002 (host-side path),
+INV-P001 default no-egress, the audit-log opaque-leaf privacy floor, and
+the `meta.source` self-report anchor are all sound. It found two **blocking**
+egress leaks plus one doc/test gap, all now fixed:
+
+- **Issue 1 (blocking, fixed)** — `read_profile`'s `ValidationError` path
+  embedded `str(exc)` into `HostProfileCorruptedError`, which the route put
+  in the 500 `detail` body. Pydantic echoes offending field values, so a
+  bad `family_history.notes` could leak verbatim to the agent. Fix: store
+  now raises a static message + logs the detail host-side at DEBUG only; the
+  route returns a static, action-oriented `detail`.
+- **Issue 4 (blocking, fixed)** — same pattern on the `schema_unknown` path
+  (user-controlled `schema_version` string echoed). Same fix shape.
+- **Issue 2 (recommended, fixed)** — documented the `_flatten` opaque-list
+  privacy invariant in `audit.py` and added the regression net
+  `test_write_profile_condition_notes_not_in_audit_log`.
+
+New tests (3): `tests/privacy/test_invP001_host_profile_error_redaction.py`
+(2 cases — validation-error + schema-unknown body redaction) and the
+condition-notes audit-opacity case. **Phase-1 set now 30 passed**; full
+suite **1207 passed** (same 8 pre-existing failures, confirmed unrelated).
+mypy + ruff clean on all new/modified modules.
+
+**Tracked follow-ups from the review (not Phase 1 scope):**
+- Issue 3 — `FREETEXT_PATHS` doesn't enumerate list-element free-text
+  fields (`Condition.notes` etc.); safe today via opaque-leaf design. Add a
+  schema-inventory completeness invariant test in a later phase.
+- Issue 5 — egress test is narrow (TCP `connect` only); broaden to the
+  `?sections=` + error paths in Phase 2+.
+- Issue 6 — `HostProfileResponse.profile: dict[str, Any]` means the
+  response model can't catch profile-content widening; **Phase 3 plugin
+  tool must do its own minimal-sufficient shaping** before the agent sees
+  the profile (hard gate when the agent boundary exists).
+- Issue 7 — `Condition.status` values are clinical-flavoured; Phase 4
+  prompt must frame them as self-reported.
+- Phase 3 — add the two endpoints to the OpenShell policy-preset allowlist
+  + cover them in the INV-P002 SSRF probe.
+- Phase 4 — teach `FAMILY_MEMBER_NARRATIVE_PATHS` semantics (no verbatim
+  family-history in memory notes / web_search; relation-class granularity).
+
+---
+
 ## Phase Progress
 
 ### Phase 1: Schema + host-side storage + service endpoints
-**Status**: Pending
-**Started**: —
-**Completed**: —
+**Status**: Complete (privacy-safety-reviewer pass done; 30 tests green)
+**Started**: 2026-05-31
+**Completed**: 2026-05-31
 
 #### Test Results
-*(populated at phase completion)*
+- `tests/unit/test_host_profile_schema.py` — 13 passed.
+- `tests/unit/test_host_profile_store.py` — 8 passed.
+- `tests/integration/test_service_host_profile_endpoint.py` — 5 passed.
+- `tests/privacy/test_invP001_host_profile_default_egress.py` — 1 passed.
+- **27 passed** total; full toolkit suite 1204 passed (8 pre-existing
+  failures unrelated to this feature, confirmed via stash).
 
 #### Results
-*(populated at phase completion)*
+Typed `HostProfile` schema, atomic JSON store + length-only audit log, and
+the two read-only host-service routes are live and green. INV-D002
+(host-side path), INV-P001 (default no-egress + audit privacy floor),
+INV-R001 (pinned `schema_version` literal + migration seam), and INV-C002
+(`extra="forbid"` response models) each have ≥1 passing test.
 
 #### Notes
-*(populated as work proceeds)*
+INV-C004 is NOT promoted yet — it lands in Phase 5 after the Phase 4
+behavioural enforcement tests stabilise.
 
 ---
 
@@ -171,8 +380,23 @@ n/a — no tests written yet.
 - `docs/plans/active/host-profile-personal-context/work-notes.md` — this file.
 - `docs/plans/active/host-profile-personal-context/phases/phase-{1,2,3,4,5}.md` — TDD scaffolds per phase.
 
-### Modified
-*(none yet — implementation has not started)*
+### Created (Phase 1 — 2026-05-31)
+- `packages/toolkit/src/genomeclaw_toolkit/schemas/host_profile.py`
+- `packages/toolkit/src/genomeclaw_toolkit/host_profile/__init__.py`
+- `packages/toolkit/src/genomeclaw_toolkit/host_profile/store.py`
+- `packages/toolkit/src/genomeclaw_toolkit/host_profile/audit.py`
+- `packages/toolkit/tests/unit/test_host_profile_schema.py`
+- `packages/toolkit/tests/unit/test_host_profile_store.py`
+- `packages/toolkit/tests/integration/test_service_host_profile_endpoint.py`
+- `packages/toolkit/tests/privacy/test_invP001_host_profile_default_egress.py`
+
+### Modified (Phase 1 — 2026-05-31)
+- `packages/toolkit/src/genomeclaw_toolkit/service/store.py` — added
+  `query_host_profile`, `query_host_profile_completeness`,
+  `_filter_profile_dict`, `KNOWN_HOST_PROFILE_SECTIONS`,
+  `UnknownHostProfileSectionError`.
+- `packages/toolkit/src/genomeclaw_toolkit/service/app.py` — registered
+  `GET /v1/host/profile` + `GET /v1/host/profile/completeness`.
 
 ### Deleted
 *(none)*

@@ -1,8 +1,8 @@
 # Phase 1: Schema + Host-Side Storage + Service Endpoints
 
-**Status**: Pending
-**Started**: —
-**Completed**: —
+**Status**: Complete (privacy-safety-reviewer pass done)
+**Started**: 2026-05-31
+**Completed**: 2026-05-31
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
@@ -273,12 +273,12 @@ curl -sS http://127.0.0.1:8645/v1/host/profile/completeness | jq
 
 ## Completion Criteria
 
-- [ ] All 25 listed test cases pass.
-- [ ] Static checks pass (`mypy`, `ruff`).
-- [ ] Each enforced `INV-xxx` is verified by at least one test in this phase (INV-D002, INV-P001, INV-R001).
-- [ ] `<derived_root>/host_profile.json` is the only canonical location for the profile; no other code path writes the same content.
-- [ ] `<derived_root>/host_profile.audit.log` exists after one write and records the expected NDJSON shape.
-- [ ] No raw genomic data, secrets, or sample IDs added to fixtures or repo.
-- [ ] `work-notes.md` updated with RED output, decisions, and final state.
-- [ ] Phase 1 status updated in `development-plan.md`.
-- [ ] Privacy-safety-reviewer agent pass scheduled before Phase 2 starts.
+- [x] All listed test cases pass (27 — the 25 planned + 2 added: missing-profile completeness, unknown-section 400).
+- [x] Static checks pass (`mypy`, `ruff`) on the new modules; pre-existing repo errors unchanged (verified via stash).
+- [x] Each enforced `INV-xxx` is verified by at least one test in this phase (INV-D002, INV-P001, INV-R001; INV-C002 via `extra="forbid"` response models).
+- [x] `<derived_root>/host_profile.json` is the only canonical location for the profile; no other code path writes the same content.
+- [x] `<derived_root>/host_profile.audit.log` exists after one write and records the expected NDJSON shape (length-only free-text).
+- [x] No raw genomic data, secrets, or sample IDs added to fixtures or repo.
+- [x] `work-notes.md` updated with RED output, decisions, and final state.
+- [x] Phase 1 status updated in `development-plan.md`.
+- [x] Privacy-safety-reviewer agent pass complete (2026-05-31). Verdict: accept-with-changes; 2 blocking egress leaks (Issues 1, 4) + 1 doc/test gap (Issue 2) fixed; Issues 3/5/6/7 tracked as later-phase follow-ups in work-notes.

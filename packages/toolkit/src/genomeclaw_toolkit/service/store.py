@@ -18,10 +18,13 @@ from typing import TYPE_CHECKING, Any
 
 import duckdb
 
+from genomeclaw_toolkit.host_profile.store import compute_completeness, read_profile
 from genomeclaw_toolkit.prep.run_id import resolve_current_run_dir
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from genomeclaw_toolkit.schemas.host_profile import CompletenessStatus
 
 
 @dataclass(frozen=True)
@@ -663,7 +666,102 @@ def query_pgs_computed(*, run_dir: Path, pgs_id: str) -> dict[str, Any] | None:
     return raw
 
 
+# ---------------------------------------------------------------------------
+# Host-profile queries (host-profile-personal-context Phase 1).
+#
+# Unlike every query above, these do NOT key off the active run: the
+# profile lives at the derived-root level and is readable before any
+# pipeline run exists (a fresh GenomeClaw install). The route handlers
+# pass ``derived_root`` directly.
+# ---------------------------------------------------------------------------
+
+KNOWN_HOST_PROFILE_SECTIONS: tuple[str, ...] = (
+    "identity",
+    "identity.ancestry",
+    "biometrics",
+    "lifestyle",
+    "medical_history",
+    "medical_history.conditions",
+    "medical_history.medications",
+    "medical_history.allergies",
+    "medical_history.procedures",
+    "family_history",
+)
+"""Section names the ``?sections=`` filter accepts (top-level + named sub-sections)."""
+
+
+class UnknownHostProfileSectionError(Exception):
+    """``?sections=`` named a section the schema does not define."""
+
+    def __init__(self, section: str) -> None:
+        """Record the offending section name for the 400 response body."""
+        self.section = section
+        super().__init__(f"unknown host_profile section: {section!r}")
+
+
+def _filter_profile_dict(full: dict[str, Any], sections: list[str]) -> dict[str, Any]:
+    """Return a subset of a profile dict containing only the requested sections.
+
+    ``schema_version`` + ``meta`` are always retained so the filtered
+    payload is self-describing. Dotted sections (e.g.
+    ``medical_history.medications``) carry their parent key.
+    """
+    out: dict[str, Any] = {
+        "schema_version": full["schema_version"],
+        "meta": full["meta"],
+    }
+    for section in sections:
+        if section not in KNOWN_HOST_PROFILE_SECTIONS:
+            raise UnknownHostProfileSectionError(section)
+        parts = section.split(".")
+        src: Any = full
+        dst: dict[str, Any] = out
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                dst[part] = src[part]
+            else:
+                src = src[part]
+                dst = dst.setdefault(part, {})
+    return out
+
+
+def query_host_profile(
+    derived_root: Path, sections: list[str] | None = None
+) -> tuple[dict[str, Any] | None, dict[str, CompletenessStatus] | None]:
+    """Return ``(profile_dict | None, completeness | None)`` for the profile route.
+
+    ``profile_dict`` is ``None`` when no profile file exists (the route
+    surfaces the structured *missing* signal). When ``sections`` is given
+    the profile dict is filtered and ``completeness`` is suppressed
+    (minimal-sufficient, ``INV-P002``). Raises
+    :class:`UnknownHostProfileSectionError` /
+    :class:`HostProfileCorruptedError` / :class:`HostProfileSchemaUnknownError`.
+    """
+    profile = read_profile(derived_root)
+    if profile is None:
+        return None, None
+    full = profile.model_dump(mode="json")
+    if sections:
+        return _filter_profile_dict(full, sections), None
+    return full, compute_completeness(profile)
+
+
+def query_host_profile_completeness(
+    derived_root: Path,
+) -> tuple[dict[str, CompletenessStatus] | None, dict[str, Any] | None]:
+    """Return ``(completeness | None, meta | None)`` for the completeness route."""
+    profile = read_profile(derived_root)
+    if profile is None:
+        return None, None
+    meta: dict[str, Any] = {
+        "updated_at": profile.meta.updated_at,
+        "last_full_review_at": profile.meta.last_full_review_at,
+    }
+    return compute_completeness(profile), meta
+
+
 __all__ = [
+    "KNOWN_HOST_PROFILE_SECTIONS",
     "ActiveRun",
     "ActiveRunError",
     "GeneAggregate",
@@ -672,6 +770,7 @@ __all__ = [
     "NoActiveRunError",
     "SchemaVersionMismatchError",
     "UnknownEvidenceKindError",
+    "UnknownHostProfileSectionError",
     "load_active_run",
     "load_provenance",
     "parse_evidence_ref",
@@ -679,6 +778,8 @@ __all__ = [
     "query_finding_by_id",
     "query_findings",
     "query_gene",
+    "query_host_profile",
+    "query_host_profile_completeness",
     "query_pgs_computed",
     "query_pgs_computed_list",
     "query_variant_by_key",

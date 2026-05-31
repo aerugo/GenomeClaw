@@ -369,7 +369,7 @@ After implementation is complete:
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| Phase 1 | Pending | | | Schema + storage + endpoints |
+| Phase 1 | Complete | 2026-05-31 | 2026-05-31 | Schema + storage + endpoints — 30 tests green; privacy review done (2 blocking egress leaks fixed); INV-D002/P001/R001/C002 covered |
 | Phase 2 | Pending | | | CLI subgroup + setup chain |
 | Phase 3 | Pending | | | Plugin tool + policy preset + enum mirror |
 | Phase 4 | Pending | | | System prompt + behavioural gates |

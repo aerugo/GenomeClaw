@@ -30,6 +30,10 @@ from fastapi import FastAPI, Query
 from fastapi import Path as FastAPIPath
 from fastapi.responses import JSONResponse
 
+from genomeclaw_toolkit.host_profile.store import (
+    HostProfileCorruptedError,
+    HostProfileSchemaUnknownError,
+)
 from genomeclaw_toolkit.schemas import SCHEMA_VERSION
 from genomeclaw_toolkit.schemas.evidence import EvidenceErrorResponse, EvidenceRecord
 from genomeclaw_toolkit.schemas.finding import (
@@ -44,6 +48,13 @@ from genomeclaw_toolkit.schemas.gene import (
     _region_class_caveat,
 )
 from genomeclaw_toolkit.schemas.health import HealthErrorResponse, HealthResponse
+from genomeclaw_toolkit.schemas.host_profile import (
+    CompletenessMeta,
+    HostProfileCompletenessResponse,
+    HostProfileErrorResponse,
+    HostProfileResponse,
+    HostProfileUnknownSectionResponse,
+)
 from genomeclaw_toolkit.schemas.pgs import (
     PgsComputeRequest,
     PgsComputeTaskResponse,
@@ -75,17 +86,21 @@ from genomeclaw_toolkit.service.pgs_compute_orchestrator import (
     query_pgs_compute_task_status,
 )
 from genomeclaw_toolkit.service.store import (
+    KNOWN_HOST_PROFILE_SECTIONS,
     ActiveRun,
     InvalidEvidenceRefError,
     InvalidVariantKeyError,
     NoActiveRunError,
     SchemaVersionMismatchError,
     UnknownEvidenceKindError,
+    UnknownHostProfileSectionError,
     load_active_run,
     load_provenance,
     query_finding_by_id,
     query_findings,
     query_gene,
+    query_host_profile,
+    query_host_profile_completeness,
     query_pgs_computed,
     query_pgs_computed_list,
     query_variant_by_key,
@@ -577,6 +592,113 @@ def build_app(*, derived_root: Path) -> FastAPI:
             diagnostic=derive_diagnostic_from_error_code(task.error),
         )
         return JSONResponse(status_code=200, content=payload.model_dump())
+
+    # --- host-profile-personal-context Phase 1 — read-only profile routes ----
+    # These do NOT require an active run: the profile lives at the
+    # derived-root level and is readable on a fresh install before any
+    # genome is ingested. A missing profile is HTTP 200 + `missing: true`
+    # (a structured signal the agent acts on, `INV-A005`), never a 404.
+
+    @app.get("/v1/host/profile")
+    def host_profile(sections: Annotated[str | None, Query()] = None) -> JSONResponse:
+        section_list = (
+            [s.strip() for s in sections.split(",") if s.strip()] if sections else None
+        )
+        try:
+            profile_dict, completeness = query_host_profile(
+                derived_root, sections=section_list
+            )
+        except UnknownHostProfileSectionError as exc:
+            return JSONResponse(
+                status_code=400,
+                content=HostProfileUnknownSectionResponse(
+                    section=exc.section,
+                    known_sections=list(KNOWN_HOST_PROFILE_SECTIONS),
+                ).model_dump(),
+            )
+        except HostProfileCorruptedError:
+            # Static detail only — the underlying parser/validator message
+            # can echo profile field values; it is logged host-side at
+            # DEBUG by the store, never returned in the body (INV-P001).
+            return JSONResponse(
+                status_code=500,
+                content=HostProfileErrorResponse(
+                    error="host_profile_corrupted",
+                    detail=(
+                        "host_profile.json is present but did not parse; "
+                        "run `genomeclaw host profile init` to re-author it"
+                    ),
+                ).model_dump(),
+            )
+        except HostProfileSchemaUnknownError:
+            return JSONResponse(
+                status_code=500,
+                content=HostProfileErrorResponse(
+                    error="host_profile_schema_unknown",
+                    detail=(
+                        "host_profile.json declares a schema_version this build "
+                        "cannot serve; run `genomeclaw host profile init` to re-author it"
+                    ),
+                ).model_dump(),
+            )
+
+        if profile_dict is None:
+            payload = HostProfileResponse(
+                profile=None,
+                missing=True,
+                completeness=None,
+                init_command="genomeclaw host profile init",
+            )
+        else:
+            payload = HostProfileResponse(
+                profile=profile_dict,
+                missing=False,
+                completeness=completeness,
+                init_command=None,
+            )
+        return JSONResponse(status_code=200, content=payload.model_dump(mode="json"))
+
+    @app.get("/v1/host/profile/completeness")
+    def host_profile_completeness() -> JSONResponse:
+        try:
+            completeness, meta = query_host_profile_completeness(derived_root)
+        except HostProfileCorruptedError:
+            # Static detail only — the underlying parser/validator message
+            # can echo profile field values; it is logged host-side at
+            # DEBUG by the store, never returned in the body (INV-P001).
+            return JSONResponse(
+                status_code=500,
+                content=HostProfileErrorResponse(
+                    error="host_profile_corrupted",
+                    detail=(
+                        "host_profile.json is present but did not parse; "
+                        "run `genomeclaw host profile init` to re-author it"
+                    ),
+                ).model_dump(),
+            )
+        except HostProfileSchemaUnknownError:
+            return JSONResponse(
+                status_code=500,
+                content=HostProfileErrorResponse(
+                    error="host_profile_schema_unknown",
+                    detail=(
+                        "host_profile.json declares a schema_version this build "
+                        "cannot serve; run `genomeclaw host profile init` to re-author it"
+                    ),
+                ).model_dump(),
+            )
+
+        if completeness is None:
+            payload = HostProfileCompletenessResponse(
+                sections=None, missing=True, meta=None
+            )
+        else:
+            payload = HostProfileCompletenessResponse(
+                sections=completeness,
+                missing=False,
+                meta=CompletenessMeta(**meta) if meta else None,
+            )
+        return JSONResponse(status_code=200, content=payload.model_dump(mode="json"))
 
     return app
 
