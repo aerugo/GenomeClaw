@@ -1,8 +1,8 @@
 # Phase 2: CLI Subgroup + Onboarding Integration
 
-**Status**: Pending
-**Started**: —
-**Completed**: —
+**Status**: Complete
+**Started**: 2026-05-31
+**Completed**: 2026-05-31
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
@@ -358,10 +358,10 @@ GENOMECLAW_DERIVED_ROOT=/tmp/genomeclaw-phase2-fixture \
 
 ## Completion Criteria
 
-- [ ] All 19 listed test cases pass (14 originally numbered + 5 ancestry/family-history additions 6a–6e).
-- [ ] Static checks pass.
-- [ ] Each enforced `INV-xxx` is verified by at least one test (INV-C002, INV-D004).
-- [ ] `host setup` end-to-end leaves a profile file (populated or explicitly skipped).
-- [ ] `cli-output-schemas.md` documents every new envelope.
-- [ ] `work-notes.md` updated.
-- [ ] Phase 2 status updated in `development-plan.md`.
+- [x] All listed test cases pass (25 Phase-2 tests: show/set/review + init/edit/ancestry/family-history + setup-chain + renderer + the `apply_set` unit tests). The plan's `show --section` JSON-filter was de-scoped (see work-notes divergence note); `set`-unknown-section + the renderer cases are covered.
+- [x] Static checks pass (`mypy` clean; `ruff` clean — `ARG002` per-file-ignore added for the `interactive.py` protocol stubs, with rationale).
+- [x] Each enforced `INV-xxx` is verified by at least one test (INV-C002 envelope shape; INV-D004 field-drop confirmation gate).
+- [x] `host setup` end-to-end leaves a profile file (populated on TTY, explicit skip otherwise) — `test_host_profile_setup_chain.py`.
+- [x] `cli-output-schemas.md` documents the new `host profile` envelopes.
+- [x] `work-notes.md` updated.
+- [x] Phase 2 status updated in `development-plan.md`.

@@ -293,6 +293,70 @@ mypy + ruff clean on all new/modified modules.
 
 ---
 
+### 2026-05-31 (Phase 2) — CLI subgroup + interactive flows + setup chain
+
+Implemented Phase 2 in three verified increments (2A non-interactive core,
+2B interactive init/edit + setup chain, 2C docs/verify). Continued the same
+session; all claims verified against real `pytest`/`mypy`/`ruff`.
+
+**Dependency added**: `questionary>=2.0` via `uv add` (resolved 2.1.1 +
+prompt-toolkit + wcwidth). Recorded in `pyproject.toml` + `uv.lock`.
+
+**2A — non-interactive core** (`tests/unit/test_host_profile_mutate.py`,
+`tests/integration/test_cli_host_profile.py`,
+`tests/reports/test_host_profile_renderer.py`):
+- `host_profile/mutate.py` — `apply_set` (scalar set + `<list>.add` append,
+  whole-profile re-validation, typed `HostProfileFieldError`).
+- `_cli/renderers/host.py` — `render_profile` + `render_profile_completeness`
+  reusing the established `✓`/`~`/`✗` glyphs (no new visual vocabulary).
+- `host profile show` / `set` / `review` subcommands + envelopes.
+- Bonus cleanup: moved the `_DEFAULT_HOST_SERVICE_PORT` constant below the
+  imports in `host.py`, clearing 11 pre-existing E402s.
+
+**2B — interactive** (`tests/integration/test_cli_host_profile_init.py`,
+`tests/integration/test_host_profile_setup_chain.py`):
+- `host_profile/interactive.py` — a `Prompter` Protocol with a
+  `QuestionaryPrompter` (prod) and a `ScriptedPrompter` (tests). Each prompt
+  carries a stable `key`, so scripted tests answer by field, not call order
+  — robust to walk reordering. Covers the two-prompt ancestry sub-flow,
+  the family-history `$EDITOR`/inline/skip/opt-out chooser + scaffold-comment
+  stripping, the add-loop list sections, and **no `goals` section**
+  (Decision 11).
+- `host profile init` (`--quick`/`--skip`/interactive) + `edit` ($EDITOR
+  re-validate + INV-D004 field-drop gate). `edit` injects the editor through
+  `interactive.default_prompter()` so tests drive it headless.
+- `host setup` chains `_run_setup_profile_stage`: guarded (only when a
+  derived root exists), never clobbers a populated profile, records an
+  explicit skip on non-TTY / `--skip-profile`. Added `--skip-profile` +
+  `--thorough-profile` flags.
+- Made `audit._flatten` public (`flatten_dump`) so the edit field-drop
+  detector reuses the one flatten implementation.
+
+**Verified state**: 25 Phase-2 tests pass; full suite **1232 passed**, same
+8 pre-existing failures (confirmed unrelated via stash earlier), 164 skips.
+`mypy` clean on all 7 Phase-2 modules; `ruff` clean (one justified per-file
+`ARG002` ignore for the `interactive.py` protocol stubs).
+
+**Divergences from the plan (recorded):**
+- Envelope `command` uses the codebase's dotted convention
+  (`host.profile.show`), not the plan sketch's space form (`host profile
+  show`). The dotted form is what `emit()` + every existing command uses.
+- `show --section` JSON-payload filtering was de-scoped for Phase 2 (the
+  endpoint already does section filtering; the CLI `show` renders the full
+  profile). No test depended on it. Can be added later if needed.
+- Phase-2 test count is 25 (vs the plan's enumerated 19) — the extra cases
+  are the `apply_set` unit tests + an explicit unknown-section/edit-gate
+  split. The plan's exact case list was a guide, not a contract.
+
+**Next Steps**: Phase 3 — plugin tool (`genomeclaw_host_profile`) + policy
+preset + cross-language enum mirror. Carry the Phase-1 Issue-6 follow-up:
+the plugin MUST do minimal-sufficient shaping before the agent sees the
+profile.
+
+**Blockers / Issues**: None.
+
+---
+
 ## Phase Progress
 
 ### Phase 1: Schema + host-side storage + service endpoints
@@ -322,7 +386,16 @@ behavioural enforcement tests stabilise.
 ---
 
 ### Phase 2: CLI subgroup + onboarding integration
-**Status**: Pending
+**Status**: Complete (25 tests green; full suite 1232 passed)
+**Started**: 2026-05-31
+**Completed**: 2026-05-31
+
+#### Results
+`host profile {show,set,review,init,edit}` subgroup with Questionary-driven
+interactive authoring (injectable `Prompter` seam), the dotted-path
+`apply_set` mutator, rich renderers, and the `host setup` profile-init
+chain. INV-C002 (envelope shape) and INV-D004 (field-drop confirmation
+gate) each have ≥1 passing test. `questionary>=2.0` added as a dependency.
 
 ---
 

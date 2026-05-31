@@ -52,6 +52,7 @@ dependencies = [
     # The current implementation runs in pure numpy; the dep is declared
     # here so a future change can land without a parallel deps PR.
     "scipy>=1.13,<2",
+    "questionary>=2.0",
 ]
 
 [project.scripts]
@@ -156,6 +157,12 @@ convention = "google"
 "src/genomeclaw_toolkit/prep/annotate.py" = []
 "src/genomeclaw_toolkit/prep/materialize.py" = []
 "src/genomeclaw_toolkit/schemas/**" = ["D", "ANN", "TC"]
+# host_profile/interactive.py: the `Prompter` protocol's concrete backends
+# (Questionary / scripted) accept the full keyword contract but legitimately
+# ignore a subset per backend (e.g. the scripted prompter answers by `key`
+# and ignores `message`/`choices`). Unused-arg warnings on protocol-impl
+# stubs are noise here, so ARG002 is silenced for this module only.
+"src/genomeclaw_toolkit/host_profile/interactive.py" = ["ARG002"]
 # Top-level package init shim — too small to docstring meaningfully.
 "src/genomeclaw_toolkit/__init__.py" = ["D"]
 

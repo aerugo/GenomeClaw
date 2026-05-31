@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
+def flatten_dump(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     """Flatten a nested dict to dotted leaf paths.
 
     Lists are treated as opaque leaves (compared by equality, never
@@ -46,7 +46,7 @@ def _flatten(data: dict[str, Any], prefix: str = "") -> dict[str, Any]:
     for key, value in data.items():
         path = f"{prefix}.{key}" if prefix else key
         if isinstance(value, dict):
-            out.update(_flatten(value, path))
+            out.update(flatten_dump(value, path))
         else:
             out[path] = value
     return out
@@ -62,8 +62,8 @@ def diff_changed_paths(
     ``freetext_lengths`` maps each *changed* free-text path to the length
     of its new value (never the value itself).
     """
-    before_flat = _flatten(before.model_dump(mode="json")) if before is not None else {}
-    after_flat = _flatten(after.model_dump(mode="json"))
+    before_flat = flatten_dump(before.model_dump(mode="json")) if before is not None else {}
+    after_flat = flatten_dump(after.model_dump(mode="json"))
 
     changed = sorted(
         path for path, value in after_flat.items() if before_flat.get(path) != value
@@ -100,4 +100,4 @@ def append_audit_record(
         fh.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-__all__ = ["append_audit_record", "diff_changed_paths"]
+__all__ = ["append_audit_record", "diff_changed_paths", "flatten_dump"]
