@@ -458,17 +458,42 @@ uncertainty pattern 4; § 10 lead-bullet amendment. Used the **real** schema
 **1248 passed, 7 pre-existing failures** (unchanged set), 165 skipped (+1 =
 the new live_llm test). ruff clean on the Phase-4 test files.
 
-**Deferred (operator go-ahead needed)**: rebuild the sandbox image with the
-new prompt baked in (`./scripts/onboard-sandbox.sh`), re-run the canonical
-demo battery to populate post-2026-06-01 health-interpretation traces (the
-trace-walk gate engages on those), and run the `live_llm` gap-framing gate.
-INV-C004 promotion (Phase 5) waits on at least one stable demo-battery
-re-run per the plan.
+**Next Steps**: Phase 5 — promote INV-C004 to INVARIANTS.md, `docs/reference/`
+updates, final review, move plan to completed/.
 
-**Next Steps**: Phase 5 — promote INV-C004 to INVARIANTS.md (after a stable
-live pass), `docs/reference/` updates, final review, move plan to completed/.
+**Blockers / Issues**: None.
 
-**Blockers / Issues**: None (deferred live work is gated on cost, not blocked).
+---
+
+### 2026-05-31 (Phase 4 — LIVE pass, operator-approved gpt-5.5 spend)
+
+Ran the two deferred live-confirmation steps with operator approval:
+
+1. **Sandbox rebuild** — `./scripts/onboard-sandbox.sh` rebuilt
+   `genomeclaw/sandbox:port-8645` with the new prompt baked in + re-onboarded
+   the gateway (onboard smoke `genomeclaw_status`, 0 failures, exit 0).
+   (Had to stop a ~20h-stale stray `genomeclaw host service` holding 8645 so
+   the test's host service could bind it.)
+2. **live_llm gap-framing gate** — `tests/_live_smoke/test_host_profile_gap_framing.py`
+   **PASSED in 112s** (one real `gpt-5.5` call). On a PGx question with an
+   empty `medical_history.medications` section, the agent called
+   `genomeclaw_host_profile`, named the gap, and recommended the
+   `genomeclaw host profile set/init` command — no HTTP 500. Real
+   behavioural confirmation of INV-C004 + INV-A005 + gap framing.
+3. **Post-prompt trace capture** — ran a real `gpt-5.5` cardiometabolic-risk
+   turn via `run_agent_in_sandbox` (staged synthetic run + profile), saved to
+   `docs/reports/demo-2026-06-01-logs/postphase4-cardiometabolic-risk.trace.json`.
+   Trace contains `genomeclaw_host_profile` + `genomeclaw_gene` +
+   `genomeclaw_pgs_compute`. The **trace-walk gate** now reports
+   `checked 1 post-land health-interpretation trace(s); skipped 20 historical`
+   and PASSES. (First capture wrote under `packages/toolkit/docs/reports/`
+   due to cwd-relative path; moved to the repo-root reports dir the gate
+   scans.) Trace is a local untracked artifact, consistent with the existing
+   demo-log dirs.
+
+**Phase 4 is now fully complete** — all 10 plan test cases satisfied (offline
+gates + the 2 live gates). INV-C004 is empirically demonstrated and ready for
+Phase-5 promotion.
 
 ---
 
@@ -529,9 +554,9 @@ pattern). Declared in `openclaw.plugin.json`. INV-P002/A004/A005 each covered.
 ---
 
 ### Phase 4: Agent system prompt + behavioural enforcement
-**Status**: Implementation complete (offline gates green + privacy review done); live_llm gate + demo-battery re-run deferred (sandbox rebuild + paid gpt-5.5)
+**Status**: Complete — offline gates + privacy review + live gates all green
 **Started**: 2026-05-31
-**Completed**: 2026-05-31 (offline portion)
+**Completed**: 2026-05-31
 
 #### Results
 Prompt § 1/§4 Step 1.5/§5–§10 updates make host-profile retrieval mandatory

@@ -1,8 +1,8 @@
 # Phase 4: Agent System Prompt + Behavioural Enforcement
 
-**Status**: Implementation complete (offline gates green + privacy review done); live_llm gate + demo-battery re-run deferred (need sandbox rebuild + paid gpt-5.5)
+**Status**: Complete — offline gates + privacy review + **live gates** all green (sandbox rebuilt; live_llm gap-framing PASSED; trace-walk engaged on a real post-prompt trace)
 **Started**: 2026-05-31
-**Completed**: 2026-05-31 (offline portion)
+**Completed**: 2026-05-31
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
@@ -208,9 +208,9 @@ uv run --project packages/toolkit pytest -m live_llm \
 
 - [x] Offline test cases pass: 8 prompt-content gates + 2 review-driven gates (Changes A/B) + the trace-walk gate (vacuous over historical traces) + the step-order fix. The `live_llm` behavioural gate (test 10) is written + collected + auto-skipped without the sandbox.
 - [x] System prompt diff approved by the privacy-safety-reviewer agent — verdict accept-with-changes; 3 required changes applied; output filed under [`privacy-review.md`](../privacy-review.md).
-- [ ] **DEFERRED** — at least one demo-battery trace recorded under `docs/reports/` after the prompt change. Needs the sandbox image rebuilt with the new prompt baked in + the canonical demo battery re-run (paid `gpt-5.5`). The trace-walk gate is forward-looking (land date 2026-06-01) and engages once those traces land.
-- [ ] **DEFERRED** — the `live_llm` gate passes against a controlled fixture profile. Same prerequisite (sandbox + paid `gpt-5.5`).
+- [x] At least one demo-battery trace recorded after the prompt change — `docs/reports/demo-2026-06-01-logs/postphase4-cardiometabolic-risk.trace.json` (a real `gpt-5.5` cardiometabolic-risk turn). The trace-walk gate now reports `checked 1 post-land health-interpretation trace(s)` and PASSES (host_profile present). Trace is a local artifact, untracked per the existing demo-log convention.
+- [x] The `live_llm` gate passes against a controlled fixture profile — `test_host_profile_gap_framing.py` PASSED in 112s against the rebuilt `genomeclaw/sandbox:port-8645` image (empty-medications profile; agent called `genomeclaw_host_profile`, named the gap, recommended the CLI command).
 - [x] `work-notes.md` updated with prompt-diff rationale + privacy-review summary.
 - [x] Phase 4 status updated in `development-plan.md`.
 
-**Note on deferred items**: the two unchecked criteria require a sandbox rebuild (`./scripts/onboard-sandbox.sh`) + live `gpt-5.5` calls, which cost real money/time and are held for an explicit operator go-ahead. The prompt, the structural gates, and the privacy review are complete; the behavioural confirmation is the only remaining work and it is a live-pass concern.
+**Live pass (2026-05-31, operator-approved gpt-5.5 spend)**: rebuilt the sandbox via `./scripts/onboard-sandbox.sh` (new prompt baked in; onboard smoke `genomeclaw_status` 0 failures). Ran the `live_llm` gap-framing gate → PASSED. Captured a post-prompt health-interpretation trace → trace-walk gate engaged (checked 1, passed). INV-C004 is now empirically demonstrated and ready for Phase-5 promotion.
