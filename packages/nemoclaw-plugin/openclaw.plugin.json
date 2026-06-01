@@ -17,7 +17,8 @@
       "genomeclaw_pgs_list",
       "genomeclaw_pgs_get",
       "genomeclaw_pgs_compute",
-      "genomeclaw_pgs_compute_status"
+      "genomeclaw_pgs_compute_status",
+      "genomeclaw_host_profile"
     ]
   },
   "configSchema": {

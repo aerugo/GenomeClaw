@@ -14,25 +14,34 @@ discipline means the existing ``doctor()`` tests stay valid.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
-
-# GenomeClaw's canonical host-service port. 8645 (not 8643) because
-# DevRelClaw's drg-service occupies 8643; both projects coexist on one
-# host by binding distinct ports. See
-# docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md.
-# Operator override via env var; CLI --port still wins.
-_DEFAULT_HOST_SERVICE_PORT: Final[int] = int(
-    os.environ.get("GENOMECLAW_HOST_SERVICE_PORT", "8645")
-)
 
 import typer
 from pydantic import BaseModel, ConfigDict, Field
 
 from genomeclaw_toolkit._cli.confirm import require_destructive_confirmation
-from genomeclaw_toolkit._cli.errors import PreconditionError, RuntimeFailure, UsageError
+from genomeclaw_toolkit._cli.console import stdout_is_tty
+from genomeclaw_toolkit._cli.errors import (
+    DataIntegrityError,
+    PreconditionError,
+    RuntimeFailure,
+    UsageError,
+)
 from genomeclaw_toolkit._cli.output import emit, mark_stdout_consumed
-from genomeclaw_toolkit._cli.renderers.host import render_doctor
+from genomeclaw_toolkit._cli.renderers.host import (
+    render_doctor,
+    render_profile,
+)
+from genomeclaw_toolkit.host_profile.mutate import HostProfileFieldError, apply_set
+from genomeclaw_toolkit.host_profile.store import (
+    HostProfileCorruptedError,
+    HostProfileSchemaUnknownError,
+    compute_completeness,
+    read_profile,
+    write_profile_atomic,
+)
 from genomeclaw_toolkit.prep.doctor import doctor as doctor_impl
 from genomeclaw_toolkit.prep.eject import EjectError, PipelineRunningError
 from genomeclaw_toolkit.prep.eject import eject as eject_impl
@@ -42,9 +51,19 @@ from genomeclaw_toolkit.prep.setup import (
 from genomeclaw_toolkit.prep.setup import (
     run_smart as setup_run_smart,
 )
+from genomeclaw_toolkit.schemas.host_profile import HostProfile
 
 if TYPE_CHECKING:
     from genomeclaw_toolkit._cli.context import AppContext
+
+# GenomeClaw's canonical host-service port. 8645 (not 8643) because
+# DevRelClaw's drg-service occupies 8643; both projects coexist on one
+# host by binding distinct ports. See
+# docs/reports/genomeclaw-devrelclaw-coexistence-2026-05-24.md.
+# Operator override via env var; CLI --port still wins.
+_DEFAULT_HOST_SERVICE_PORT: Final[int] = int(
+    os.environ.get("GENOMECLAW_HOST_SERVICE_PORT", "8645")
+)
 
 # Sentinel return values from the setup orchestrators. ``run_smart``
 # returns 2 to signal "needs escalation to the destructive flow";
@@ -337,6 +356,20 @@ def host_setup(
             help="Target volume name or mount point.",
         ),
     ] = None,
+    skip_profile: Annotated[
+        bool,
+        typer.Option(
+            "--skip-profile",
+            help="Skip the personal-context profile prompt (records meta.skipped_init_at).",
+        ),
+    ] = False,
+    thorough_profile: Annotated[
+        bool,
+        typer.Option(
+            "--thorough-profile",
+            help="Run the full profile walk (not just identity) at the end of setup.",
+        ),
+    ] = False,
 ) -> None:
     """Lay out the external drive + colima/lima for CRAM-scale pipelines.
 
@@ -413,6 +446,9 @@ def host_setup(
         from genomeclaw_toolkit._cli.commands.refs import _legacy_fetch_all
 
         _legacy_fetch_all()
+
+    if not dry_run:
+        _run_setup_profile_stage(skip_profile=skip_profile, thorough=thorough_profile)
 
     if ctx.is_json:
         _emit_host_setup_envelope(_HostSetupResultPayload(exit_code=rc))
@@ -554,6 +590,405 @@ def host_service(
     from genomeclaw_toolkit.service.app import build_app
 
     uvicorn.run(build_app(derived_root=derived_root), host=host, port=port)
+
+
+# ---------------------------------------------------------------------------
+# host profile — personal-context profile subgroup
+# (host-profile-personal-context Phase 2)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DERIVED_ROOT: Final[str] = "/mnt/genomeclaw/derived"
+_PROFILE_INIT_COMMAND: Final[str] = "genomeclaw host profile init"
+
+
+def _resolve_profile_derived_root(derived_root: Path | None) -> Path:
+    """Resolve the derived root for profile commands.
+
+    Precedence: explicit ``--derived-root`` > ``GENOMECLAW_DERIVED_ROOT``
+    env var > the canonical ``/mnt/genomeclaw/derived`` default. The env
+    var is read at call time (not import) so tests can monkeypatch it.
+    """
+    if derived_root is not None:
+        return derived_root
+    return Path(os.environ.get("GENOMECLAW_DERIVED_ROOT", _DEFAULT_DERIVED_ROOT))
+
+
+def _completeness_str_map(profile: HostProfile) -> dict[str, str]:
+    """Return the completeness map as a plain ``dict[str, str]`` for payloads."""
+    completeness = compute_completeness(profile) or {}
+    return {section: str(status) for section, status in completeness.items()}
+
+
+def _read_profile_or_raise(derived_root: Path) -> HostProfile | None:
+    """Read the profile, mapping the typed store errors to CLI errors."""
+    try:
+        return read_profile(derived_root)
+    except (HostProfileCorruptedError, HostProfileSchemaUnknownError) as exc:
+        raise DataIntegrityError(
+            "host_profile.json is present but could not be read.",
+            suggested_actions=[f"Re-author it with `{_PROFILE_INIT_COMMAND}`."],
+        ) from exc
+
+
+def _run_setup_profile_stage(*, skip_profile: bool, thorough: bool) -> None:
+    """Chain a profile-init step onto ``host setup`` (side-effect only, best-effort).
+
+    Runs only when setup actually created a derived root, and never
+    clobbers an existing populated profile. On a non-TTY (scripted / CI /
+    agent) or with ``--skip-profile``, records an explicit
+    ``meta.skipped_init_at`` rather than blocking on a prompt — matching
+    the existing non-interactive setup discipline.
+    """
+    root = _resolve_profile_derived_root(None)
+    if not root.exists():
+        return
+    try:
+        existing = read_profile(root)
+    except (HostProfileCorruptedError, HostProfileSchemaUnknownError):
+        existing = None
+    if existing is not None and existing.meta.skipped_init_at is None:
+        return  # a real profile already exists; setup must never overwrite it
+
+    now = datetime.now(UTC)
+    if skip_profile or not stdout_is_tty():
+        write_profile_atomic(
+            root,
+            HostProfile.model_validate(
+                {
+                    "schema_version": "host_profile/1.0",
+                    "meta": {
+                        "created_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                        "skipped_init_at": now.isoformat(),
+                    },
+                    "identity": {},
+                }
+            ),
+        )
+        return
+
+    from genomeclaw_toolkit.host_profile import interactive
+
+    write_profile_atomic(root, interactive.build_profile_interactive(now=now, quick=not thorough))
+
+
+class _ProfileShowPayload(BaseModel):
+    """``host profile show`` envelope payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: HostProfile | None
+    missing: bool
+    completeness: dict[str, str] | None = None
+    init_command: str | None = None
+
+
+class _ProfileCompletenessPayload(BaseModel):
+    """Per-section completeness payload (rendered by ``render_profile_completeness``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sections: dict[str, str] | None
+    missing: bool
+
+
+class _ProfileSetPayload(BaseModel):
+    """``host profile set`` envelope payload — the path written + the new profile."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    profile: HostProfile
+
+
+class _ProfileReviewPayload(BaseModel):
+    """``host profile review`` envelope payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: HostProfile
+    last_full_review_at: str
+    completeness: dict[str, str]
+
+
+class _ProfileInitPayload(BaseModel):
+    """``host profile init`` envelope payload."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: HostProfile
+    skipped: bool = False
+
+
+profile_app = typer.Typer(
+    name="profile",
+    help="View and edit the host personal-context profile (self-reported).",
+    no_args_is_help=True,
+    rich_markup_mode="rich",
+)
+app.add_typer(profile_app, name="profile")
+
+
+_DERIVED_ROOT_OPTION = typer.Option(
+    "--derived-root",
+    help=(
+        "Derived root holding host_profile.json. Defaults to "
+        "$GENOMECLAW_DERIVED_ROOT or /mnt/genomeclaw/derived."
+    ),
+)
+
+
+@profile_app.command("show")
+def host_profile_show(
+    typer_ctx: typer.Context,
+    derived_root: Annotated[Path | None, _DERIVED_ROOT_OPTION] = None,
+) -> None:
+    """Render the current host profile, or a missing-signal panel if none exists."""
+    ctx: AppContext = typer_ctx.obj
+    root = _resolve_profile_derived_root(derived_root)
+    profile = _read_profile_or_raise(root)
+
+    if profile is None:
+        payload = _ProfileShowPayload(
+            profile=None, missing=True, completeness=None, init_command=_PROFILE_INIT_COMMAND
+        )
+    else:
+        payload = _ProfileShowPayload(
+            profile=profile,
+            missing=False,
+            completeness=_completeness_str_map(profile),
+            init_command=None,
+        )
+    emit(ctx=ctx, command="host.profile.show", payload=payload, rich_renderer=render_profile)
+
+
+@profile_app.command("set")
+def host_profile_set(
+    typer_ctx: typer.Context,
+    path: Annotated[str, typer.Argument(help="Dotted field path, e.g. lifestyle.smoking_status.")],
+    value: Annotated[
+        str,
+        typer.Argument(
+            help="New value (bare string / JSON scalar), or a JSON object for `<list>.add`."
+        ),
+    ],
+    derived_root: Annotated[Path | None, _DERIVED_ROOT_OPTION] = None,
+) -> None:
+    """Set one field (or append one list element) by dotted path."""
+    ctx: AppContext = typer_ctx.obj
+    root = _resolve_profile_derived_root(derived_root)
+    profile = _read_profile_or_raise(root)
+    if profile is None:
+        raise PreconditionError(
+            "No host profile to edit yet.",
+            suggested_actions=[f"Create one with `{_PROFILE_INIT_COMMAND}`."],
+        )
+
+    try:
+        updated = apply_set(profile, path, value)
+    except HostProfileFieldError as exc:
+        raise UsageError(str(exc), details={"path": path}) from exc
+
+    updated.meta.updated_at = datetime.now(UTC)
+    write_profile_atomic(root, updated)
+
+    emit(
+        ctx=ctx,
+        command="host.profile.set",
+        payload=_ProfileSetPayload(path=path, profile=updated),
+        rich_renderer=lambda p: render_profile(
+            _ProfileShowPayload(
+                profile=p.profile,
+                missing=False,
+                completeness=_completeness_str_map(p.profile),
+                init_command=None,
+            )
+        ),
+    )
+
+
+@profile_app.command("review")
+def host_profile_review(
+    typer_ctx: typer.Context,
+    derived_root: Annotated[Path | None, _DERIVED_ROOT_OPTION] = None,
+) -> None:
+    """Walk the profile in show-only mode, then stamp ``meta.last_full_review_at``."""
+    ctx: AppContext = typer_ctx.obj
+    root = _resolve_profile_derived_root(derived_root)
+    profile = _read_profile_or_raise(root)
+    if profile is None:
+        raise PreconditionError(
+            "No host profile to review yet.",
+            suggested_actions=[f"Create one with `{_PROFILE_INIT_COMMAND}`."],
+        )
+
+    now = datetime.now(UTC)
+    profile.meta.last_full_review_at = now
+    profile.meta.updated_at = now
+    write_profile_atomic(root, profile)
+
+    emit(
+        ctx=ctx,
+        command="host.profile.review",
+        payload=_ProfileReviewPayload(
+            profile=profile,
+            last_full_review_at=now.isoformat(),
+            completeness=_completeness_str_map(profile),
+        ),
+        rich_renderer=lambda p: render_profile(
+            _ProfileShowPayload(
+                profile=p.profile,
+                missing=False,
+                completeness=p.completeness,
+                init_command=None,
+            )
+        ),
+    )
+
+
+def _emit_profile_write(
+    ctx: AppContext, command: str, payload: BaseModel, profile: HostProfile
+) -> None:
+    """Emit a write-command envelope, rendering the full profile in rich mode."""
+    emit(
+        ctx=ctx,
+        command=command,
+        payload=payload,
+        rich_renderer=lambda _p: render_profile(
+            _ProfileShowPayload(
+                profile=profile,
+                missing=False,
+                completeness=_completeness_str_map(profile),
+                init_command=None,
+            )
+        ),
+    )
+
+
+@profile_app.command("init")
+def host_profile_init(
+    typer_ctx: typer.Context,
+    quick: Annotated[
+        bool, typer.Option("--quick", help="Capture identity (incl. ancestry) only.")
+    ] = False,
+    skip: Annotated[
+        bool,
+        typer.Option("--skip", help="Record meta.skipped_init_at and exit without prompting."),
+    ] = False,
+    derived_root: Annotated[Path | None, _DERIVED_ROOT_OPTION] = None,
+) -> None:
+    """Author the host profile via an interactive walk (or record an explicit skip)."""
+    ctx: AppContext = typer_ctx.obj
+    root = _resolve_profile_derived_root(derived_root)
+    now = datetime.now(UTC)
+
+    if skip:
+        profile = HostProfile.model_validate(
+            {
+                "schema_version": "host_profile/1.0",
+                "meta": {
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "skipped_init_at": now.isoformat(),
+                },
+                "identity": {},
+            }
+        )
+        write_profile_atomic(root, profile)
+        _emit_profile_write(
+            ctx, "host.profile.init", _ProfileInitPayload(profile=profile, skipped=True), profile
+        )
+        return
+
+    # Import lazily so the interactive backend (questionary) is only loaded
+    # when an interactive walk actually runs. Tests monkeypatch
+    # ``interactive.default_prompter`` to inject a ScriptedPrompter.
+    from genomeclaw_toolkit.host_profile import interactive
+
+    profile = interactive.build_profile_interactive(now=now, quick=quick)
+    write_profile_atomic(root, profile)
+    _emit_profile_write(
+        ctx, "host.profile.init", _ProfileInitPayload(profile=profile, skipped=False), profile
+    )
+
+
+def _detect_field_drops(before: HostProfile, after: HostProfile) -> list[str]:
+    """Return dotted paths whose previously-set value was removed/nulled by an edit.
+
+    A "drop" is a leaf that had a meaningful value before and is now
+    ``None`` / absent. Additive edits (new values) are not drops and skip
+    the confirmation gate (INV-D004 — confirm only destructive diffs).
+    """
+    from genomeclaw_toolkit.host_profile.audit import flatten_dump
+
+    before_flat = flatten_dump(before.model_dump(mode="json"))
+    after_flat = flatten_dump(after.model_dump(mode="json"))
+    dropped: list[str] = []
+    for path, value in before_flat.items():
+        if value in (None, "", [], {}):
+            continue
+        if after_flat.get(path) in (None, "", [], {}):
+            dropped.append(path)
+    return sorted(dropped)
+
+
+@profile_app.command("edit")
+def host_profile_edit(
+    typer_ctx: typer.Context,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Skip the field-drop confirmation gate.")
+    ] = False,
+    derived_root: Annotated[Path | None, _DERIVED_ROOT_OPTION] = None,
+) -> None:
+    """Open the profile in ``$EDITOR``, re-validate, and confirm any field drops."""
+    import json
+
+    ctx: AppContext = typer_ctx.obj
+    root = _resolve_profile_derived_root(derived_root)
+    profile = _read_profile_or_raise(root)
+    if profile is None:
+        raise PreconditionError(
+            "No host profile to edit yet.",
+            suggested_actions=[f"Create one with `{_PROFILE_INIT_COMMAND}`."],
+        )
+
+    from genomeclaw_toolkit.host_profile import interactive
+
+    scaffold = json.dumps(profile.model_dump(mode="json"), indent=2, sort_keys=True)
+    edited = interactive.default_prompter().editor(key="profile.edit", scaffold=scaffold)
+    if edited is None or edited.strip() == scaffold.strip():
+        # No change (editor aborted or saved unchanged).
+        _emit_profile_write(
+            ctx, "host.profile.edit", _ProfileInitPayload(profile=profile, skipped=False), profile
+        )
+        return
+
+    try:
+        new_profile = HostProfile.model_validate(json.loads(edited))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise UsageError(
+            "Edited profile is not valid JSON / does not match the schema.",
+            details={"error": str(exc)[:200]},
+        ) from exc
+
+    dropped = _detect_field_drops(profile, new_profile)
+    if dropped and not (yes or ctx.assume_yes):
+        raise PreconditionError(
+            "This edit removes previously-recorded values.",
+            details={"dropped_paths": dropped},
+            suggested_actions=[
+                "Re-run `genomeclaw host profile edit --yes` to confirm the removals."
+            ],
+        )
+
+    new_profile.meta.updated_at = datetime.now(UTC)
+    write_profile_atomic(root, new_profile)
+    _emit_profile_write(
+        ctx,
+        "host.profile.edit",
+        _ProfileInitPayload(profile=new_profile, skipped=False),
+        new_profile,
+    )
 
 
 __all__ = ["DoctorPayload", "app"]

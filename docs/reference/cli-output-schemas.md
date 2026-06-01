@@ -2,7 +2,7 @@
 
 **Status**: Living document
 **Schema version**: 1.0
-**Last updated**: 2026-05-12
+**Last updated**: 2026-05-31
 **Provisional invariant**: `INV-C-cli-output-stability` (see [rich-cli plan](../plans/active/rich-cli/spec.md)).
 
 This document is the **canonical contract** between the GenomeClaw CLI
@@ -213,6 +213,68 @@ Field reference:
 | `payload.drive` | string | Mount point that was ejected |
 | `payload.force_used` | bool | ``True`` iff ``--force`` was passed |
 | `payload.exit_code` | int | ``eject_impl`` return value (`0` on success) |
+
+### `host profile show` / `init` / `set` / `review` / `edit`
+
+**host-profile-personal-context Phase 2 — published.** The `host profile`
+subgroup manages the host-side personal-context profile (self-reported
+identity / biometrics / lifestyle / medical + family history) stored at
+`<derived-root>/host_profile.json`. Every subcommand emits the standard
+envelope; the `command` field is the dotted form (`host.profile.show`,
+`host.profile.init`, …). All subcommands accept `--derived-root` (default
+`$GENOMECLAW_DERIVED_ROOT` or `/mnt/genomeclaw/derived`).
+
+A profile is **never** the raw genome and never leaves the host; these are
+CLI envelopes for the human/operator. The agent reads the profile via the
+host service's `GET /v1/host/profile` endpoint (Phase 1), not via the CLI.
+
+**`host profile show`** — full profile + completeness, or a structured
+missing signal. With `exclude_none=True` the null `profile`/`completeness`
+keys are dropped when no profile exists:
+
+```json
+{
+  "cli_output_schema_version": "1.0",
+  "command": "host.profile.show",
+  "payload": {
+    "profile": { "schema_version": "host_profile/1.0", "meta": {…}, "identity": {…}, … },
+    "missing": false,
+    "completeness": { "identity": "complete", "biometrics": "partial", "medical_history.medications": "missing", … }
+  }
+}
+```
+
+Missing-profile signal (fresh derived root):
+
+```json
+{"cli_output_schema_version":"1.0","command":"host.profile.show","payload":{"missing":true,"init_command":"genomeclaw host profile init"}}
+```
+
+**`host profile init`** — interactive walk (or `--quick` for identity-only,
+`--skip` to record `meta.skipped_init_at`). Payload carries the written
+profile + a `skipped` flag.
+
+**`host profile set <dotted.path> <value>`** — sets one scalar field, or
+appends one JSON-object element when the path ends in `.add` (e.g.
+`medical_history.medications.add '{"name":"clopidogrel"}'`). Payload:
+`{"path": "<dotted.path>", "profile": {…}}`. An unknown path / invalid
+value exits `2` with a `usage_error` envelope.
+
+**`host profile review`** — stamps `meta.last_full_review_at`; payload
+carries `last_full_review_at` (ISO-8601) + the profile + completeness.
+
+**`host profile edit`** — opens the profile in `$EDITOR`, re-validates,
+and gates **field-drop** diffs (removing a previously-set value) behind
+`--yes` (INV-D004); additive edits skip the gate.
+
+Field reference (`show`):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `payload.profile` | object \| absent | The `HostProfile` (`host_profile/1.0`); omitted when missing |
+| `payload.missing` | bool | `true` when no profile file exists yet |
+| `payload.completeness` | object \| absent | Per-section `complete`/`partial`/`missing` map; omitted when missing or section-filtered |
+| `payload.init_command` | string \| absent | Present only on the missing signal |
 
 ### `refs list`
 

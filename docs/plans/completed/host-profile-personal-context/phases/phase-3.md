@@ -1,8 +1,8 @@
 # Phase 3: Plugin Tool + Policy Preset + Cross-Language Enum Mirror
 
-**Status**: Pending
-**Started**: —
-**Completed**: —
+**Status**: Complete
+**Started**: 2026-05-31
+**Completed**: 2026-05-31
 **Parent Plan**: [development-plan.md](../development-plan.md)
 
 ---
@@ -230,9 +230,11 @@ uv run --project packages/toolkit pytest -m needs_sandbox -k host_profile
 
 ## Completion Criteria
 
-- [ ] All 10 listed test cases pass.
-- [ ] Plugin builds clean (`bun run build`).
-- [ ] Each enforced `INV-xxx` is verified by at least one test (INV-P002, INV-A004, INV-A005).
-- [ ] Tool description text is consistent with the system prompt wording landing in Phase 4.
-- [ ] `work-notes.md` updated.
-- [ ] Phase 3 status updated in `development-plan.md`.
+- [x] All listed test cases pass (9 vitest host-profile cases + the updated ten-tools assertion; 2 Python enum/section mirror cases; 8 policy-preset cases incl. 2 new host-profile path tests).
+- [x] Plugin builds clean (`bun run build` / `tsc --noEmit`).
+- [x] Each enforced `INV-xxx` is verified by at least one test (INV-P002 policy-preset + summary outputClass; INV-A004 enum + section cross-language mirror; INV-A005 missing-signal pass-through).
+- [x] Tool description text is consistent with the Phase 4 system-prompt wording (call-before-genome-interpretation + missing-signal + sections + init_command). Phase 4 will quote it.
+- [x] `work-notes.md` updated.
+- [x] Phase 3 status updated in `development-plan.md`.
+
+**Divergences (recorded):** mirrored the 7 real Python enums (`SexAssignedAtBirth`, `SmokingStatus`, `AlcoholUse`, `ExerciseFrequency`, `BloodType`, `AncestryGroup`, `Pop1000G`) — the plan's `ConditionStatus`/`RelationshipClass`/`GoalTag`/`AncestryCode` are stale (goals dropped Phase-2 review; family history is free-text; ancestry split into friendly `AncestryGroup` + derived `Pop1000G`). Added a plugin-side `HOST_PROFILE_SECTIONS` mirror + a cross-language section-diff test (beyond the plan) so the section guard can't drift from the Python allowlist. Incidentally fixed a pre-existing stale assertion in `test_invP002_policy_preset_targets_host_openshell_internal` (`8643` → `8645`); declared the new tool in `openclaw.plugin.json` `contracts.tools`.

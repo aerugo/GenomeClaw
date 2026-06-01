@@ -141,7 +141,7 @@ function parseFailureEnvelope(text: string): FailureEnvelope {
 // ---------------------------------------------------------------------------
 
 describe("registerTool migration", () => {
-  test("registers exactly the nine v0 tools (5 MVP + 4 PGS per Q8 v1.6)", () => {
+  test("registers exactly the ten v0 tools (5 MVP + 4 PGS + host_profile)", () => {
     const api = makeMockApi();
     register(api);
 
@@ -150,6 +150,7 @@ describe("registerTool migration", () => {
       "genomeclaw_evidence",
       "genomeclaw_findings",
       "genomeclaw_gene",
+      "genomeclaw_host_profile",
       "genomeclaw_pgs_compute",
       "genomeclaw_pgs_compute_status",
       "genomeclaw_pgs_get",
