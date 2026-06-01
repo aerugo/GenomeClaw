@@ -10,7 +10,7 @@ It is designed for **one user at a time, on hardware they own, with their own da
 
 ## Status
 
-Early-stage but progressing. The project rules, canonical invariants ([INVARIANTS v1.6](docs/reference/INVARIANTS.md)), planning protocol, plan templates, specialized subagent guides, and the [MVP plan](docs/plans/active/mvp/) (with all design decisions Q1–Q10 closed) are in place. Implementation is underway — the [MVP development plan](docs/plans/active/mvp/development-plan.md) lays out seven phases with strict TDD; Phases 1–3 (toolkit scaffolding + CI + `genomeclaw/toolkit` host image; `fetch` + `ingest` + `bcftools stats` + `mosdepth`; `normalize` + `materialize`) have landed against the project owner's real Nebula VCF. The full VEP-based annotation stack (Phase 4) is next. Storage architecture for CRAM-scale workloads — interactive `genomeclaw host setup`, host-side `doctor` / `eject` subcommands, `shard_scratch` / `atomic_promote` primitives, pre-flight assertions, and `INV-D003` (Heavy Scratch Is Separated From Authoritative Outputs) — landed via the now-completed [cram-scratch-strategy plan](docs/plans/completed/cram-scratch-strategy/).
+Working end-to-end against the project owner's real Nebula data. The full pipeline has landed: `ingest` → `bcftools stats` → `mosdepth` → `normalize` → annotation (VEP + LOFTEE + AlphaMissense + SpliceAI + vcfanno, with MANE Select / Plus Clinical) → Cyrius (CYP2D6) → PharmCAT → agent-driven polygenic scores (`pgsc_calc`, ancestry-calibrated) → `materialize` into the DuckDB derived store (schema **v0.4**). The host service + the 10-tool NemoClaw plugin are in place, as is the host **personal-context profile** (`host profile` CLI + `genomeclaw_host_profile` tool, `INV-C004`). Storage architecture for CRAM-scale workloads (interactive `host setup`, `doctor`/`eject`, `shard_scratch`/`atomic_promote`, pre-flight assertions, `INV-D003`) landed via [cram-scratch-strategy](docs/plans/completed/cram-scratch-strategy/). The project rules, [canonical invariants](docs/reference/INVARIANTS.md), planning protocol, plan templates, and subagent guides are all in place; completed plans live under [docs/plans/completed/](docs/plans/completed/), active work under [docs/plans/active/](docs/plans/active/). Still maturing: broader demo-battery coverage, additional annotation depth, and the agent-reply-fidelity follow-up.
 
 If you are an agent or contributor working on GenomeClaw, start with [CLAUDE.md](CLAUDE.md), then [docs/reference/grand-plan.md](docs/reference/grand-plan.md), then [docs/plans/CLAUDE.md](docs/plans/CLAUDE.md). For the verified system shape, read [docs/reference/architecture.md](docs/reference/architecture.md). For the user journeys the system is built to support, read [docs/reference/user-stories.md](docs/reference/user-stories.md).
 
@@ -31,7 +31,7 @@ The canonical invariants behind these goals live in [docs/reference/INVARIANTS.m
 
 ## What This Is, and What This Is Not
 
-**What it is**: a research, exploration, *and lifestyle/wellbeing* assistant grounded in the user's own genome. The agent gives direct, evidence-calibrated guidance on lifestyle topics — caffeine metabolism (*CYP1A2*) and sleep, lactase persistence (*LCT/MCM6*) and dairy, alcohol flushing (*ALDH2*), alcohol metabolism (*ADH1B*), caffeine sensitivity (*ADORA2A*), Alzheimer's-risk disclosure (*APOE*), and *MTHFR* skeptical framing — without reflexively deferring to a clinician for what are lifestyle questions. Calibration is driven by user-authored markdown notes in `reference/curated_notes/<gene>.md` (per [MVP spec Q9](docs/plans/active/mvp/spec.md)); the agent reads the note and composes its response in the project owner's voice.
+**What it is**: a research, exploration, *and lifestyle/wellbeing* assistant grounded in the user's own genome. The agent gives direct, evidence-calibrated guidance on lifestyle topics — caffeine metabolism (*CYP1A2*) and sleep, lactase persistence (*LCT/MCM6*) and dairy, alcohol flushing (*ALDH2*), alcohol metabolism (*ADH1B*), caffeine sensitivity (*ADORA2A*), Alzheimer's-risk disclosure (*APOE*), and *MTHFR* skeptical framing — without reflexively deferring to a clinician for what are lifestyle questions. Calibration is driven by the agent's **research-and-synthesis** pattern: it researches the current literature (model training knowledge + `web_search` when enabled), validates against its accumulated memory notes, and synthesizes at the configured model's reasoning ceiling. (The earlier pre-authored `reference/curated_notes/<gene>.md` mechanism was **retired** in `INV-C001` v1.6 in favour of this.)
 
 **What it is not**:
 
@@ -86,6 +86,16 @@ If `colima` or `docker` is missing from PATH, `host setup` fails fast with a one
 
 If you skipped eject and unplugged the drive (or replaced it), `bin/genomeclaw host doctor` will spot the stale entry and tell you exactly what to fix. The cycle of plug-in / unplug / replace is safe as long as you bracket it with `host eject` and `host setup`.
 
+**Personal-context profile** (`bin/genomeclaw host profile`) — the user's self-reported identity, biometrics, lifestyle, medical history, and family history, stored host-side as a JSON document under `<derived>/host_profile.json` (with an append-only audit log beside it). The agent retrieves it read-only via the `genomeclaw_host_profile` tool **before any genome-informable reply**, so its interpretation is calibrated to the actual person rather than generic (`INV-C004`). The profile survives variant-store rebuilds and is hand-editable from the CLI:
+
+- `bin/genomeclaw host profile init` — guided onboarding walk (`--quick` captures identity + ancestry only; `--skip` records an explicit skip and exits). This step is also **chained onto `host setup`** — pass `host setup --skip-profile` to opt out, or `--thorough-profile` for the full walk during onboarding.
+- `bin/genomeclaw host profile show` — render the current profile + section-completeness, or a structured "no profile yet" signal. `--json` emits the envelope; `--section <dotted.path>` scopes the view.
+- `bin/genomeclaw host profile set <dotted.path> <value>` — set one field, or append a list element (e.g. `host profile set medical_history.medications.add '{"name": "clopidogrel"}'`).
+- `bin/genomeclaw host profile review` — walk the profile in show-only mode and stamp `meta.last_full_review_at`.
+- `bin/genomeclaw host profile edit` — open the profile in `$EDITOR`; removing a previously-recorded value requires `--yes` (additive edits don't).
+
+Free-text fields — the family-history narrative especially — stay host-side; the agent paraphrases them at relation-class + condition + age-class granularity and never copies them verbatim into memory notes or `web_search` payloads. The audit log records changed-field paths and free-text **lengths only**, never the values.
+
 **Manual env-var path** (advanced; for non-Sequoia hosts or when `setup` is wrong for your topology):
 
 ```bash
@@ -138,11 +148,11 @@ GenomeClaw splits across **two execution domains** (forced by `INV-D002`):
 flowchart TB
     User["<b>User</b><br/>Telegram"]
     LLM["<b>OpenAI gpt-5.4 / Claude Opus / Gemini</b><br/>(via OpenShell L7 inference proxy)"]
-    Agent["<b>OpenClaw agent + GenomeClaw plugin</b><br/>(sandbox)<br/>6 tools: status / findings / variant /<br/>evidence / gene / pgs"]
-    Service["<b>genomeclaw-service</b> (host: 127.0.0.1:8643)<br/>read-only HTTP / JSON"]
+    Agent["<b>OpenClaw agent + GenomeClaw plugin</b><br/>(sandbox)<br/>10 tools: status / findings / variant / evidence / gene /<br/>pgs_list / pgs_get / pgs_compute / pgs_compute_status / host_profile"]
+    Service["<b>genomeclaw-service</b> (host: 127.0.0.1:8645)<br/>read-only HTTP / JSON"]
     Store[("<b>Derived store</b> (host)<br/>variants + coverage_qc + pgs_scores<br/>+ cyp2d6_diplotype.json")]
     Prep["<b>genomeclaw</b> (host CLI)<br/>ingest → bcftools stats → mosdepth → normalize<br/>→ VEP+LOFTEE+AlphaMissense+SpliceAI+vcfanno<br/>→ Cyrius (CYP2D6) → PharmCAT → pgsc_calc (PRS)"]
-    Raw[("<b>raw/</b> Nebula FASTQ/BAM/CRAM/VCF<br/>+ <b>reference/</b> grch38 + clinvar + gnomad +<br/>vep_cache + pgs_catalog + curated_notes")]
+    Raw[("<b>raw/</b> Nebula FASTQ/BAM/CRAM/VCF<br/>+ <b>reference/</b> grch38 + clinvar + gnomad +<br/>vep_cache + pgs_catalog")]
 
     User --> Agent
     LLM <--> Agent
@@ -191,7 +201,7 @@ GenomeClaw **wraps, it doesn't reimplement**.
 - ClinVar, gnomAD v4 (with per-ancestry AFs), dbSNP
 - PharmCAT / PharmGKB-related resources
 - PGS Catalog scoring weights (deliberate, host-side, opt-in fetch only)
-- User-authored `reference/curated_notes/` (lifestyle calibration, per [MVP spec Q9](docs/plans/active/mvp/spec.md))
+- The host **personal-context profile** (`<derived>/host_profile.json`) — self-reported identity / biometrics / lifestyle / medical + family history, retrieved by the agent before genome-informable replies (`INV-C004`). *(The earlier `reference/curated_notes/` lifestyle-calibration mechanism was retired in `INV-C001` v1.6 — superseded by agent research-and-synthesis.)*
 
 Implementation languages: **Python** for the toolkit (`packages/toolkit/`), **TypeScript** for the plugin (`packages/nemoclaw-plugin/`).
 
@@ -207,7 +217,7 @@ Implementation languages: **Python** for the toolkit (`packages/toolkit/`), **Ty
 - Logs do not include sample identifiers or variant coordinates at default verbosity.
 - Redaction happens **before** any payload destined for an external service is materialized.
 
-Full privacy invariants: `INV-P001` and `INV-P002` in [docs/reference/INVARIANTS.md](docs/reference/INVARIANTS.md). Lifestyle / clinical-distinction invariant: `INV-C001` v1.5 (with curated-notes recognition).
+Full privacy invariants: `INV-P001` and `INV-P002` in [docs/reference/INVARIANTS.md](docs/reference/INVARIANTS.md). Lifestyle / clinical-distinction invariant: `INV-C001` v1.7 (lifestyle direct-guidance + PRS-decline pattern). Host personal-context retrieval: `INV-C004`.
 
 ---
 
@@ -215,9 +225,9 @@ Full privacy invariants: `INV-P001` and `INV-P002` in [docs/reference/INVARIANTS
 
 GenomeClaw is driven by agents, not humans. The user reaches the agent over **Telegram** (the canonical user surface; OpenShell pairs the Telegram channel into the agent's input). The agent calls GenomeClaw tools on the host. The integration shape:
 
-- **One host CLI binary** (`genomeclaw`) with subcommands for each pipeline stage (`fetch`, `ingest`, `normalize`, `annotate`, `materialize`, `cyp2d6-call`, `pgs-compute`).
-- **One host service** (`genomeclaw-service`, FastAPI on `127.0.0.1:8643`) exposing scoped read-only HTTP/JSON endpoints (`/v1/health`, `/v1/findings`, `/v1/findings/{id}`, `/v1/variants`, `/v1/variants/{key}`, `/v1/evidence/{ref}`, `/v1/provenance/{run-id}`, `/v1/gene/{symbol}`, `/v1/pgs/{trait}`).
-- **One sandbox-side plugin** (`packages/nemoclaw-plugin/`) registering **six agent-callable tools**: `genomeclaw_status`, `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`, `genomeclaw_gene`, `genomeclaw_pgs`. TypeBox parameter schemas; `jsonResult(...)` payloads with structured `details`.
+- **One host CLI binary** (`genomeclaw`) with command groups: `host` (`setup`, `doctor`, `eject`, `service`, and the `profile` subgroup `init`/`show`/`set`/`review`/`edit`), `refs` (`fetch`, `list`, `verify`, `info`), `runs` (`list`, `show`, `current`), and `pipeline` (`ingest`, `normalize`, `annotate`, `materialize`, `run`, plus `pgs-compute`, `prs-prepare-coverage`, `prs-compute`, `pharmcat`, `cyp2d6-call`, `pgs-config-write`).
+- **One host service** (`genomeclaw-service`, FastAPI on `127.0.0.1:8645`) exposing scoped read-only HTTP/JSON endpoints: `/v1/health`, `/v1/findings`(+`/{id}`), `/v1/variants`(+`/{key}`), `/v1/evidence/{ref}`, `/v1/provenance/{run-id}`, `/v1/gene/{symbol}`, the agent-driven PRS layer (`/v1/pgs/computed`, `/v1/pgs/computed/{pgs_id}`, `POST /v1/pgs/compute`, `/v1/pgs/compute/{task_id}`), the host personal-context profile (`/v1/host/profile`, `/v1/host/profile/completeness`), and `/v1/capabilities`. Every endpoint is a GET except the single agent-triggered `POST /v1/pgs/compute` (enqueues a host-side compute; it is not a write to the derived store).
+- **One sandbox-side plugin** (`packages/nemoclaw-plugin/`) registering **ten agent-callable tools**: `genomeclaw_status`, `genomeclaw_findings`, `genomeclaw_variant`, `genomeclaw_evidence`, `genomeclaw_gene`, `genomeclaw_pgs_list`, `genomeclaw_pgs_get`, `genomeclaw_pgs_compute`, `genomeclaw_pgs_compute_status`, and `genomeclaw_host_profile`. TypeBox parameter schemas; `summary` output class; `jsonResult(...)` payloads with structured `details`. The agent calls `genomeclaw_host_profile` before any genome-informable reply (`INV-C004`); profile content reaches the agent only through this read-only, minimal-sufficient surface and never enters a `web_search` payload.
 - **Structured JSON output** on every tool call, suitable for agent tool-use.
 - **Safe-by-default operations** vs. operations requiring explicit user opt-in (network calls, PGS Catalog weight fetches, alternative annotators). Agents must respect this distinction.
 - **Provenance on every result** — every emitted record carries source identity, tool, version, and parameters (the seven canonical columns of `INV-R001`).
@@ -240,7 +250,7 @@ GenomeClaw/
 │   └── genomeclaw              # Host shim — wraps `docker run genomeclaw/toolkit:<tag>`
 ├── docs/
 │   ├── reference/
-│   │   ├── INVARIANTS.md            # Canonical invariant IDs (INV-D001 ...) — v1.6
+│   │   ├── INVARIANTS.md            # Canonical invariant IDs (INV-D001 ...) — v1.26
 │   │   ├── grand-plan.md            # Long-term roadmap & capability themes
 │   │   ├── architecture.md          # Verified component shape, network topology, host image
 │   │   └── user-stories.md          # User journeys + design-gap running list
@@ -565,10 +575,10 @@ bin/genomeclaw pipeline pgs-compute \
 # 6. Start the host service (reads the active run via the CURRENT symlink).
 docker run -d --rm \
   --name genomeclaw-service \
-  -p 127.0.0.1:8643:8643 \
+  -p 127.0.0.1:8645:8645 \
   -v /mnt/genomeclaw/reference:/mnt/genomeclaw/reference:ro \
   -v /mnt/genomeclaw/derived:/mnt/genomeclaw/derived \
-  genomeclaw/toolkit:dev genomeclaw-service start --port 8643
+  genomeclaw/toolkit:dev genomeclaw-service start --port 8645
 
 # 7. Onboard the sandbox plugin (one-time)
 nemoclaw onboard --from packages/nemoclaw-plugin/sandbox/Dockerfile
