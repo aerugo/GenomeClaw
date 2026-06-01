@@ -1,6 +1,6 @@
 # Agent Synthesis Over Rich Tool Data — Development Plan
 
-**Status**: Draft
+**Status**: Complete (2026-06-01) — all 6 phases done; `INV-A005` v1.23 promoted (`INVARIANTS.md` v1.24). Phase 6 closed at architecture-level pass; the 2 agent-reply-fidelity bugs the LLM-judge caught are handed to the follow-up plan `agent-reply-fidelity-confabulation-and-failure-mode`.
 **Created**: 2026-05-28
 **Branch**: `feature/agent-synthesis-over-rich-tool-data`
 **Spec**: [spec.md](spec.md)
@@ -330,7 +330,7 @@ After implementation:
 | Phase 3 — Plugin envelope extensions | **Complete** | 2026-05-28 | 2026-05-28 | 33 plugin tests pass; typecheck clean. `host_failure` arm forwards `diagnostic`. |
 | Phase 4 — Prompt rewrite (drop verbatim) | **Complete** | 2026-05-28 | 2026-05-28 | 21 prompt-contract tests pass. §INV-A005 rewritten: analyze-and-present + 5 worked examples + 2 new tests (positive + negative gate). |
 | Phase 5 — LLM-judge harness + delete walker | **Complete** | 2026-05-28 | 2026-05-28 | `tests/agent_replay/` shipped (default-skip). v1.22 walker deleted. `INVARIANTS.md` v1.24 + `INV-A005` v1.23. |
-| Phase 6 — AC8 re-run gate | **Architecture pass + judge flags 2 fidelity bugs** | 2026-05-29 | 2026-05-29 | Reply is unambiguously plain language (no JSON transcription). Judge correctly identified 2 specific fidelity issues v1.22 mechanism couldn't reach. Architecture working; agent-prompt-tuning follow-ups filed. |
+| Phase 6 — AC8 re-run gate | **Complete (architecture-level pass)** | 2026-05-29 | 2026-06-01 | Reply is unambiguously plain language (no JSON transcription). Judge correctly identified 2 real fidelity bugs v1.21/v1.22 couldn't reach — the mechanism working. 2 bugs handed to follow-up plan `agent-reply-fidelity-confabulation-and-failure-mode`; plan closed + moved to completed/. |
 
 ---
 
