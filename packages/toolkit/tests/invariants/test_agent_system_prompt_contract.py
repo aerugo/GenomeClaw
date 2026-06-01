@@ -685,7 +685,7 @@ def test_invA005_v123_system_prompt_does_not_mandate_verbatim_quoting() -> None:
         "INV-A005 v1.23 negative gate: §INV-A005 must NOT mandate verbatim "
         f"quoting of structured fields. Found v1.22-era phrasings: {present}. "
         "The corrected rule is analyze-and-present, not transcribe-verbatim. "
-        "See [docs/plans/active/agent-synthesis-over-rich-tool-data/] for the "
+        "See [docs/plans/completed/agent-synthesis-over-rich-tool-data/] for the "
         "rewrite rationale."
     )
 
