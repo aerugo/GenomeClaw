@@ -46,19 +46,32 @@
 
 ---
 
+### 2026-06-01 — Implementation (all 4 phases)
+
+Verified against real `pytest` / `ruff` output throughout.
+
+- **Phase 1 (RED)**: wrote `packages/toolkit/tests/invariants/test_readme_accuracy.py` — 8 assertions, ground truth **derived from code** (manifest `contracts.tools`, the live Typer command tree via `_registered_subcommand_names()`, `service/app.py` routes). RED: 5 failed (tools, "six", 8643, missing `/v1/host/profile`, missing `host profile`), 2 already-green (refs/pipeline-core, invariants link). Q1 → version-less invariants link; Q2 → curated command subset. ruff clean.
+- **Phase 2 (GREEN)**: added the `host profile` subgroup block (init/show/set/review/edit) + `host setup --skip-profile`/`--thorough-profile` to the README. CLI/host-profile gate green.
+- **Phase 3 (GREEN + privacy)**: rewrote the agent-integration bullets (CLI groups; host service `127.0.0.1:8645` + the real endpoint list incl. `/v1/host/profile`(+`/completeness`) + agent-driven PRS; **ten** tools incl. `genomeclaw_host_profile` + the INV-C004 / no-web_search line) and the architecture-diagram port + tool count; fixed the docker-run port example. **Blocking privacy-safety-reviewer pass**: rewritten sections confirmed accurate; it surfaced 2 blocking + 3 advisory fossils in *older* prose — the retired `INV-C001 v1.5` curated-notes calibration (README L34/L204/L220), the v1.6 repo-tree comment (L253), the curated_notes architecture-diagram entry (L155), and a pre-existing `8643` error in INVARIANTS.md INV-P001 (L351). All fixed; filed in [privacy-review.md](privacy-review.md). Added a retired-string guard gate.
+- **Phase 4 (freshness + verify)**: rewrote the Status section to shipped reality + made the invariants link version-less; residual-drift sweep clean (remaining v1.6/8643 mentions are correct contextual references). **Full gate green (8/8)**; full toolkit suite **1260 passed** (7 pre-existing failures unchanged, 169 skipped); ruff clean. INV-C-docs-accuracy **not** promoted (the test stands alone).
+
+**Companion fix (recorded)**: INVARIANTS.md INV-P001 named-egress port `8643`→`8645` — out of the README's strict scope but a 1-line factual correction the review surfaced; left a separate `docs/reference/*` drift sweep as a future follow-up.
+
+---
+
 ## Phase Progress
 
 ### Phase 1: Audit lock-in + consistency-test harness
-**Status**: Pending
+**Status**: Complete (2026-06-01) — 8-assertion code-derived gate; RED confirmed.
 
 ### Phase 2: CLI surface section rewrite
-**Status**: Pending
+**Status**: Complete (2026-06-01) — host profile subgroup + setup flags documented.
 
 ### Phase 3: Agent-integration section rewrite
-**Status**: Pending
+**Status**: Complete (2026-06-01) — 10 tools / 8645 / real endpoints; privacy pass + fossil fixes.
 
 ### Phase 4: Freshness + cross-links + final verify
-**Status**: Pending
+**Status**: Complete (2026-06-01) — Status de-staled; full gate + suite green; archived.
 
 ---
 

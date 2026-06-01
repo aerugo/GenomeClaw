@@ -1,6 +1,6 @@
 # README Accuracy Refresh — Development Plan
 
-**Status**: Draft
+**Status**: Complete (2026-06-01) — all 4 phases done; 8-assertion consistency gate green; README accurate; privacy pass clean; plan archived to completed/.
 **Created**: 2026-06-01
 **Branch**: `docs/readme-accuracy-refresh` (to be created at implementation start)
 **Spec**: [spec.md](spec.md)
@@ -128,18 +128,18 @@ None introduced. AC10 verifies the *described* model stays accurate.
 
 ## Documentation Updates
 
-- `README.md` is the subject of the plan.
-- `docs/reference/cli-output-schemas.md` — already current (host-profile envelopes landed in the host-profile plan); no change expected, verify only.
-- `INVARIANTS.md` — no change unless INV-C-docs-accuracy is promoted in Phase 4 (deferred default: no).
+- `README.md` — the subject of the plan (CLI surface, agent integration, Status, privacy citations, architecture diagram, repo-layout tree).
+- `docs/reference/INVARIANTS.md` — companion 1-line fix: INV-P001 named-egress host-service port `8643` → `8645` (the review surfaced a pre-existing error). **No** INV-C-docs-accuracy promotion (deferred; the consistency test stands alone).
+- `docs/reference/cli-output-schemas.md` — verified current (host-profile envelopes already landed); no change.
 
 ## Progress Tracking
 
 | Phase | Status | Started | Completed | Notes |
 |-------|--------|---------|-----------|-------|
-| Phase 1 | Pending | | | Consistency-test harness (RED) |
-| Phase 2 | Pending | | | CLI surface rewrite |
-| Phase 3 | Pending | | | Agent-integration rewrite + privacy pass |
-| Phase 4 | Pending | | | Freshness + final verify + archive |
+| Phase 1 | Complete | 2026-06-01 | 2026-06-01 | `test_readme_accuracy.py` (8 gates, code-derived); RED on current README. Q1=version-less link, Q2=curated subset. |
+| Phase 2 | Complete | 2026-06-01 | 2026-06-01 | `host profile` subgroup + `host setup` profile flags documented; CLI/host-profile gate green. |
+| Phase 3 | Complete | 2026-06-01 | 2026-06-01 | Agent-integration rewrite (10 tools, 8645, real endpoint list incl. `/v1/host/profile`); blocking privacy pass — accept-with-changes, all fixes applied (incl. retired curated_notes / INV-C001 v1.5 fossils + companion INVARIANTS port fix). |
+| Phase 4 | Complete | 2026-06-01 | 2026-06-01 | Status/overview de-staled, invariants link version-less, full gate + suite green (1260 passed; 7 pre-existing failures). INV-C-docs-accuracy: NOT promoted (test stands alone). |
 
 ---
 
