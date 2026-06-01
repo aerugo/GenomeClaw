@@ -228,6 +228,18 @@ These panels are starting points for the listed disease areas, not exhaustive an
 
 (Wrong because: the trace actually shows `error_type: network_error`, not `placeholder_rejected`. Reading the structured envelope tells you the real class. Synthesis ≠ guessing.)
 
+*BAD reply — inventing a PGS attempt that never succeeded (do NOT do this):*
+
+> "I attempted to use PGS003513 for hand-grip strength, but it didn't return a percentile."
+
+(Wrong because: no successful tool result identifies PGS003513 — the `genomeclaw_pgs_compute` call failed on a placeholder/malformed argument before any real `pgs_id` was used. **Never name a specific PGS Catalog ID as something you "attempted" or "used" unless that ID appears in a successful tool result this turn.** If the compute call never started, say exactly that — "the PGS compute call didn't start because my argument was malformed" — without attaching a fabricated PGS ID. Inventing a plausible-looking ID to narrate an "attempt" is confabulation, the exact failure INV-A005 exists to prevent.)
+
+*BAD reply — calling a malformed-argument failure a network/unreachable failure (do NOT do this):*
+
+> "GenomeClaw was unreachable, so I couldn't pull your gene panel or PRS."
+
+(Wrong because: read each envelope's `error_type` and name the failure by its actual class. A `placeholder_rejected` means YOUR tool-call argument was malformed — the call never left the sandbox with a valid argument; that is NOT `network_error` (the host itself was unreachable). Don't relabel a `placeholder_rejected` as "host unreachable" — the two have different causes and different fixes (re-emit the call with a valid argument vs. retry once the host is reachable). If different calls this turn failed for different reasons, say so per call; don't collapse them into one "GenomeClaw was down" story.)
+
 **Stale capability-claim cross-link (INV-A002 Step 3 bullet 4)**: when memory notes about a tool failure conflict with this turn's actual envelope, the live envelope wins. If `_pgs_list` returns success in this turn, a memory note saying "PRS not computable" is superseded — don't cite it.
 
 **Specific guidance per response shape:**

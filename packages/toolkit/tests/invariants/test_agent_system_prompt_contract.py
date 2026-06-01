@@ -878,3 +878,39 @@ def test_invC001_system_prompt_format_lead_marks_family_history_self_report() ->
         "INV-C001: § 10 lead bullet names family history but lacks the self-report / "
         "paraphrase qualifier (Phase-4 review Change B)"
     )
+
+
+# ---------------------------------------------------------------------------
+# agent-reply-fidelity follow-up (Phase A) — INV-A005 reply-fidelity anti-patterns.
+#
+# Prompt-content backstops (covered by the file-level INV-V001-backstop
+# annotation): the §INV-A005 worked-examples must carry explicit anti-patterns
+# for the two fidelity bugs the LLM-judge caught in the 2026-05-29 AC8 trace —
+# (1) naming a specific PGS Catalog ID as "attempted/used" when it never
+# appeared in a successful tool result; (2) relabelling a placeholder_rejected
+# (malformed-arg) failure as a network/unreachable failure. The load-bearing
+# gate is the semantic LLM-judge (test_invA005_v123_reply_is_faithful_to_trajectory.py).
+# ---------------------------------------------------------------------------
+
+
+def _invA005_section(text: str) -> str:
+    start = text.index("Tool-failure narratives must match trace evidence (INV-A005 v1.23)")
+    end = text.index("### Step 3", start)
+    return text[start:end]
+
+
+def test_invA005_prompt_warns_against_inventing_unattested_pgs_attempt() -> None:
+    """§INV-A005 must forbid claiming a PGS-ID 'attempt' absent from a successful result."""
+    section = _invA005_section(_read_prompt())
+    assert (
+        "Never name a specific PGS Catalog ID as something you" in section
+        and "appears in a successful tool result" in section
+    ), "INV-A005: §INV-A005 must carry the no-invented-PGS-attempt anti-pattern"
+
+
+def test_invA005_prompt_warns_against_relabelling_placeholder_as_network() -> None:
+    """§INV-A005 must forbid calling a placeholder_rejected failure a network/unreachable one."""
+    section = _invA005_section(_read_prompt())
+    assert 'relabel a `placeholder_rejected` as "host unreachable"' in section, (
+        "INV-A005: §INV-A005 must carry the don't-relabel-placeholder-as-network anti-pattern"
+    )

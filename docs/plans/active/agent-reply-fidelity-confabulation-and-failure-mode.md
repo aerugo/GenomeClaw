@@ -1,6 +1,6 @@
 # Agent Reply-Fidelity: Confabulation + Failure-Mode Conflation (follow-up stub)
 
-**Status**: Stub — not started
+**Status**: Phase A complete (2026-06-01) — offline prompt anti-patterns + content gates landed; Phase B pending (paid live re-green of the LLM-judge: colima + sandbox rebuild + gpt-5.5)
 **Created**: 2026-06-01
 **Parent**: follow-up from [agent-synthesis-over-rich-tool-data](../completed/agent-synthesis-over-rich-tool-data/development-plan.md) (closed 2026-06-01 at architecture-level pass)
 **Applicable invariants**: `INV-A005` v1.23 (faithful + understandable synthesis), `INV-A002` (reasoning floor), `INV-V001` (semantic verification, no phrase enumeration).
@@ -38,3 +38,23 @@ That 2026-05-29 trace is the **known-red-when-judge-enabled baseline**. The judg
 ## Cost / gating
 
 Phase B needs a sandbox rebuild + paid `gpt-5.5` judge runs (held for explicit operator go-ahead, same discipline as the parent plan's Phase 6). Phase A is fully offline.
+
+---
+
+## Progress
+
+### Phase A — offline prompt anti-patterns (2026-06-01, complete)
+
+Added two anti-pattern worked-examples to `agent-system-prompt.md` §INV-A005 (in the Step-2 tool-failure-narrative block):
+
+1. **No invented PGS attempt** — a BAD-reply example ("I attempted to use PGS003513…") + the rule *"Never name a specific PGS Catalog ID as something you 'attempted' or 'used' unless that ID appears in a successful tool result this turn."* Directly targets the 2026-05-29 judge bug #1 (confabulated PGS003513).
+2. **No relabelling placeholder→network** — a BAD-reply example ("GenomeClaw was unreachable…") + the rule that a `placeholder_rejected` (malformed-arg) failure must NOT be relabelled "host unreachable"/`network_error`; name each failure by its actual `error_type` with the matching fix. Targets bug #2 (failure-mode conflation).
+
+Gates (prompt-content backstops, file-level INV-V001-backstop annotation):
+`test_invA005_prompt_warns_against_inventing_unattested_pgs_attempt` +
+`test_invA005_prompt_warns_against_relabelling_placeholder_as_network` in
+`packages/toolkit/tests/invariants/test_agent_system_prompt_contract.py`. RED → GREEN; full prompt-contract suite 33 passed.
+
+### Phase B — live re-green (pending)
+
+Restart colima → rebuild sandbox (`./scripts/sandbox-up.sh --rebuild`, bakes the updated prompt) → re-capture the verbatim muscle question (network-failure path) → run the LLM-judge (`GENOMECLAW_REPLAY_LLM=gpt-5.5`) to `faithful=True`. Prompt-tuning is LLM-variance-prone, so this may need >1 iteration; bound the spend and report honestly rather than loop indefinitely.
