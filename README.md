@@ -23,7 +23,7 @@ The canonical invariants behind these goals live in [docs/reference/INVARIANTS.m
 
 ## What This Is, and What This Is Not
 
-**What it is**: a research, exploration, *and lifestyle/wellbeing* assistant grounded in the user's own genome. The agent gives direct, evidence-calibrated guidance on lifestyle topics — caffeine metabolism (*CYP1A2*) and sleep, lactase persistence (*LCT/MCM6*) and dairy, alcohol flushing (*ALDH2*), alcohol metabolism (*ADH1B*), caffeine sensitivity (*ADORA2A*), Alzheimer's-risk disclosure (*APOE*), and *MTHFR* skeptical framing — without reflexively deferring to a clinician for what are lifestyle questions. Calibration is driven by the agent's **research-and-synthesis** pattern: it researches the current literature (model training knowledge + `web_search` when enabled), validates against its accumulated memory notes, and synthesizes at the configured model's reasoning ceiling. (The earlier pre-authored `reference/curated_notes/<gene>.md` mechanism was **retired** in `INV-C001` v1.6 in favour of this.)
+**What it is**: a research, exploration, *and lifestyle/wellbeing* assistant grounded in the user's own genome. The agent gives direct, evidence-calibrated guidance on lifestyle topics — caffeine metabolism (*CYP1A2*) and sleep, lactase persistence (*LCT/MCM6*) and dairy, alcohol flushing (*ALDH2*), alcohol metabolism (*ADH1B*), caffeine sensitivity (*ADORA2A*), Alzheimer's-risk disclosure (*APOE*), and *MTHFR* skeptical framing. Calibration is driven by the agent's **research-and-synthesis** pattern: it researches the current literature (model training knowledge + `web_search` when enabled), validates against its accumulated memory notes, and synthesizes at the configured model's reasoning ceiling. 
 
 **What it is not**:
 
@@ -31,7 +31,6 @@ The canonical invariants behind these goals live in [docs/reference/INVARIANTS.m
 - **Not a hosted service.** GenomeClaw runs on the user's hardware; there is no GenomeClaw cloud.
 - **Not a population-genomics tool.** It is single-user by design.
 - **Not a replacement for professional clinical evaluation.** Clinical-actionability findings (ACMG SF, PharmCAT actionable haplotypes, etc.) carry visible escalation markers and are intended to prompt clinical confirmation.
-- **Not an imputation / mass-analysis platform.**
 
 ---
 
