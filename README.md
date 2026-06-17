@@ -8,14 +8,6 @@ It is designed for **one user at a time, on hardware they own, with their own da
 
 ---
 
-## Status
-
-Working end-to-end against the project owner's real Nebula data. The full pipeline has landed: `ingest` → `bcftools stats` → `mosdepth` → `normalize` → annotation (VEP + LOFTEE + AlphaMissense + SpliceAI + vcfanno, with MANE Select / Plus Clinical) → Cyrius (CYP2D6) → PharmCAT → agent-driven polygenic scores (`pgsc_calc`, ancestry-calibrated) → `materialize` into the DuckDB derived store (schema **v0.4**). The host service + the 10-tool NemoClaw plugin are in place, as is the host **personal-context profile** (`host profile` CLI + `genomeclaw_host_profile` tool, `INV-C004`). Storage architecture for CRAM-scale workloads (interactive `host setup`, `doctor`/`eject`, `shard_scratch`/`atomic_promote`, pre-flight assertions, `INV-D003`) landed via [cram-scratch-strategy](docs/plans/completed/cram-scratch-strategy/). The project rules, [canonical invariants](docs/reference/INVARIANTS.md), planning protocol, plan templates, and subagent guides are all in place; completed plans live under [docs/plans/completed/](docs/plans/completed/), active work under [docs/plans/active/](docs/plans/active/). Still maturing: broader demo-battery coverage, additional annotation depth, and the agent-reply-fidelity follow-up.
-
-If you are an agent or contributor working on GenomeClaw, start with [CLAUDE.md](CLAUDE.md), then [docs/reference/grand-plan.md](docs/reference/grand-plan.md), then [docs/plans/CLAUDE.md](docs/plans/CLAUDE.md). For the verified system shape, read [docs/reference/architecture.md](docs/reference/architecture.md). For the user journeys the system is built to support, read [docs/reference/user-stories.md](docs/reference/user-stories.md).
-
----
-
 ## Goals
 
 - Make personal genomic data **explorable through an agentic interface** for **two distinct conversational tracks** — clinical questions (research framing + clinician-confirmation cues) and lifestyle questions about caffeine, diet, exercise, sleep, alcohol, recovery, etc. (direct, actionable guidance with calibrated evidence).
